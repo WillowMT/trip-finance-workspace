@@ -14,14 +14,16 @@ const landingPage = `<!doctype html>
 const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
 const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const currencyPattern = /^[A-Z]{3}$/;
-const entryKinds = new Set(['debt', 'payment', 'split', 'offset', 'import']);
+const entryKinds = new Set(['debt', 'payment']);
+const maxJsonBytes = 256 * 1024;
+const bodyTooLarge = Symbol('body too large');
 
 function json(value: unknown, status = 200, headers: HeadersInit = {}): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
 }
 function error(message: string, status = 400, headers: HeadersInit = {}): Response { return json({ error: message }, status, headers); }
 function secretHeaders(): HeadersInit {
-  return { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
+  return { 'cache-control': 'no-store, private', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
 }
 function secretResponse(value: unknown, status = 200): Response { return json(value, status, secretHeaders()); }
 function cleanText(value: unknown, max: number): string | null {
@@ -35,7 +37,30 @@ function validDate(value: unknown): value is string {
   return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 function asObject(value: unknown): Json | null { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : null; }
-async function body(request: Request): Promise<Json | null> { try { return asObject(await request.json()); } catch { return null; } }
+async function body(request: Request): Promise<Json | null | typeof bodyTooLarge> {
+  const contentLength = request.headers.get('content-length');
+  if (contentLength && Number.isFinite(Number(contentLength)) && Number(contentLength) > maxJsonBytes) return bodyTooLarge;
+  if (!request.body) return null;
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > maxJsonBytes) { await reader.cancel(); return bodyTooLarge; }
+      chunks.push(chunk.value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    return asObject(JSON.parse(new TextDecoder().decode(bytes)));
+  } catch { return null; }
+}
+function allowedOrigin(request: Request, url: URL): boolean {
+  const origin = request.headers.get('origin');
+  return !origin || origin === url.origin;
+}
 async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -93,30 +118,37 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const { pathname } = url;
   if (request.method === 'GET' && pathname === '/') return new Response(landingPage, { headers: { 'content-type': 'text/html; charset=utf-8' } });
   if (request.method === 'POST' && pathname === '/api/workspaces') {
-    const input = await body(request); const valid = input && onboarding(input);
-    if (!valid) return error('Invalid workspace onboarding payload');
+    const input = await body(request); if (input === bodyTooLarge) return error('Request body too large', 413, secretHeaders()); const valid = input && onboarding(input);
+    if (!valid) return error('Invalid workspace onboarding payload', 400, secretHeaders());
     const secret = createSecret(); const hash = await sha256(secret);
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO workspaces (secret_hash, name) VALUES (?, ?)').bind(hash, valid.name), env.DB.prepare(`INSERT INTO workspace_settings (workspace_id) SELECT id FROM workspaces WHERE secret_hash = ?`).bind(hash)];
     for (const person of valid.people) statements.push(env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) SELECT id, ? FROM workspaces WHERE secret_hash = ?').bind(person, hash));
     for (const currency of valid.currencies) statements.push(env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(currency.code, currency.is_default ? 1 : 0, hash));
     await env.DB.batch(statements);
     const workspace = await resolveWorkspace(env.DB, secret);
-    return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+    return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, secretHeaders());
   }
-  const match = pathname.match(/^\/(w|api\/workspaces)\/([^/]+)(?:\/(.*))?$/);
+  const match = pathname.match(/^\/(?:w\/([^/]+)(?:\/(.*))?|api\/workspaces\/([^/]+)(?:\/(.*))?)$/);
   if (!match) return new Response('Not found', { status: 404 });
-  const [, kind, secret, tail = ''] = match;
+  const [, workspaceSecret, workspaceTail, legacySecret, legacyTail] = match;
+  const secret = workspaceSecret ?? legacySecret;
+  const rawTail = workspaceTail ?? legacyTail ?? '';
+  const workspacePage = workspaceSecret !== undefined && rawTail === '';
+  const workspaceApi = workspaceSecret !== undefined && (rawTail === 'api' || rawTail.startsWith('api/'));
+  const tail = workspaceSecret && rawTail.startsWith('api/') ? rawTail.slice(4) : workspaceApi ? '' : rawTail;
   const required = await requireWorkspace(env.DB, secret);
   if (required instanceof Response) return required;
   const workspace = required;
-  if (kind === 'w') return tail === '' && request.method === 'GET' ? new Response('<!doctype html><title>Trip finance workspace</title>', { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (workspacePage) return request.method === 'GET' ? new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${workspace.name}</title></head><body><main><h1>${workspace.name}</h1><p>Your shared finance workspace is ready.</p><p>Use this private link to manage people, currencies, and transactions.</p></main></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (workspaceSecret && !workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
   if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
   if (tail === 'audit' && request.method === 'GET') {
     const entries = await env.DB.prepare('SELECT id, workspace_id, entity_type, entity_id, action, actor_label, before_json, after_json, occurred_at FROM audit_log WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all();
     return secretResponse({ audit: entries.results });
   }
   if (tail === '' && request.method === 'PATCH') {
-    const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
     const statements: D1PreparedStatement[] = [];
     if ('name' in input) { const name = cleanText(input.name, 100); if (!name) return secretResponse({ error: 'Invalid workspace name' }, 400); statements.push(env.DB.prepare(`UPDATE workspaces SET name = ?, updated_at = ${now} WHERE id = ?`).bind(name, workspace.id)); }
     if ('settings' in input) {
@@ -127,41 +159,41 @@ async function handle(request: Request, env: Env): Promise<Response> {
     await env.DB.batch(statements); const updated = (await requireWorkspace(env.DB, secret)) as Workspace; return secretResponse(await state(env.DB, updated));
   }
   if (tail === 'people' && request.method === 'POST') {
-    const input = await body(request); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400);
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400);
     const result = await env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) VALUES (?, ?) RETURNING id, workspace_id, display_name, is_archived, created_at, updated_at').bind(workspace.id, displayName).first<Person>(); return secretResponse({ person: result }, 201);
   }
   let route = tail.match(/^people\/(\d+)(?:\/(archive|restore))?$/);
   if (route) {
     const [, value, action] = route; const person = await ownedPerson(env.DB, workspace.id, Number(value)); if (!person) return secretResponse({ error: 'Person not found' }, 404);
-    if (!action && request.method === 'PATCH') { const input = await body(request); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400); await env.DB.prepare(`UPDATE workspace_people SET display_name = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(displayName, person.id, workspace.id).run(); }
+    if (!action && request.method === 'PATCH') { const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400); await env.DB.prepare(`UPDATE workspace_people SET display_name = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(displayName, person.id, workspace.id).run(); }
     else if ((action === 'archive' || action === 'restore') && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_people SET is_archived = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(action === 'archive' ? 1 : 0, person.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
     return secretResponse({ person: await ownedPerson(env.DB, workspace.id, person.id) });
   }
   if (tail === 'currencies' && request.method === 'POST') {
-    const input = await body(request); const code = input?.code; if (typeof code !== 'string' || !currencyPattern.test(code) || typeof input?.is_default !== 'boolean') return secretResponse({ error: 'Invalid currency' }, 400);
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const code = input?.code; if (typeof code !== 'string' || !currencyPattern.test(code) || typeof input?.is_default !== 'boolean') return secretResponse({ error: 'Invalid currency' }, 400);
     if (input.is_default) await env.DB.batch([env.DB.prepare(`UPDATE workspace_currencies SET is_default = 0, updated_at = ${now} WHERE workspace_id = ? AND is_archived = 0`).bind(workspace.id), env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (?, ?, 1)').bind(workspace.id, code)]); else await env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code) VALUES (?, ?)').bind(workspace.id, code).run();
     return secretResponse({ currency: await ownedCurrency(env.DB, workspace.id, code) }, 201);
   }
   route = tail.match(/^currencies\/(\d+)(?:\/(archive|restore))?$/);
   if (route) {
     const [, value, action] = route; const currency = await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ? AND workspace_id = ?').bind(Number(value), workspace.id).first<Currency>(); if (!currency) return secretResponse({ error: 'Currency not found' }, 404);
-    if (!action && request.method === 'PATCH') { const input = await body(request); if (!input || (input.code !== undefined && (typeof input.code !== 'string' || !currencyPattern.test(input.code))) || (input.is_default !== undefined && typeof input.is_default !== 'boolean')) return secretResponse({ error: 'Invalid currency' }, 400); const code = input.code ?? currency.code; if (input.is_default) await env.DB.batch([env.DB.prepare(`UPDATE workspace_currencies SET is_default = 0, updated_at = ${now} WHERE workspace_id = ? AND is_archived = 0`).bind(workspace.id), env.DB.prepare(`UPDATE workspace_currencies SET code = ?, is_default = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id)]); else await env.DB.prepare(`UPDATE workspace_currencies SET code = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id).run(); }
+    if (!action && request.method === 'PATCH') { const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input || (input.code !== undefined && (typeof input.code !== 'string' || !currencyPattern.test(input.code))) || (input.is_default !== undefined && typeof input.is_default !== 'boolean')) return secretResponse({ error: 'Invalid currency' }, 400); if (input.is_default === false && currency.is_default && !currency.is_archived) return secretResponse({ error: 'A workspace must have one active default currency' }, 400); const code = input.code ?? currency.code; if (input.is_default) await env.DB.batch([env.DB.prepare(`UPDATE workspace_currencies SET is_default = 0, updated_at = ${now} WHERE workspace_id = ? AND is_archived = 0`).bind(workspace.id), env.DB.prepare(`UPDATE workspace_currencies SET code = ?, is_default = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id)]); else await env.DB.prepare(`UPDATE workspace_currencies SET code = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id).run(); }
     else if (action === 'archive' && request.method === 'POST') { if (currency.is_default) return secretResponse({ error: 'Default currency cannot be archived' }, 400); await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); }
     else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
-    return secretResponse({ currency: await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ?').bind(currency.id).first<Currency>() });
+    return secretResponse({ currency: await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ? AND workspace_id = ?').bind(currency.id, workspace.id).first<Currency>() });
   }
   if (tail === 'transactions' && request.method === 'GET') { const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND is_deleted = 0 ORDER BY occurred_on DESC, id DESC').bind(workspace.id).all<Transaction>(); return secretResponse({ transactions: transactions.results }); }
   if (tail === 'transactions' && request.method === 'POST') {
-    const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
     const transaction = await env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null).first<Transaction>(); return secretResponse({ transaction }, 201);
   }
   route = tail.match(/^transactions\/(\d+)(?:\/(delete|restore))?$/);
   if (route) {
     const [, value, action] = route; const transaction = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ? AND workspace_id = ?').bind(Number(value), workspace.id).first<Transaction>(); if (!transaction) return secretResponse({ error: 'Transaction not found' }, 404);
-    if (!action && request.method === 'PATCH') { const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const updated = { ...transaction, ...input }; const problem = await validateTransaction(env.DB, workspace.id, updated); if (problem) return secretResponse({ error: problem }, 400); await env.DB.prepare(`UPDATE transactions SET occurred_on = ?, entry_kind = ?, topic = ?, category = ?, creditor_person_id = ?, debtor_person_id = ?, amount_minor = ?, currency_code = ?, notes = ?, import_group_id = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(updated.occurred_on, updated.entry_kind, cleanText(updated.topic, 200), cleanText(updated.category, 80), updated.creditor_person_id, updated.debtor_person_id, updated.amount_minor, updated.currency_code, updated.notes ?? null, updated.import_group_id ?? null, transaction.id, workspace.id).run(); }
+    if (!action && request.method === 'PATCH') { if (transaction.is_deleted) return secretResponse({ error: 'Restore the transaction before editing it' }, 400); const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const updated = { ...transaction, ...input }; const problem = await validateTransaction(env.DB, workspace.id, updated); if (problem) return secretResponse({ error: problem }, 400); await env.DB.prepare(`UPDATE transactions SET occurred_on = ?, entry_kind = ?, topic = ?, category = ?, creditor_person_id = ?, debtor_person_id = ?, amount_minor = ?, currency_code = ?, notes = ?, import_group_id = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(updated.occurred_on, updated.entry_kind, cleanText(updated.topic, 200), cleanText(updated.category, 80), updated.creditor_person_id, updated.debtor_person_id, updated.amount_minor, updated.currency_code, updated.notes ?? null, updated.import_group_id ?? null, transaction.id, workspace.id).run(); }
     else if (action === 'delete' && request.method === 'POST') await env.DB.prepare(`UPDATE transactions SET is_deleted = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(transaction.id, workspace.id).run();
     else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE transactions SET is_deleted = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(transaction.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
-    return secretResponse({ transaction: await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ?').bind(transaction.id).first<Transaction>() });
+    return secretResponse({ transaction: await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ? AND workspace_id = ?').bind(transaction.id, workspace.id).first<Transaction>() });
   }
   return new Response('Not found', { status: 404, headers: secretHeaders() });
 }
