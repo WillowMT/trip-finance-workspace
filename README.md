@@ -1,6 +1,6 @@
 # Trip finance workspace
 
-A generic Cloudflare Worker and D1 foundation for a shared friends’ trip ledger. It starts with a landing page and database migrations; onboarding and workspace APIs are intentionally not part of this foundation phase.
+A generic Cloudflare Worker and D1 app for a shared friends’ trip ledger. It supports a capability-secured onboarding link plus auditable workspace settings, people, currencies, transactions, soft deletion, restoration, and read-only audit history. Batch entry, CSV review, offsets, exports, analytics, and the full web UI follow in later phases.
 
 ## Local verification
 

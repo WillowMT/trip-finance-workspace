@@ -2,27 +2,168 @@ export interface Env {
   DB: D1Database;
 }
 
+type Json = Record<string, unknown>;
+type Workspace = { id: number; name: string; is_active: number; created_at: string; updated_at: string };
+type Person = { id: number; workspace_id: number; display_name: string; is_archived: number; created_at: string; updated_at: string };
+type Currency = { id: number; workspace_id: number; code: string; is_default: number; is_archived: number; created_at: string; updated_at: string };
+type Transaction = { id: number; workspace_id: number; occurred_on: string; entry_kind: string; topic: string; category: string; creditor_person_id: number; debtor_person_id: number; amount_minor: number; currency_code: string; notes: string | null; import_group_id: string | null; is_deleted: number; created_at: string; updated_at: string };
+
 const landingPage = `<!doctype html>
-<html lang="en">
-  <head><meta charset="utf-8"><title>Trip finance workspace</title></head>
-  <body>
-    <main>
-      <h1>Trip finance workspace</h1>
-      <p>Create a workspace to share one editable finance ledger with your group.</p>
-      <button type="button">Create shared workspace</button>
-    </main>
-  </body>
-</html>`;
+<html lang="en"><head><meta charset="utf-8"><title>Trip finance workspace</title></head>
+<body><main><h1>Trip finance workspace</h1><p>Create a workspace to share one editable finance ledger with your group.</p><button type="button">Create shared workspace</button></main></body></html>`;
+const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')";
+const secretPattern = /^[A-Za-z0-9_-]{43}$/;
+const currencyPattern = /^[A-Z]{3}$/;
+const entryKinds = new Set(['debt', 'payment', 'split', 'offset', 'import']);
 
-export default {
-  fetch(request: Request, _env: Env, _ctx: ExecutionContext): Response {
-    const url = new URL(request.url);
-    if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(landingPage, {
-        headers: { 'content-type': 'text/html; charset=utf-8' },
-      });
+function json(value: unknown, status = 200, headers: HeadersInit = {}): Response {
+  return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json; charset=utf-8', ...headers } });
+}
+function error(message: string, status = 400, headers: HeadersInit = {}): Response { return json({ error: message }, status, headers); }
+function secretHeaders(): HeadersInit {
+  return { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
+}
+function secretResponse(value: unknown, status = 200): Response { return json(value, status, secretHeaders()); }
+function cleanText(value: unknown, max: number): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return text.length >= 1 && text.length <= max ? text : null;
+}
+function validDate(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
+}
+function asObject(value: unknown): Json | null { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Json : null; }
+async function body(request: Request): Promise<Json | null> { try { return asObject(await request.json()); } catch { return null; } }
+async function sha256(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+function createSecret(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function resolveWorkspace(db: D1Database, secret: string): Promise<Workspace | null> {
+  if (!secretPattern.test(secret)) return null;
+  return db.prepare('SELECT id, name, is_active, created_at, updated_at FROM workspaces WHERE secret_hash = ? AND is_active = 1').bind(await sha256(secret)).first<Workspace>();
+}
+async function requireWorkspace(db: D1Database, secret: string): Promise<Workspace | Response> {
+  const workspace = await resolveWorkspace(db, secret);
+  return workspace ?? secretResponse({ error: 'Workspace not found' }, 404);
+}
+async function state(db: D1Database, workspace: Workspace): Promise<Json> {
+  const [people, currencies, settings] = await Promise.all([
+    db.prepare('SELECT id, workspace_id, display_name, is_archived, created_at, updated_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Person>(),
+    db.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Currency>(),
+    db.prepare('SELECT categories_json, small_amount_guard_json, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; created_at: string; updated_at: string }>(),
+  ]);
+  return { workspace, people: people.results, currencies: currencies.results, settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), created_at: settings.created_at, updated_at: settings.updated_at } };
+}
+function onboarding(input: Json): { name: string; people: string[]; currencies: { code: string; is_default: boolean }[] } | null {
+  const name = cleanText(input.name, 100);
+  if (!name || !Array.isArray(input.people) || !Array.isArray(input.currencies)) return null;
+  const people = input.people.map((person) => typeof person === 'string' ? cleanText(person, 80) : cleanText(asObject(person)?.display_name, 80));
+  if (people.some((person) => !person) || people.length < 2 || new Set(people.map((person) => person!.toLocaleLowerCase())).size !== people.length) return null;
+  const currencies = input.currencies.map((currency) => {
+    const item = asObject(currency);
+    return item && typeof item.code === 'string' && currencyPattern.test(item.code) && typeof item.is_default === 'boolean' ? { code: item.code, is_default: item.is_default } : null;
+  });
+  if (currencies.some((currency) => !currency) || currencies.length < 1 || new Set(currencies.map((currency) => currency!.code)).size !== currencies.length || currencies.filter((currency) => currency!.is_default).length !== 1) return null;
+  return { name, people: people as string[], currencies: currencies as { code: string; is_default: boolean }[] };
+}
+async function ownedPerson(db: D1Database, workspaceId: number, id: unknown, active = false): Promise<Person | null> {
+  if (!Number.isSafeInteger(id)) return null;
+  return db.prepare(`SELECT id, workspace_id, display_name, is_archived, created_at, updated_at FROM workspace_people WHERE id = ? AND workspace_id = ?${active ? ' AND is_archived = 0' : ''}`).bind(id, workspaceId).first<Person>();
+}
+async function ownedCurrency(db: D1Database, workspaceId: number, code: unknown, active = false): Promise<Currency | null> {
+  if (typeof code !== 'string' || !currencyPattern.test(code)) return null;
+  return db.prepare(`SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE workspace_id = ? AND code = ?${active ? ' AND is_archived = 0' : ''}`).bind(workspaceId, code).first<Currency>();
+}
+async function validateTransaction(db: D1Database, workspaceId: number, input: Json): Promise<string | null> {
+  if (!validDate(input.occurred_on) || !entryKinds.has(input.entry_kind as string) || !cleanText(input.topic, 200) || !cleanText(input.category, 80) || !Number.isSafeInteger(input.amount_minor) || input.amount_minor === 0 || input.notes !== undefined && input.notes !== null && typeof input.notes !== 'string') return 'Invalid transaction';
+  if (input.creditor_person_id === input.debtor_person_id || !await ownedPerson(db, workspaceId, input.creditor_person_id, true) || !await ownedPerson(db, workspaceId, input.debtor_person_id, true) || !await ownedCurrency(db, workspaceId, input.currency_code, true)) return 'Transaction references must belong to this workspace and be active';
+  return null;
+}
+
+async function handle(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const { pathname } = url;
+  if (request.method === 'GET' && pathname === '/') return new Response(landingPage, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  if (request.method === 'POST' && pathname === '/api/workspaces') {
+    const input = await body(request); const valid = input && onboarding(input);
+    if (!valid) return error('Invalid workspace onboarding payload');
+    const secret = createSecret(); const hash = await sha256(secret);
+    const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO workspaces (secret_hash, name) VALUES (?, ?)').bind(hash, valid.name), env.DB.prepare(`INSERT INTO workspace_settings (workspace_id) SELECT id FROM workspaces WHERE secret_hash = ?`).bind(hash)];
+    for (const person of valid.people) statements.push(env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) SELECT id, ? FROM workspaces WHERE secret_hash = ?').bind(person, hash));
+    for (const currency of valid.currencies) statements.push(env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(currency.code, currency.is_default ? 1 : 0, hash));
+    await env.DB.batch(statements);
+    const workspace = await resolveWorkspace(env.DB, secret);
+    return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, { 'cache-control': 'no-store', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff' });
+  }
+  const match = pathname.match(/^\/(w|api\/workspaces)\/([^/]+)(?:\/(.*))?$/);
+  if (!match) return new Response('Not found', { status: 404 });
+  const [, kind, secret, tail = ''] = match;
+  const required = await requireWorkspace(env.DB, secret);
+  if (required instanceof Response) return required;
+  const workspace = required;
+  if (kind === 'w') return tail === '' && request.method === 'GET' ? new Response('<!doctype html><title>Trip finance workspace</title>', { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
+  if (tail === 'audit' && request.method === 'GET') {
+    const entries = await env.DB.prepare('SELECT id, workspace_id, entity_type, entity_id, action, actor_label, before_json, after_json, occurred_at FROM audit_log WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all();
+    return secretResponse({ audit: entries.results });
+  }
+  if (tail === '' && request.method === 'PATCH') {
+    const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const statements: D1PreparedStatement[] = [];
+    if ('name' in input) { const name = cleanText(input.name, 100); if (!name) return secretResponse({ error: 'Invalid workspace name' }, 400); statements.push(env.DB.prepare(`UPDATE workspaces SET name = ?, updated_at = ${now} WHERE id = ?`).bind(name, workspace.id)); }
+    if ('settings' in input) {
+      const settings = asObject(input.settings); if (!settings || !('categories' in settings) || !('small_amount_guard' in settings) || !Array.isArray(settings.categories) || !settings.categories.every((category) => typeof category === 'string' && cleanText(category, 80)) || !asObject(settings.small_amount_guard)) return secretResponse({ error: 'Invalid settings' }, 400);
+      statements.push(env.DB.prepare(`UPDATE workspace_settings SET categories_json = ?, small_amount_guard_json = ?, updated_at = ${now} WHERE workspace_id = ?`).bind(JSON.stringify(settings.categories), JSON.stringify(settings.small_amount_guard), workspace.id));
     }
+    if (!statements.length) return secretResponse({ error: 'No supported changes' }, 400);
+    await env.DB.batch(statements); const updated = (await requireWorkspace(env.DB, secret)) as Workspace; return secretResponse(await state(env.DB, updated));
+  }
+  if (tail === 'people' && request.method === 'POST') {
+    const input = await body(request); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400);
+    const result = await env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) VALUES (?, ?) RETURNING id, workspace_id, display_name, is_archived, created_at, updated_at').bind(workspace.id, displayName).first<Person>(); return secretResponse({ person: result }, 201);
+  }
+  let route = tail.match(/^people\/(\d+)(?:\/(archive|restore))?$/);
+  if (route) {
+    const [, value, action] = route; const person = await ownedPerson(env.DB, workspace.id, Number(value)); if (!person) return secretResponse({ error: 'Person not found' }, 404);
+    if (!action && request.method === 'PATCH') { const input = await body(request); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400); await env.DB.prepare(`UPDATE workspace_people SET display_name = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(displayName, person.id, workspace.id).run(); }
+    else if ((action === 'archive' || action === 'restore') && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_people SET is_archived = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(action === 'archive' ? 1 : 0, person.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
+    return secretResponse({ person: await ownedPerson(env.DB, workspace.id, person.id) });
+  }
+  if (tail === 'currencies' && request.method === 'POST') {
+    const input = await body(request); const code = input?.code; if (typeof code !== 'string' || !currencyPattern.test(code) || typeof input?.is_default !== 'boolean') return secretResponse({ error: 'Invalid currency' }, 400);
+    if (input.is_default) await env.DB.batch([env.DB.prepare(`UPDATE workspace_currencies SET is_default = 0, updated_at = ${now} WHERE workspace_id = ? AND is_archived = 0`).bind(workspace.id), env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (?, ?, 1)').bind(workspace.id, code)]); else await env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code) VALUES (?, ?)').bind(workspace.id, code).run();
+    return secretResponse({ currency: await ownedCurrency(env.DB, workspace.id, code) }, 201);
+  }
+  route = tail.match(/^currencies\/(\d+)(?:\/(archive|restore))?$/);
+  if (route) {
+    const [, value, action] = route; const currency = await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ? AND workspace_id = ?').bind(Number(value), workspace.id).first<Currency>(); if (!currency) return secretResponse({ error: 'Currency not found' }, 404);
+    if (!action && request.method === 'PATCH') { const input = await body(request); if (!input || (input.code !== undefined && (typeof input.code !== 'string' || !currencyPattern.test(input.code))) || (input.is_default !== undefined && typeof input.is_default !== 'boolean')) return secretResponse({ error: 'Invalid currency' }, 400); const code = input.code ?? currency.code; if (input.is_default) await env.DB.batch([env.DB.prepare(`UPDATE workspace_currencies SET is_default = 0, updated_at = ${now} WHERE workspace_id = ? AND is_archived = 0`).bind(workspace.id), env.DB.prepare(`UPDATE workspace_currencies SET code = ?, is_default = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id)]); else await env.DB.prepare(`UPDATE workspace_currencies SET code = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(code, currency.id, workspace.id).run(); }
+    else if (action === 'archive' && request.method === 'POST') { if (currency.is_default) return secretResponse({ error: 'Default currency cannot be archived' }, 400); await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); }
+    else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
+    return secretResponse({ currency: await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ?').bind(currency.id).first<Currency>() });
+  }
+  if (tail === 'transactions' && request.method === 'GET') { const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND is_deleted = 0 ORDER BY occurred_on DESC, id DESC').bind(workspace.id).all<Transaction>(); return secretResponse({ transactions: transactions.results }); }
+  if (tail === 'transactions' && request.method === 'POST') {
+    const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
+    const transaction = await env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null).first<Transaction>(); return secretResponse({ transaction }, 201);
+  }
+  route = tail.match(/^transactions\/(\d+)(?:\/(delete|restore))?$/);
+  if (route) {
+    const [, value, action] = route; const transaction = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ? AND workspace_id = ?').bind(Number(value), workspace.id).first<Transaction>(); if (!transaction) return secretResponse({ error: 'Transaction not found' }, 404);
+    if (!action && request.method === 'PATCH') { const input = await body(request); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const updated = { ...transaction, ...input }; const problem = await validateTransaction(env.DB, workspace.id, updated); if (problem) return secretResponse({ error: problem }, 400); await env.DB.prepare(`UPDATE transactions SET occurred_on = ?, entry_kind = ?, topic = ?, category = ?, creditor_person_id = ?, debtor_person_id = ?, amount_minor = ?, currency_code = ?, notes = ?, import_group_id = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(updated.occurred_on, updated.entry_kind, cleanText(updated.topic, 200), cleanText(updated.category, 80), updated.creditor_person_id, updated.debtor_person_id, updated.amount_minor, updated.currency_code, updated.notes ?? null, updated.import_group_id ?? null, transaction.id, workspace.id).run(); }
+    else if (action === 'delete' && request.method === 'POST') await env.DB.prepare(`UPDATE transactions SET is_deleted = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(transaction.id, workspace.id).run();
+    else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE transactions SET is_deleted = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(transaction.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
+    return secretResponse({ transaction: await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ?').bind(transaction.id).first<Transaction>() });
+  }
+  return new Response('Not found', { status: 404, headers: secretHeaders() });
+}
 
-    return new Response('Not found', { status: 404 });
-  },
-} satisfies ExportedHandler<Env>;
+export default { fetch: handle } satisfies ExportedHandler<Env>;
