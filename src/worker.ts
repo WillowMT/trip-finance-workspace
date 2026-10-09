@@ -1,4 +1,5 @@
-import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey } from './splits';
+import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
+import { hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 
 export interface Env {
   DB: D1Database;
@@ -189,7 +190,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   if (tail === 'splits' && request.method === 'POST') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
-    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
+    const idempotencyKey = request.headers.get('idempotency-key'); if (!validSplitKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
     const prepared = await planSplit(env.DB, workspace.id, input); if (!prepared.plan) return secretResponse({ error: prepared.problem }, 400);
     const draftHash = await splitDraftHash(prepared.plan);
     const loadCommitted = async (): Promise<{ draft_hash: string; transactions: SplitTransaction[] } | null> => {
@@ -211,6 +212,125 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const committed = await loadCommitted();
     if (!committed) return secretResponse({ error: 'Unable to load committed split' }, 500);
     return secretResponse(splitResponse(prepared.plan, committed.transactions), 201);
+  }
+  if (tail === 'offset-suggestions' && request.method === 'GET') {
+    const people = await env.DB.prepare('SELECT id FROM workspace_people WHERE workspace_id = ? AND is_archived = 0 ORDER BY id').bind(workspace.id).all<{ id: number }>();
+    const currencies = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0 ORDER BY code').bind(workspace.id).all<{ code: string }>();
+    const suggestions: { first_person_id: number; second_person_id: number; first_owes_second_minor: number; second_owes_first_minor: number; offset_amount_minor: number; currency_code: string }[] = [];
+    for (const currency of currencies.results) {
+      for (let first = 0; first < people.results.length; first += 1) {
+        for (let second = first + 1; second < people.results.length; second += 1) {
+          const firstId = people.results[first].id; const secondId = people.results[second].id;
+          const balance = await reciprocalBalance(env.DB, workspace.id, firstId, secondId, currency.code);
+          const offset = Math.min(Math.max(balance.first_owes_second_minor, 0), Math.max(balance.second_owes_first_minor, 0));
+          if (offset > 0) suggestions.push({ first_person_id: firstId, second_person_id: secondId, first_owes_second_minor: balance.first_owes_second_minor, second_owes_first_minor: balance.second_owes_first_minor, offset_amount_minor: offset, currency_code: currency.code });
+        }
+      }
+    }
+    return secretResponse({ suggestions });
+  }
+  if ((tail === 'offsets/preview' || tail === 'offsets') && request.method === 'POST') {
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const firstId = input.first_person_id; const secondId = input.second_person_id; const currencyCode = input.currency_code;
+    if (!Number.isSafeInteger(firstId) || !Number.isSafeInteger(secondId) || firstId === secondId || typeof currencyCode !== 'string' || !currencyPattern.test(currencyCode)) return secretResponse({ error: 'Invalid offset draft' }, 400);
+    const currency = await ownedCurrency(env.DB, workspace.id, currencyCode, true); if (!currency) return secretResponse({ error: 'Offset currency must belong to this workspace and be active' }, 400);
+    for (const personId of [firstId, secondId] as number[]) if (!(await ownedPerson(env.DB, workspace.id, personId, true))) return secretResponse({ error: 'Offset people must belong to this workspace and be active' }, 400);
+    const balance = await reciprocalBalance(env.DB, workspace.id, firstId as number, secondId as number, currencyCode as string);
+    const amount = Math.min(Math.max(balance.first_owes_second_minor, 0), Math.max(balance.second_owes_first_minor, 0));
+    if (tail === 'offsets/preview') {
+      if (amount <= 0) return secretResponse({ error: 'No reciprocal balance to offset between these people in this currency' }, 409);
+      return secretResponse({ offset_amount_minor: amount, transactions: offsetTransactions(workspace.id, { occurred_on: validDateValue(input.occurred_on) ? input.occurred_on : new Date().toISOString().slice(0, 10), topic: 'Offset', category: 'Offset', notes: typeof input.notes === 'string' ? input.notes.slice(0, 4000) : null }, firstId as number, secondId as number, amount, currencyCode as string) });
+    }
+    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
+    const loadOffset = async (): Promise<{ draft_hash: string; transactions: WorkflowTransaction[] } | null> => {
+      const commit = await env.DB.prepare("SELECT draft_hash FROM workflow_commits WHERE workspace_id = ? AND kind = 'offset' AND idempotency_key = ?").bind(workspace.id, idempotencyKey).first<{ draft_hash: string }>();
+      if (!commit) return null;
+      const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND import_group_id = ? ORDER BY id').bind(workspace.id, `offset:${idempotencyKey}`).all<WorkflowTransaction>();
+      return { draft_hash: commit.draft_hash, transactions: transactions.results };
+    };
+    const existing = await loadOffset();
+    if (existing) return existing.draft_hash === (await hashJson({ first_person_id: firstId, second_person_id: secondId, currency_code: currencyCode })) ? secretResponse({ offset_amount_minor: amount, transactions: existing.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different offset draft' }, 409);
+    if (amount <= 0) return secretResponse({ error: 'The recalculated reciprocal balance is no longer positive' }, 409);
+    const occurredOn = typeof input.occurred_on === 'string' && validDateValue(input.occurred_on) ? input.occurred_on : new Date().toISOString().slice(0, 10);
+    const transactions = offsetTransactions(workspace.id, { occurred_on: occurredOn, topic: 'Offset', category: 'Offset', notes: typeof input.notes === 'string' ? input.notes.slice(0, 4000) : null }, firstId as number, secondId as number, amount, currencyCode as string);
+    const groupId = `offset:${idempotencyKey}`;
+    const draftHash = await hashJson({ first_person_id: firstId, second_person_id: secondId, currency_code: currencyCode });
+    const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'offset', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
+    for (const transaction of transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(transaction.workspace_id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
+    try { await env.DB.batch(statements); } catch {
+      const raced = await loadOffset();
+      if (!raced) return secretResponse({ error: 'Unable to commit offset' }, 500);
+      return raced.draft_hash === draftHash ? secretResponse({ offset_amount_minor: amount, transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different offset draft' }, 409);
+    }
+    const committed = await loadOffset();
+    if (!committed) return secretResponse({ error: 'Unable to load committed offset' }, 500);
+    return secretResponse({ offset_amount_minor: amount, transactions: committed.transactions }, 201);
+  }
+  if ((tail === 'batches/preview' || tail === 'batches') && request.method === 'POST') {
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input || !Array.isArray(input.rows) || input.rows.length < 1 || input.rows.length > maxWorkflowRows) return secretResponse({ error: 'Batch must include 1-200 rows' }, 400);
+    const cleaned: Omit<WorkflowTransaction, 'workspace_id' | 'import_group_id'>[] = [];
+    for (const raw of input.rows) {
+      const item = asObject(raw); if (!item) return secretResponse({ error: 'Invalid batch row' }, 400);
+      const validated = await validateWorkflowRow(env.DB, workspace.id, item); if (validated.problem || !validated.row) return secretResponse({ error: validated.problem ?? 'Invalid batch row' }, 400);
+      cleaned.push(validated.row);
+    }
+    if (tail === 'batches/preview') return secretResponse({ rows: cleaned });
+    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
+    const draftHash = await hashJson(cleaned);
+    const loadBatch = async (): Promise<{ draft_hash: string; transactions: WorkflowTransaction[] } | null> => {
+      const commit = await env.DB.prepare("SELECT draft_hash FROM workflow_commits WHERE workspace_id = ? AND kind = 'batch' AND idempotency_key = ?").bind(workspace.id, idempotencyKey).first<{ draft_hash: string }>();
+      if (!commit) return null;
+      const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND import_group_id = ? ORDER BY id').bind(workspace.id, `batch:${idempotencyKey}`).all<WorkflowTransaction>();
+      return { draft_hash: commit.draft_hash, transactions: transactions.results };
+    };
+    const existing = await loadBatch();
+    if (existing) return existing.draft_hash === draftHash ? secretResponse({ transactions: existing.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different batch draft' }, 409);
+    const groupId = `batch:${idempotencyKey}`;
+    const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'batch', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
+    for (const transaction of cleaned) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
+    try { await env.DB.batch(statements); } catch {
+      const raced = await loadBatch();
+      if (!raced) return secretResponse({ error: 'Unable to commit batch' }, 500);
+      return raced.draft_hash === draftHash ? secretResponse({ transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different batch draft' }, 409);
+    }
+    const committed = await loadBatch();
+    if (!committed) return secretResponse({ error: 'Unable to load committed batch' }, 500);
+    return secretResponse({ transactions: committed.transactions }, 201);
+  }
+  if (tail === 'imports/preview' || tail === 'imports') {
+    if (request.method !== 'POST') return new Response('Not found', { status: 404, headers: secretHeaders() });
+    const contentLength = request.headers.get('content-length');
+    if (contentLength && Number(contentLength) > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
+    const raw = await request.text(); if (raw.length > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
+    const peopleRows = await env.DB.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ?').bind(workspace.id).all<{ id: number; display_name: string; is_archived: number }>();
+    const peopleByName = new Map(peopleRows.results.map((person) => [person.display_name.toLowerCase(), person]));
+    const currencyRows = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0').bind(workspace.id).all<{ code: string }>();
+    const currencyCodes = new Set(currencyRows.results.map((currency) => currency.code));
+    const parsed = parseImportCsv(raw, peopleByName, currencyCodes);
+    if (parsed.errors.length || parsed.rows.length < 1) return secretResponse({ errors: parsed.errors.length ? parsed.errors : ['CSV contained no valid rows'] }, 400);
+    if (parsed.rows.length > maxWorkflowRows) return secretResponse({ error: 'Import must include 1-200 rows' }, 400);
+    if (tail === 'imports/preview') return secretResponse({ rows: parsed.rows, errors: [] });
+    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
+    const draftHash = await hashJson(parsed.rows);
+    const loadImport = async (): Promise<{ draft_hash: string; transactions: WorkflowTransaction[] } | null> => {
+      const commit = await env.DB.prepare("SELECT draft_hash FROM workflow_commits WHERE workspace_id = ? AND kind = 'import' AND idempotency_key = ?").bind(workspace.id, idempotencyKey).first<{ draft_hash: string }>();
+      if (!commit) return null;
+      const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND import_group_id = ? ORDER BY id').bind(workspace.id, `import:${idempotencyKey}`).all<WorkflowTransaction>();
+      return { draft_hash: commit.draft_hash, transactions: transactions.results };
+    };
+    const existing = await loadImport();
+    if (existing) return existing.draft_hash === draftHash ? secretResponse({ transactions: existing.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different import draft' }, 409);
+    const groupId = `import:${idempotencyKey}`;
+    const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'import', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
+    for (const row of parsed.rows as ImportPlanRow[]) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, row.occurred_on, row.entry_kind, row.topic, row.category, row.creditor_person_id, row.debtor_person_id, row.amount_minor, row.currency_code, row.notes, groupId));
+    try { await env.DB.batch(statements); } catch {
+      const raced = await loadImport();
+      if (!raced) return secretResponse({ error: 'Unable to commit import' }, 500);
+      return raced.draft_hash === draftHash ? secretResponse({ transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different import draft' }, 409);
+    }
+    const committed = await loadImport();
+    if (!committed) return secretResponse({ error: 'Unable to load committed import' }, 500);
+    return secretResponse({ transactions: committed.transactions }, 201);
   }
   if (tail === 'transactions' && request.method === 'GET') { const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND is_deleted = 0 ORDER BY occurred_on DESC, id DESC').bind(workspace.id).all<Transaction>(); return secretResponse({ transactions: transactions.results }); }
   if (tail === 'transactions' && request.method === 'POST') {
