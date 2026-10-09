@@ -128,19 +128,17 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const workspace = await resolveWorkspace(env.DB, secret);
     return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, secretHeaders());
   }
-  const match = pathname.match(/^\/(?:w\/([^/]+)(?:\/(.*))?|api\/workspaces\/([^/]+)(?:\/(.*))?)$/);
+  const match = pathname.match(/^\/w\/([^/]+)(?:\/(.*))?$/);
   if (!match) return new Response('Not found', { status: 404 });
-  const [, workspaceSecret, workspaceTail, legacySecret, legacyTail] = match;
-  const secret = workspaceSecret ?? legacySecret;
-  const rawTail = workspaceTail ?? legacyTail ?? '';
-  const workspacePage = workspaceSecret !== undefined && rawTail === '';
-  const workspaceApi = workspaceSecret !== undefined && (rawTail === 'api' || rawTail.startsWith('api/'));
-  const tail = workspaceSecret && rawTail.startsWith('api/') ? rawTail.slice(4) : workspaceApi ? '' : rawTail;
+  const [, secret, rawTail = ''] = match;
+  const workspacePage = rawTail === '';
+  const workspaceApi = rawTail === 'api' || rawTail.startsWith('api/');
+  const tail = rawTail.startsWith('api/') ? rawTail.slice(4) : workspaceApi ? '' : rawTail;
   const required = await requireWorkspace(env.DB, secret);
   if (required instanceof Response) return required;
   const workspace = required;
   if (workspacePage) return request.method === 'GET' ? new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${workspace.name}</title></head><body><main><h1>${workspace.name}</h1><p>Your shared finance workspace is ready.</p><p>Use this private link to manage people, currencies, and transactions.</p></main></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
-  if (workspaceSecret && !workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
   if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
   if (tail === 'audit' && request.method === 'GET') {
