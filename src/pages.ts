@@ -20,9 +20,11 @@ h1{font-size:1.15rem;margin:0;letter-spacing:-.01em}
 h2{font-size:1rem;margin:0 0 10px;letter-spacing:-.01em}
 h3{font-size:.85rem;margin:0 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 p.sub{color:var(--muted);font-size:.8rem;margin:2px 0 0}
-.tabs{display:flex;gap:6px;overflow-x:auto;margin:10px auto 0;max-width:680px;padding-bottom:2px;scrollbar-width:none}
+.tabs{display:flex;gap:6px;overflow-x:auto;scroll-snap-type:x proximity;margin:10px auto 0;max-width:680px;padding:2px 2px 4px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
+@media(min-width:560px){.tabs button{flex:1 1 0;min-width:0}}
+@media(max-width:559px){.tabs{flex-wrap:wrap;overflow:visible}.tabs button{flex:0 1 auto}}
 .tabs::-webkit-scrollbar{display:none}
-.tabs button{flex:0 0 auto;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px;padding:7px 13px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
+.tabs button{width:auto;flex:0 0 auto;scroll-snap-align:start;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px;padding:7px 13px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
 .tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
 label{display:block;font-size:.78rem;color:var(--muted);font-weight:600;margin:0 0 4px}
@@ -399,6 +401,7 @@ function init(){
   if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var r=await call('/people',{method:'POST',body:{display_name:v}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast('Person added') } }
   if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
   if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
+  window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(['ledger','balances','tools','audit','settings'].indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
   var start=(location.hash||'#ledger').slice(1); if(['ledger','balances','tools','audit','settings'].indexOf(start)<0){start='ledger'}
   showTab(start);
   loadState().then(function(ok){ if(ok){ renderParty(); renderQuick() } });
@@ -428,6 +431,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   const people = peopleResult.results ?? [];
   const currencies = currencyResult.results ?? [];
   const initial = JSON.stringify({ people, currencies });
+  const livePeople = people.filter((p) => !p.is_archived);
+  const liveCurrencies = currencies.filter((c) => !c.is_archived);
+  const personOptions = livePeople.map((p) => `<option value="${p.id}">${esc(p.display_name)}</option>`).join('');
+  const currencyOptions = liveCurrencies.map((c) => `<option value="${esc(c.code)}"${c.is_default ? ' selected' : ''}>${esc(c.code)}</option>`).join('');
   return page(name, `<script>window.__initial=${initial};</script>`, `
 <main>
 <header>
@@ -459,12 +466,12 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     </div>
     <div class="grid three">
       <div class="field"><label for="t-amount">Amount</label><input id="t-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
-      <div class="field"><label for="t-currency">Currency</label><select id="t-currency"></select></div>
+      <div class="field"><label for="t-currency">Currency</label><select id="t-currency">${currencyOptions}</select></div>
       <div class="field"><label for="t-date">Date</label><input id="t-date" type="date"></div>
     </div>
     <div class="grid">
-      <div class="field"><label for="t-creditor">Paid by (is owed)</label><select id="t-creditor"></select></div>
-      <div class="field"><label for="t-debtor">For (owes)</label><select id="t-debtor"></select></div>
+      <div class="field"><label for="t-creditor">Paid by (is owed)</label><select id="t-creditor">${personOptions}</select></div>
+      <div class="field"><label for="t-debtor">For (owes)</label><select id="t-debtor">${personOptions}</select></div>
     </div>
     <div class="swap"><button id="t-swap" type="button">↕ Swap people</button></div>
     <div class="grid">
