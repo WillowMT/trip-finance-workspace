@@ -29,6 +29,16 @@ function error(message: string, status = 400, headers: HeadersInit = {}): Respon
 function secretHeaders(): HeadersInit {
   return { 'cache-control': 'no-store, private', 'referrer-policy': 'no-referrer', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; frame-ancestors 'none'; base-uri 'none'" };
 }
+// HTML pages carry inline <style>/<script> and fetch their own /api, so they need a
+// policy that allows those — but never default-src 'none' (that silently kills the UI).
+function pageHeaders(): HeadersInit {
+  return {
+    'cache-control': 'no-store, private',
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'content-security-policy': "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; form-action 'none'; frame-ancestors 'none'; base-uri 'none'",
+  };
+}
 function secretResponse(value: unknown, status = 200): Response { return json(value, status, secretHeaders()); }
 function cleanText(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;
@@ -120,7 +130,7 @@ async function validateTransaction(db: D1Database, workspaceId: number, input: J
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const { pathname } = url;
-  if (request.method === 'GET' && pathname === '/') return new Response(homeHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  if (request.method === 'GET' && pathname === '/') return new Response(homeHtml(), { headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } });
   if (request.method === 'POST' && pathname === '/api/workspaces') {
     const input = await body(request); if (input === bodyTooLarge) return error('Request body too large', 413, secretHeaders()); const valid = input && onboarding(input);
     if (!valid) return error('Invalid workspace onboarding payload', 400, secretHeaders());
@@ -141,7 +151,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const required = await requireWorkspace(env.DB, secret);
   if (required instanceof Response) return required;
   const workspace = required;
-  if (workspacePage) return request.method === 'GET' ? new Response(await appHtml(env.DB, workspace.id, workspace.name), { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (workspacePage) return request.method === 'GET' ? new Response(await appHtml(env.DB, workspace.id, workspace.name), { headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
   if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
