@@ -1,0 +1,8 @@
+name = "trip-finance-workspace"
+main = "src/worker.ts"
+compatibility_date = "2026-10-09"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "trip-finance-workspace"
+database_id = "00000000-0000-0000-0000-000000000000"
