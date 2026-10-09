@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url).pathname;
-const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql'];
+const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql', '0004_split_commits.sql'];
 
 function withDatabase(run: (query: (sql: string) => unknown[]) => void): void {
   const persistTo = mkdtempSync(join(tmpdir(), 'trip-finance-workspace-d1-'));
@@ -26,7 +26,7 @@ test('migrations apply to a blank local D1 database', () => {
   withDatabase((query) => {
     const tables = query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name") as { name: string }[];
     assert.deepEqual(tables.map(({ name }) => name).filter((name) => !name.startsWith('_cf_')), [
-      'audit_log', 'transactions', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
+      'audit_log', 'split_commits', 'transactions', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
     ]);
   });
 });

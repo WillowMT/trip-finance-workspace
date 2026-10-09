@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url).pathname;
-const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql'];
+const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql', '0004_split_commits.sql'];
 
 async function withWorkspaceApi(run: (request: (path: string, init?: RequestInit) => Promise<Response>, query: (sql: string) => unknown[]) => Promise<void>): Promise<void> {
   const persistTo = mkdtempSync(join(tmpdir(), 'trip-finance-workspace-api-'));
@@ -18,7 +18,7 @@ async function withWorkspaceApi(run: (request: (path: string, init?: RequestInit
   try {
     for (const migration of migrations) execute(['--file', `migrations/${migration}`]);
     server = spawn('npx', ['wrangler', 'dev', '--local', '--port', String(port), '--persist-to', persistTo], { cwd: root, stdio: 'ignore', detached: true });
-    const request = (path: string, init: RequestInit = {}) => fetch(`http://127.0.0.1:${port}${path}`, init);
+    const request = (path: string, init: RequestInit = {}) => fetch(`http://127.0.0.1:${port}${path}`, { ...init, headers: { connection: 'close', ...(init.headers ?? {}) } });
     let ready = false;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       try { if ((await request('/')).ok) { ready = true; break; } } catch { /* worker is still starting */ }
@@ -102,7 +102,49 @@ test('workspace APIs isolate settings, people, currencies, and audited transacti
    });
  });
 
-  test('canonical capability routes enforce security, body, currency, and transaction guards', async () => {
+test('split preview is read-only and commit revalidates, allocates deterministically, audits atomically, and is idempotent', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const createdMia = await request(`${api}/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name: 'Mia' }) });
+    assert.equal(createdMia.status, 201);
+    const { person: mia } = await createdMia.json() as { person: { id: number } };
+    const draft = { occurred_on: '2026-10-09', payer_person_id: ada.id, participant_person_ids: [mia.id, lin.id], amount_minor: 101, topic: 'Villa', category: 'Lodging', currency_code: 'USD', notes: 'Three nights' };
+    const beforePreview = (query('SELECT COUNT(*) AS count FROM audit_log') as { count: number }[])[0].count;
+    const preview = await request(`${api}/splits/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(draft) });
+    assert.equal(preview.status, 200);
+    const planned = await preview.json() as { transactions: { entry_kind: string; creditor_person_id: number; debtor_person_id: number; amount_minor: number; workspace_id: number }[]; participant_allocations: { person_id: number; amount_minor: number }[]; total_amount_minor: number; debt_amount_minor: number };
+    assert.deepEqual(planned.participant_allocations, [{ person_id: lin.id, amount_minor: 51 }, { person_id: mia.id, amount_minor: 50 }]);
+    assert.deepEqual(planned.transactions.map(({ entry_kind, creditor_person_id, debtor_person_id, amount_minor, workspace_id }) => ({ entry_kind, creditor_person_id, debtor_person_id, amount_minor, workspace_id })), [
+      { entry_kind: 'split', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 51, workspace_id: 1 },
+      { entry_kind: 'split', creditor_person_id: ada.id, debtor_person_id: mia.id, amount_minor: 50, workspace_id: 1 },
+    ]);
+    assert.equal(planned.total_amount_minor, 101); assert.equal(planned.debt_amount_minor, 101);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 0);
+    assert.equal((query('SELECT COUNT(*) AS count FROM audit_log') as { count: number }[])[0].count, beforePreview);
+
+    const invalid = await request(`${api}/splits`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'invalid-split' }, body: JSON.stringify({ ...draft, participant_person_ids: [lin.id, lin.id] }) });
+    assert.equal(invalid.status, 400);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 0);
+    assert.equal((query('SELECT COUNT(*) AS count FROM audit_log') as { count: number }[])[0].count, beforePreview);
+
+    const committed = await request(`${api}/splits`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'split-v1-101' }, body: JSON.stringify(draft) });
+    assert.equal(committed.status, 201);
+    const saved = await committed.json() as { transactions: { id: number; amount_minor: number }[]; total_amount_minor: number; debt_amount_minor: number };
+    assert.equal(saved.transactions.length, 2); assert.equal(saved.total_amount_minor, 101); assert.equal(saved.debt_amount_minor, 101);
+    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE workspace_id = 1 AND entry_kind = 'split'") as { count: number }[])[0].count, 2);
+    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE workspace_id = 1 AND entity_type = 'transaction' AND action = 'create'") as { count: number }[])[0].count, 2);
+    const duplicate = await request(`${api}/splits`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'split-v1-101' }, body: JSON.stringify(draft) });
+    assert.equal(duplicate.status, 200); assert.deepEqual((await duplicate.json() as { transactions: { id: number }[] }).transactions.map((transaction) => transaction.id), saved.transactions.map((transaction) => transaction.id));
+    const conflicting = await request(`${api}/splits`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'split-v1-101' }, body: JSON.stringify({ ...draft, topic: 'Changed' }) });
+    assert.equal(conflicting.status, 409);
+    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE workspace_id = 1 AND entry_kind = 'split'") as { count: number }[])[0].count, 2);
+  });
+});
+
+test('canonical capability routes enforce security, body, currency, and transaction guards', async () => {
  await withWorkspaceApi(async (request, query) => {
  const created = await request('/api/workspaces', {
    method: 'POST', headers: { 'content-type': 'application/json' },

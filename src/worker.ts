@@ -1,3 +1,5 @@
+import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey } from './splits';
+
 export interface Env {
   DB: D1Database;
 }
@@ -179,6 +181,36 @@ async function handle(request: Request, env: Env): Promise<Response> {
     else if (action === 'archive' && request.method === 'POST') { if (currency.is_default) return secretResponse({ error: 'Default currency cannot be archived' }, 400); await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 1, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); }
     else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_currencies SET is_archived = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(currency.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
     return secretResponse({ currency: await env.DB.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE id = ? AND workspace_id = ?').bind(currency.id, workspace.id).first<Currency>() });
+  }
+  if (tail === 'splits/preview' && request.method === 'POST') {
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const prepared = await planSplit(env.DB, workspace.id, input); if (!prepared.plan) return secretResponse({ error: prepared.problem }, 400);
+    return secretResponse(splitResponse(prepared.plan, prepared.plan.transactions));
+  }
+  if (tail === 'splits' && request.method === 'POST') {
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
+    const prepared = await planSplit(env.DB, workspace.id, input); if (!prepared.plan) return secretResponse({ error: prepared.problem }, 400);
+    const draftHash = await splitDraftHash(prepared.plan);
+    const loadCommitted = async (): Promise<{ draft_hash: string; transactions: SplitTransaction[] } | null> => {
+      const commit = await env.DB.prepare('SELECT draft_hash FROM split_commits WHERE workspace_id = ? AND idempotency_key = ?').bind(workspace.id, idempotencyKey).first<{ draft_hash: string }>();
+      if (!commit) return null;
+      const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND import_group_id = ? ORDER BY id').bind(workspace.id, `split:${idempotencyKey}`).all<SplitTransaction>();
+      return { draft_hash: commit.draft_hash, transactions: transactions.results };
+    };
+    const existing = await loadCommitted();
+    if (existing) return existing.draft_hash === draftHash ? secretResponse(splitResponse(prepared.plan, existing.transactions)) : secretResponse({ error: 'Idempotency key was already used for a different split draft' }, 409);
+    const groupId = `split:${idempotencyKey}`;
+    const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO split_commits (workspace_id, idempotency_key, draft_hash) VALUES (?, ?, ?)').bind(workspace.id, idempotencyKey, draftHash)];
+    for (const transaction of prepared.plan.transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
+    try { await env.DB.batch(statements); } catch {
+      const raced = await loadCommitted();
+      if (!raced) return secretResponse({ error: 'Unable to commit split' }, 500);
+      return raced.draft_hash === draftHash ? secretResponse(splitResponse(prepared.plan, raced.transactions)) : secretResponse({ error: 'Idempotency key was already used for a different split draft' }, 409);
+    }
+    const committed = await loadCommitted();
+    if (!committed) return secretResponse({ error: 'Unable to load committed split' }, 500);
+    return secretResponse(splitResponse(prepared.plan, committed.transactions), 201);
   }
   if (tail === 'transactions' && request.method === 'GET') { const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND is_deleted = 0 ORDER BY occurred_on DESC, id DESC').bind(workspace.id).all<Transaction>(); return secretResponse({ transactions: transactions.results }); }
   if (tail === 'transactions' && request.method === 'POST') {
