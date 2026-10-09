@@ -1,3 +1,4 @@
+import { appHtml, homeHtml } from './pages';
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
 import { hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 
@@ -119,7 +120,7 @@ async function validateTransaction(db: D1Database, workspaceId: number, input: J
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const { pathname } = url;
-  if (request.method === 'GET' && pathname === '/') return new Response(landingPage, { headers: { 'content-type': 'text/html; charset=utf-8' } });
+  if (request.method === 'GET' && pathname === '/') return new Response(homeHtml(), { headers: { 'content-type': 'text/html; charset=utf-8' } });
   if (request.method === 'POST' && pathname === '/api/workspaces') {
     const input = await body(request); if (input === bodyTooLarge) return error('Request body too large', 413, secretHeaders()); const valid = input && onboarding(input);
     if (!valid) return error('Invalid workspace onboarding payload', 400, secretHeaders());
@@ -140,7 +141,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const required = await requireWorkspace(env.DB, secret);
   if (required instanceof Response) return required;
   const workspace = required;
-  if (workspacePage) return request.method === 'GET' ? new Response(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${workspace.name}</title></head><body><main><h1>${workspace.name}</h1><p>Your shared finance workspace is ready.</p><p>Use this private link to manage people, currencies, and transactions.</p></main></body></html>`, { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
+  if (workspacePage) return request.method === 'GET' ? new Response(await appHtml(env.DB, workspace.id, workspace.name), { headers: { 'content-type': 'text/html; charset=utf-8', ...secretHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
   if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
