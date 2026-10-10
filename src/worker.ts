@@ -1,9 +1,13 @@
-import { appHtml, homeHtml, linkRetiredHtml } from './pages';
+import { aiInstructions, appHtml, homeHtml, linkRetiredHtml, isValidTimeZone, DEFAULT_TIME_ZONE, zonedParts } from './pages';
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
+import { autoNettingStatements } from './netting';
+import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
 import { hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 
 export interface Env {
   DB: D1Database;
+  // Automatic snapshots. Optional so a bare local environment can still serve the ledger.
+  BACKUPS?: R2Bucket;
 }
 
 type Json = Record<string, unknown>;
@@ -79,6 +83,12 @@ async function sha256(value: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
   return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
+// Every path that writes ledger rows commits through here, so the automatic-backup counter
+// sees each write exactly once and a snapshot request can never land inside a half-applied batch.
+async function commitLedger(env: Env, workspaceId: number, statements: D1PreparedStatement[]): Promise<void> {
+  await env.DB.batch(statements);
+  await tickBackups(env, workspaceId);
+}
 function createSecret(): string {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   let binary = '';
@@ -96,15 +106,22 @@ async function requireWorkspace(db: D1Database, secret: string): Promise<Workspa
   const workspace = await resolveWorkspace(db, secret);
   return workspace ?? secretResponse({ error: 'Workspace not found' }, 404);
 }
-async function state(db: D1Database, workspace: Workspace): Promise<Json> {
+async function state(env: Env, workspace: Workspace): Promise<Json> {
+  const db = env.DB;
   const [people, currencies, settings] = await Promise.all([
     db.prepare('SELECT id, workspace_id, display_name, is_archived, created_at, updated_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Person>(),
     db.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Currency>(),
-    db.prepare('SELECT categories_json, small_amount_guard_json, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; created_at: string; updated_at: string }>(),
+    db.prepare('SELECT categories_json, small_amount_guard_json, timezone, auto_offset, backup_every, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; timezone: string; auto_offset: number; backup_every: number; created_at: string; updated_at: string }>(),
   ]);
-  return { workspace, people: people.results, currencies: currencies.results, settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), created_at: settings.created_at, updated_at: settings.updated_at } };
+  const backups = await backupStatus(db, workspace.id);
+  return { workspace, people: people.results, currencies: currencies.results, settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS } };
 }
-function onboarding(input: Json): { name: string; people: string[]; currencies: { code: string; is_default: boolean }[] } | null {
+function workspaceTimeZone(value: unknown): string | null {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (raw === '') return DEFAULT_TIME_ZONE;
+  return isValidTimeZone(raw) ? raw : null;
+}
+function onboarding(input: Json): { name: string; people: string[]; currencies: { code: string; is_default: boolean }[]; timezone: string } | null {
   const name = cleanText(input.name, 100);
   if (!name || !Array.isArray(input.people) || !Array.isArray(input.currencies)) return null;
   const people = input.people.map((person) => typeof person === 'string' ? cleanText(person, 80) : cleanText(asObject(person)?.display_name, 80));
@@ -114,7 +131,9 @@ function onboarding(input: Json): { name: string; people: string[]; currencies: 
     return item && typeof item.code === 'string' && currencyPattern.test(item.code) && typeof item.is_default === 'boolean' ? { code: item.code, is_default: item.is_default } : null;
   });
   if (currencies.some((currency) => !currency) || currencies.length < 1 || new Set(currencies.map((currency) => currency!.code)).size !== currencies.length || currencies.filter((currency) => currency!.is_default).length !== 1) return null;
-  return { name, people: people as string[], currencies: currencies as { code: string; is_default: boolean }[] };
+  const timezone = workspaceTimeZone(input.timezone);
+  if (!timezone) return null;
+  return { name, people: people as string[], currencies: currencies as { code: string; is_default: boolean }[], timezone };
 }
 async function ownedPerson(db: D1Database, workspaceId: number, id: unknown, active = false): Promise<Person | null> {
   if (!Number.isSafeInteger(id)) return null;
@@ -138,7 +157,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const input = await body(request); if (input === bodyTooLarge) return error('Request body too large', 413, secretHeaders()); const valid = input && onboarding(input);
     if (!valid) return error('Invalid workspace onboarding payload', 400, secretHeaders());
     const secret = createSecret(); const hash = await sha256(secret);
-    const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO workspaces (secret_hash, name) VALUES (?, ?)').bind(hash, valid.name), env.DB.prepare(`INSERT INTO workspace_settings (workspace_id) SELECT id FROM workspaces WHERE secret_hash = ?`).bind(hash)];
+    const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO workspaces (secret_hash, name) VALUES (?, ?)').bind(hash, valid.name), env.DB.prepare(`INSERT INTO workspace_settings (workspace_id, timezone) SELECT id, ? FROM workspaces WHERE secret_hash = ?`).bind(valid.timezone, hash)];
     for (const person of valid.people) statements.push(env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) SELECT id, ? FROM workspaces WHERE secret_hash = ?').bind(person, hash));
     for (const currency of valid.currencies) statements.push(env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(currency.code, currency.is_default ? 1 : 0, hash));
     await env.DB.batch(statements);
@@ -162,21 +181,90 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (workspacePage) return request.method === 'GET' ? new Response(await appHtml(env.DB, workspace.id, workspace.name), { headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
-  if (tail === '' && request.method === 'GET') return secretResponse(await state(env.DB, workspace));
+  if (tail === '' && request.method === 'GET') return secretResponse(await state(env, workspace));
+  if (tail === 'instructions' && request.method === 'GET') {
+    // Single source of truth: the card in the page is rendered from this same text, and the
+    // client re-fetches it whenever the roster changes, so adding or archiving a person is
+    // reflected without a reload.
+    const snapshot = await state(env, workspace);
+    const people = (snapshot.people ?? []) as { display_name: string; is_archived: number }[];
+    const currencies = (snapshot.currencies ?? []) as { code: string; is_default: number; is_archived: number }[];
+    const settings = snapshot.settings as { timezone?: string } | null;
+    const tz = settings?.timezone && isValidTimeZone(settings.timezone) ? settings.timezone : DEFAULT_TIME_ZONE;
+    const liveCurrencies = currencies.filter((currency) => !currency.is_archived);
+    const codes = liveCurrencies.map((currency) => currency.code);
+    return secretResponse({ text: aiInstructions({
+      names: people.filter((person) => !person.is_archived).map((person) => person.display_name),
+      codes,
+      defaultCode: liveCurrencies.filter((currency) => currency.is_default)[0]?.code ?? codes[0] ?? 'USD',
+      tz,
+      today: zonedParts(tz).date,
+    }) });
+  }
   if (tail === 'audit' && request.method === 'GET') {
-    const entries = await env.DB.prepare('SELECT id, workspace_id, entity_type, entity_id, action, actor_label, before_json, after_json, occurred_at FROM audit_log WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all();
-    return secretResponse({ audit: entries.results });
+    // Filterable audit log: ?entity=transaction&action=archive,delete&entity_id=14&q=dinner&limit=300
+    const params = new URL(request.url).searchParams;
+    const entity = (params.get('entity') ?? '').trim();
+    const actions = (params.get('action') ?? '').split(',').map((value) => value.trim()).filter(Boolean);
+    const entityId = (params.get('entity_id') ?? '').trim();
+    const search = (params.get('q') ?? '').trim().slice(0, 120);
+    const requestedLimit = Number(params.get('limit') ?? 300);
+    const limit = Number.isInteger(requestedLimit) && requestedLimit > 0 ? Math.min(requestedLimit, 500) : 300;
+    if (entity && !auditEntities.includes(entity)) return secretResponse({ error: 'Invalid entity filter' }, 400);
+    if (actions.some((value) => !auditActions.includes(value))) return secretResponse({ error: 'Invalid action filter' }, 400);
+    if (entityId && !/^[1-9][0-9]{0,11}$/.test(entityId)) return secretResponse({ error: 'Invalid entity id filter' }, 400);
+    const clause = ['workspace_id = ?'];
+    const values: unknown[] = [workspace.id];
+    if (entity) { clause.push('entity_type = ?'); values.push(entity); }
+    if (actions.length) { clause.push(`action IN (${actions.map(() => '?').join(', ')})`); values.push(...actions); }
+    if (entityId) { clause.push('entity_id = ?'); values.push(entityId); } // audit_log.entity_id is TEXT
+    if (search) { clause.push('(actor_label LIKE ? OR before_json LIKE ? OR after_json LIKE ?)'); const like = `%${search}%`; values.push(like, like, like); }
+    const where = clause.join(' AND ');
+    const total = await env.DB.prepare('SELECT COUNT(*) AS count FROM audit_log WHERE workspace_id = ?').bind(workspace.id).first<{ count: number }>();
+    const matched = await env.DB.prepare(`SELECT COUNT(*) AS count FROM audit_log WHERE ${where}`).bind(...values).first<{ count: number }>();
+    const entries = await env.DB.prepare(`SELECT id, workspace_id, entity_type, entity_id, action, actor_label, before_json, after_json, occurred_at FROM audit_log WHERE ${where} ORDER BY id DESC LIMIT ?`).bind(...values, limit).all();
+    const matchedCount = matched?.count ?? 0;
+    // audit_log.entity_id is TEXT; hand clients real numbers so id comparisons are not string-vs-number traps.
+    const rows = entries.results.map((row) => {
+      const text = row.entity_id === null || row.entity_id === undefined ? '' : String(row.entity_id);
+      return /^[0-9]+$/.test(text) ? { ...row, entity_id: Number(text) } : row;
+    });
+    return secretResponse({ audit: rows, total: total?.count ?? 0, matched: matchedCount, limit, truncated: matchedCount > entries.results.length });
   }
   if (tail === '' && request.method === 'PATCH') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
     const statements: D1PreparedStatement[] = [];
     if ('name' in input) { const name = cleanText(input.name, 100); if (!name) return secretResponse({ error: 'Invalid workspace name' }, 400); statements.push(env.DB.prepare(`UPDATE workspaces SET name = ?, updated_at = ${now} WHERE id = ?`).bind(name, workspace.id)); }
     if ('settings' in input) {
-      const settings = asObject(input.settings); if (!settings || !('categories' in settings) || !('small_amount_guard' in settings) || !Array.isArray(settings.categories) || !settings.categories.every((category) => typeof category === 'string' && cleanText(category, 80)) || !asObject(settings.small_amount_guard)) return secretResponse({ error: 'Invalid settings' }, 400);
-      statements.push(env.DB.prepare(`UPDATE workspace_settings SET categories_json = ?, small_amount_guard_json = ?, updated_at = ${now} WHERE workspace_id = ?`).bind(JSON.stringify(settings.categories), JSON.stringify(settings.small_amount_guard), workspace.id));
+      const settings = asObject(input.settings); if (!settings) return secretResponse({ error: 'Invalid settings' }, 400);
+      const sets: string[] = []; const values: unknown[] = [];
+      if ('categories' in settings) {
+        if (!Array.isArray(settings.categories) || !settings.categories.every((category) => typeof category === 'string' && cleanText(category, 80))) return secretResponse({ error: 'Invalid settings' }, 400);
+        sets.push('categories_json = ?'); values.push(JSON.stringify(settings.categories));
+      }
+      if ('small_amount_guard' in settings) {
+        if (!asObject(settings.small_amount_guard)) return secretResponse({ error: 'Invalid settings' }, 400);
+        sets.push('small_amount_guard_json = ?'); values.push(JSON.stringify(settings.small_amount_guard));
+      }
+      if ('timezone' in settings) {
+        const timezone = workspaceTimeZone(settings.timezone);
+        if (!timezone) return secretResponse({ error: 'Invalid time zone' }, 400);
+        sets.push('timezone = ?'); values.push(timezone);
+      }
+      if ('auto_offset' in settings) {
+        if (typeof settings.auto_offset !== 'boolean') return secretResponse({ error: 'Invalid settings' }, 400);
+        sets.push('auto_offset = ?'); values.push(settings.auto_offset ? 1 : 0);
+      }
+      if ('backup_every' in settings) {
+        const every = backupEveryValue(settings.backup_every);
+        if (!every) return secretResponse({ error: 'Backups must run every 5 to 10000 transactions' }, 400);
+        sets.push('backup_every = ?'); values.push(every);
+      }
+      if (!sets.length) return secretResponse({ error: 'No supported changes' }, 400);
+      statements.push(env.DB.prepare(`UPDATE workspace_settings SET ${sets.join(', ')}, updated_at = ${now} WHERE workspace_id = ?`).bind(...values, workspace.id));
     }
     if (!statements.length) return secretResponse({ error: 'No supported changes' }, 400);
-    await env.DB.batch(statements); const updated = (await requireWorkspace(env.DB, secret)) as Workspace; return secretResponse(await state(env.DB, updated));
+    await env.DB.batch(statements); const updated = (await requireWorkspace(env.DB, secret)) as Workspace; return secretResponse(await state(env, updated));
   }
   if (tail === 'people' && request.method === 'POST') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400);
@@ -223,7 +311,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `split:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO split_commits (workspace_id, idempotency_key, draft_hash) VALUES (?, ?, ?)').bind(workspace.id, idempotencyKey, draftHash)];
     for (const transaction of prepared.plan.transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    try { await env.DB.batch(statements); } catch {
+    statements.push(...await autoNettingStatements(env.DB, workspace.id, prepared.plan.transactions));
+    try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadCommitted();
       if (!raced) return secretResponse({ error: 'Unable to commit split' }, 500);
       return raced.draft_hash === draftHash ? secretResponse(splitResponse(prepared.plan, raced.transactions)) : secretResponse({ error: 'Idempotency key was already used for a different split draft' }, 409);
@@ -231,6 +320,52 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const committed = await loadCommitted();
     if (!committed) return secretResponse({ error: 'Unable to load committed split' }, 500);
     return secretResponse(splitResponse(prepared.plan, committed.transactions), 201);
+  }
+  const personSummary = tail.match(/^people\/(\d+)\/summary$/);
+  if (personSummary && request.method === 'GET') {
+    const person = await ownedPerson(env.DB, workspace.id, Number(personSummary[1])); if (!person) return secretResponse({ error: 'Person not found' }, 404);
+    const rows = await env.DB.prepare('SELECT id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, is_deleted FROM transactions WHERE workspace_id = ? AND (creditor_person_id = ? OR debtor_person_id = ?) ORDER BY occurred_on DESC, id DESC').bind(workspace.id, person.id, person.id).all<{ id: number; occurred_on: string; entry_kind: string; topic: string; category: string; creditor_person_id: number; debtor_person_id: number; amount_minor: number; currency_code: string; notes: string | null; is_deleted: number }>();
+    const roster = await env.DB.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<{ id: number; display_name: string; is_archived: number }>();
+    const nameOf = new Map<number, string>(); for (const entry of roster.results) nameOf.set(entry.id, entry.display_name);
+    // outgoing = this person fronted the money or is owed it; incoming = a counterparty fronted it for them.
+    type PersonTotals = { currency_code: string; paid_for_minor: number; covered_for_them_minor: number; settled_out_minor: number; settled_in_minor: number; net_minor: number; entries: number };
+    type PersonPair = { counterparty_id: number; counterparty: string; currency_code: string; paid_for_minor: number; covered_minor: number; settled_out_minor: number; settled_in_minor: number; net_minor: number; records: number ; archived_records: number };
+    const totals = new Map<string, PersonTotals>(); const pairs = new Map<string, PersonPair>();
+    let activeRecords = 0; let archivedRecords = 0;
+    const recent: { id: number; occurred_on: string; entry_kind: string; topic: string; category: string; currency_code: string; amount_minor: number; direction: string; counterparty_id: number; counterparty: string; notes: string | null; is_deleted: number }[] = [];
+    for (const row of rows.results) {
+      const outgoing = row.creditor_person_id === person.id;
+      const counterpartyId = outgoing ? row.debtor_person_id : row.creditor_person_id;
+      const direction = row.amount_minor > 0 ? (outgoing ? 'paid_for' : 'covered_for_them') : outgoing ? 'settled_in' : 'settled_out';
+      if (row.is_deleted === 1) archivedRecords += 1; else activeRecords += 1;
+      if (row.is_deleted === 1) {
+        // Archived rows stay out of the money, but the pair still reports that they exist.
+        const archivedKey = `${row.currency_code}:${counterpartyId}`;
+        const archivedPair = pairs.get(archivedKey) ?? { counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', currency_code: row.currency_code, paid_for_minor: 0, covered_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, records: 0, archived_records: 0 };
+        archivedPair.archived_records += 1;
+        pairs.set(archivedKey, archivedPair);
+      }
+      if (recent.length < 25) recent.push({ id: row.id, occurred_on: row.occurred_on, entry_kind: row.entry_kind, topic: row.topic, category: row.category, currency_code: row.currency_code, amount_minor: row.amount_minor, direction, counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', notes: row.notes, is_deleted: row.is_deleted });
+      if (row.is_deleted === 1) continue; // archived rows stay visible as history but never move a balance
+      const total = totals.get(row.currency_code) ?? { currency_code: row.currency_code, paid_for_minor: 0, covered_for_them_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, entries: 0 };
+      total.entries += 1;
+      if (direction === 'paid_for') total.paid_for_minor += row.amount_minor; else if (direction === 'covered_for_them') total.covered_for_them_minor += row.amount_minor; else if (direction === 'settled_out') total.settled_out_minor += -row.amount_minor; else total.settled_in_minor += -row.amount_minor;
+      total.net_minor = total.paid_for_minor - total.covered_for_them_minor; totals.set(row.currency_code, total);
+      const pairKey = `${row.currency_code}:${counterpartyId}`;
+      const pair = pairs.get(pairKey) ?? { counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', currency_code: row.currency_code, paid_for_minor: 0, covered_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, records: 0, archived_records: 0 };
+      if (direction === 'paid_for') pair.paid_for_minor += row.amount_minor; else if (direction === 'covered_for_them') pair.covered_minor += row.amount_minor; else if (direction === 'settled_out') pair.settled_out_minor += -row.amount_minor; else pair.settled_in_minor += -row.amount_minor;
+      pair.net_minor = pair.paid_for_minor - pair.covered_minor; pair.records += 1; pairs.set(pairKey, pair);
+    }
+    const activePartners = roster.results.filter((entry) => entry.id !== person.id && entry.is_archived === 0);
+    const currencies = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0 ORDER BY code').bind(workspace.id).all<{ code: string }>();
+    const suggestions: { counterparty_id: number; counterparty: string; currency_code: string; offset_amount_minor: number; they_owe_minor: number; owed_to_them_minor: number }[] = [];
+    for (const currency of currencies.results) for (const partner of activePartners) {
+      const balance = await reciprocalBalance(env.DB, workspace.id, person.id, partner.id, currency.code);
+      const owedToThem = Math.max(balance.second_owes_first_minor, 0); const theyOwe = Math.max(balance.first_owes_second_minor, 0);
+      const offset = Math.min(owedToThem, theyOwe);
+      if (offset > 0) suggestions.push({ counterparty_id: partner.id, counterparty: partner.display_name, currency_code: currency.code, offset_amount_minor: offset, they_owe_minor: theyOwe, owed_to_them_minor: owedToThem });
+    }
+    return secretResponse({ person, totals: [...totals.values()].sort((a, b) => a.currency_code.localeCompare(b.currency_code)), counterparties: [...pairs.values()].sort((a, b) => b.net_minor - a.net_minor || a.counterparty.localeCompare(b.counterparty)), suggestions, recent, recent_limit: 25, records: { active: activeRecords, archived: archivedRecords, total: activeRecords + archivedRecords } });
   }
   if (tail === 'offset-suggestions' && request.method === 'GET') {
     const people = await env.DB.prepare('SELECT id FROM workspace_people WHERE workspace_id = ? AND is_archived = 0 ORDER BY id').bind(workspace.id).all<{ id: number }>();
@@ -276,7 +411,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const draftHash = await hashJson({ first_person_id: firstId, second_person_id: secondId, currency_code: currencyCode });
     const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'offset', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
     for (const transaction of transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(transaction.workspace_id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    try { await env.DB.batch(statements); } catch {
+    try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadOffset();
       if (!raced) return secretResponse({ error: 'Unable to commit offset' }, 500);
       return raced.draft_hash === draftHash ? secretResponse({ offset_amount_minor: amount, transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different offset draft' }, 409);
@@ -307,7 +442,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `batch:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'batch', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
     for (const transaction of cleaned) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    try { await env.DB.batch(statements); } catch {
+    statements.push(...await autoNettingStatements(env.DB, workspace.id, cleaned));
+    try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadBatch();
       if (!raced) return secretResponse({ error: 'Unable to commit batch' }, 500);
       return raced.draft_hash === draftHash ? secretResponse({ transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different batch draft' }, 409);
@@ -342,7 +478,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `import:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'import', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
     for (const row of parsed.rows as ImportPlanRow[]) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, row.occurred_on, row.entry_kind, row.topic, row.category, row.creditor_person_id, row.debtor_person_id, row.amount_minor, row.currency_code, row.notes, groupId));
-    try { await env.DB.batch(statements); } catch {
+    statements.push(...await autoNettingStatements(env.DB, workspace.id, parsed.rows as ImportPlanRow[]));
+    try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadImport();
       if (!raced) return secretResponse({ error: 'Unable to commit import' }, 500);
       return raced.draft_hash === draftHash ? secretResponse({ transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different import draft' }, 409);
@@ -351,10 +488,46 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (!committed) return secretResponse({ error: 'Unable to load committed import' }, 500);
     return secretResponse({ transactions: committed.transactions }, 201);
   }
+  if (tail === 'backups' && request.method === 'GET') {
+    return secretResponse({ status: await backupStatus(env.DB, workspace.id), backups: await listBackups(env.DB, workspace.id), keep: KEEP_BACKUPS, configured: Boolean(env.BACKUPS) });
+  }
+  if (tail === 'backups' && request.method === 'POST') {
+    const result = await createBackup(env, workspace.id, workspace.name, 'manual');
+    if ('error' in result) return secretResponse({ error: result.error }, 503);
+    return secretResponse({ backup: result.backup, status: result.status }, 201);
+  }
+  route = tail.match(/^backups\/(\d+)(?:\/(restore))?$/);
+  if (route) {
+    const [, value, action] = route; const sequence = Number(value);
+    if (!action && request.method === 'GET') {
+      const body = await readBackup(env, workspace.id, sequence);
+      if (body === null) return secretResponse({ error: 'Backup not found' }, 404);
+      const headers = new Headers(secretHeaders());
+      headers.set('content-type', 'application/json; charset=utf-8');
+      headers.set('content-disposition', `attachment; filename="trip-finance-workspace-${workspace.id}-backup-${sequence}.json"`);
+      return new Response(body, { status: 200, headers });
+    }
+    if (action === 'restore' && request.method === 'POST') {
+      const body = await readBackup(env, workspace.id, sequence);
+      if (body === null) return secretResponse({ error: 'Backup not found' }, 404);
+      let snapshot: unknown; try { snapshot = JSON.parse(body); } catch { return secretResponse({ error: 'Backup file is unreadable' }, 500); }
+      const problem = snapshotProblem(snapshot); if (problem) return secretResponse({ error: problem }, 400);
+      const secret = createSecret();
+      const result = await restoreSnapshot(env, await sha256(secret), snapshot, restoreName((snapshot as { workspace?: { name?: unknown } }).workspace?.name));
+      return secretResponse({ workspace: await requireWorkspace(env.DB, secret), workspace_url: `/w/${secret}`, restored: result.restored }, 201);
+    }
+  }
   if (tail === 'transactions' && request.method === 'GET') { const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND is_deleted = 0 ORDER BY occurred_on DESC, id DESC').bind(workspace.id).all<Transaction>(); return secretResponse({ transactions: transactions.results }); }
   if (tail === 'transactions' && request.method === 'POST') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
-    const transaction = await env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null).first<Transaction>(); return secretResponse({ transaction }, 201);
+    const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null)];
+    // Automatic bilateral netting rides in the same atomic batch as the entry that triggered it.
+    const netting = await autoNettingStatements(env.DB, workspace.id, [{ creditor_person_id: input.creditor_person_id as number, debtor_person_id: input.debtor_person_id as number, amount_minor: input.amount_minor as number, currency_code: input.currency_code as string, occurred_on: input.occurred_on as string }]);
+    statements.push(...netting);
+    const results = await env.DB.batch(statements);
+    await tickBackups(env, workspace.id);
+    const created = ((results[0]?.results ?? [])[0] ?? null) as Transaction | null;
+    return secretResponse({ transaction: created, netted_pairs: netting.length / 2 }, 201);
   }
   route = tail.match(/^transactions\/(\d+)(?:\/(delete|restore))?$/);
   if (route) {
@@ -366,5 +539,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
   }
   return new Response('Not found', { status: 404, headers: secretHeaders() });
 }
+
+const auditEntities = ['workspace', 'person', 'currency', 'workspace_settings', 'transaction', 'workspace_backup'];
+const auditActions = ['create', 'update', 'archive', 'restore', 'delete'];
 
 export default { fetch: handle } satisfies ExportedHandler<Env>;

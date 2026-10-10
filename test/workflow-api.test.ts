@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url).pathname;
-const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql', '0004_split_commits.sql', '0005_workflow_commits.sql'];
+// Read the directory instead of pinning names: a hardcoded list silently skipped migrations, so the
+// local database lagged the real one and every create-workspace call 500'd on a missing column.
+const migrations = readdirSync(join(root, 'migrations')).filter((file) => file.endsWith('.sql')).sort();
 
 async function withWorkspaceApi(run: (request: (path: string, init?: RequestInit) => Promise<Response>, query: (sql: string) => unknown[]) => Promise<void>): Promise<void> {
   const persistTo = mkdtempSync(join(tmpdir(), 'trip-finance-workspace-workflows-'));
@@ -59,6 +61,9 @@ test('offset suggestions, preview, and commit net reciprocal balances with audit
     const api = `/w/${secret}/api`;
     const state = await (await request(api)).json() as { people: { id: number }[] };
     const [ada, lin] = state.people;
+    // Automatic netting would cancel these reciprocal debts the moment they are created, so the manual
+    // suggestion flow is exercised with netting switched off (the automatic path is covered in workspace-api.test.ts).
+    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
     // Ada owes Lin 300; Lin owes Ada 100 => reciprocal min = 100.
     await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Hotel', category: 'Lodging', creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 300, currency_code: 'USD' });
     await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Taxi', category: 'Transport', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 100, currency_code: 'USD' });
@@ -173,12 +178,15 @@ test('CSV import preview and commit re-parse raw text server-side, reject parsed
     const saved = await committed.json() as { transactions: { topic: string; amount_minor: number }[] };
     assert.equal(saved.transactions.length, 2);
     assert.ok(saved.transactions.every((row) => row.amount_minor > 0));
-    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 2);
+    // The two imported rows are reciprocal, so importing them nets 8.00 USD automatically:
+    // 2 imported rows + the 2 offset rows the netting writes in the same commit.
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 4);
     assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE import_group_id LIKE 'import:%'") as { count: number }[])[0].count, 2);
-    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'transaction' AND action = 'create'") as { count: number }[])[0].count, 2);
+    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE entry_kind = 'offset' AND amount_minor = -800") as { count: number }[])[0].count, 2);
+    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'transaction' AND action = 'create'") as { count: number }[])[0].count, 4);
     const duplicate = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-1' }, body: csv });
     assert.equal(duplicate.status, 200);
-    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 2);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 4, 'a retried import must not net the same amounts twice');
     const conflict = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-1' }, body: csv.replace('Brunch', 'Changed') });
     assert.equal(conflict.status, 409);
   });

@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url).pathname;
-const migrations = ['0001_core.sql', '0002_audit_triggers.sql', '0003_audit_lock.sql', '0004_split_commits.sql'];
+// Read the directory instead of pinning names: a hardcoded list silently skipped migrations
+// (0005/0006 were missing), so the local database lagged the real one and create-workspace 500'd.
+const migrations = readdirSync(join(root, 'migrations')).filter((file) => file.endsWith('.sql')).sort();
 
 function withDatabase(run: (query: (sql: string) => unknown[]) => void): void {
   const persistTo = mkdtempSync(join(tmpdir(), 'trip-finance-workspace-d1-'));
@@ -26,7 +28,8 @@ test('migrations apply to a blank local D1 database', () => {
   withDatabase((query) => {
     const tables = query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name") as { name: string }[];
     assert.deepEqual(tables.map(({ name }) => name).filter((name) => !name.startsWith('_cf_')), [
-      'audit_log', 'split_commits', 'transactions', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
+      'audit_log', 'backup_log', 'backup_state', 'split_commits', 'transactions',
+ 'workflow_commits', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
     ]);
   });
 });
@@ -61,7 +64,7 @@ test('audit triggers snapshot all mutable entities and never include a workspace
       workspace: ['created_at', 'id', 'is_active', 'name', 'updated_at'],
       person: ['created_at', 'display_name', 'id', 'is_archived', 'updated_at', 'workspace_id'],
       currency: ['code', 'created_at', 'id', 'is_archived', 'is_default', 'updated_at', 'workspace_id'],
-      workspace_settings: ['categories_json', 'created_at', 'small_amount_guard_json', 'updated_at', 'workspace_id'],
+      workspace_settings: ['auto_offset', 'backup_every', 'categories_json', 'created_at', 'small_amount_guard_json', 'timezone', 'updated_at', 'workspace_id'],
       transaction: ['amount_minor', 'category', 'created_at', 'creditor_person_id', 'currency_code', 'debtor_person_id', 'entry_kind', 'id', 'import_group_id', 'is_deleted', 'notes', 'occurred_on', 'topic', 'updated_at', 'workspace_id'],
     };
     for (const entry of entries) {
