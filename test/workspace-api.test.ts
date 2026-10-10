@@ -144,6 +144,55 @@ test('split preview is read-only and commit revalidates, allocates deterministic
   });
 });
 
+test('the bulk tab ships copy-ready receipt instructions instead of the quick-entry box', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { display_name: string }[]; currencies: { code: string; is_default: number }[] };
+    const names = state.people.map((person) => person.display_name).join(', ');
+    const codes = state.currencies.map((currency) => currency.code);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    assert.ok(!html.includes('id="q-text"'), 'the quick-entry textarea is gone');
+    assert.match(html, /id="ai-prompt"/, 'the instruction block is server-rendered');
+    assert.match(html, /<button id="ai-copy" type="button">Copy instructions</);
+    // the instructions must state the real contract, not a paraphrase
+    assert.match(html, /occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes/);
+    assert.match(html, new RegExp(`Use exactly one of: ${names.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the model is given this workspace\'s real names');
+    assert.ok(codes.every((code) => html.includes(code)), 'every enabled currency is offered');
+    assert.match(html, /never the same person as the creditor/);
+    assert.match(html, /One row per person who owes/);
+    // the import box it feeds is still there
+    assert.match(html, /id="csv"/);
+    assert.match(html, /id="csv-commit"/);
+  });
+});
+
+test('the workspace page ships a usable split form: people pre-rendered, archived people left out', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [, lin] = state.people;
+    const created = await request(`${api}/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name: 'Mia' }) });
+    assert.equal(created.status, 201);
+    const archived = await request(`${api}/people/${lin.id}/archive`, { method: 'POST' });
+    assert.equal(archived.status, 200);
+
+    const html = await (await request(`/w/${secret}`)).text();
+    assert.match(html, /id="tab-split"[^>]*>(<span[^>]*>[^<]*<\/span>\s*)?Split</, 'the split tab is reachable');
+    assert.match(html, /<section id="split" hidden>/, 'the split panel exists and starts hidden like its siblings');
+    assert.match(html, /id="sp-preview"/); assert.match(html, /id="sp-commit"/); assert.match(html, /id="sp-payer"/);
+    assert.match(html, /<label class="check"><input type="checkbox" value="\d+" checked><span>Ada<\/span><\/label>/);
+    assert.equal((html.match(/type="checkbox" value="/g) ?? []).length, 2, 'one tick per active person');
+    assert.ok(!html.includes('<span>Lin</span>'), 'an archived person is not offered in the split picker');
+    const payer = /<select id="sp-payer">([\s\S]*?)<\/select>/.exec(html);
+    assert.ok(payer, 'the payer select is server-rendered so the form works before the first fetch resolves');
+    assert.equal((payer![1].match(/<option/g) ?? []).length, 2);
+    assert.ok(/<select id="sp-currency">[\s\S]*?value="USD" selected/.test(html), 'the split form defaults to the workspace currency');
+    assert.ok(html.includes('Split an expense'), 'the panel explains what a split records');
+  });
+});
+
 test('canonical capability routes enforce security, body, currency, and transaction guards', async () => {
  await withWorkspaceApi(async (request, query) => {
  const created = await request('/api/workspaces', {

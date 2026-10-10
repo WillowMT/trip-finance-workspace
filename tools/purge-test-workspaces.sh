@@ -1,29 +1,34 @@
 #!/usr/bin/env bash
-# One-off: purge non-Willow test workspaces from production D1, keeping workspace id 2.
-# Drops the audit triggers, deletes the rows, then restores triggers from the migrations.
+# Retire throwaway workspaces by DEACTIVATING them — never delete.
+#
+# Why not delete: the raw capability secret is never stored (only its SHA-256), so a deleted
+# workspace's link can never be re-issued. An earlier version of this script hardcoded
+# "KEEP=2" and deleted every other workspace, which destroyed a workspace Willow was using.
+# Deactivation is reversible (is_active = 1) and keeps the rows for recovery.
+#
+# Usage: tools/purge-test-workspaces.sh <workspace-id> [<workspace-id> ...]
 set -euo pipefail
 cd "$(dirname "$0")/.."
-KEEP=2
 
-q() { npx wrangler d1 execute DB --remote --command "$1" >/dev/null 2>&1; }
+if [ "$#" -eq 0 ]; then
+  echo "usage: $0 <workspace-id> [<workspace-id> ...]" >&2
+  echo "tip: list ids first with: npx wrangler d1 execute DB --remote --command 'SELECT id, name, is_active FROM workspaces' --json" >&2
+  exit 2
+fi
 
-TRIGGERS=$(npx wrangler d1 execute DB --remote --command \
-  "SELECT name FROM sqlite_master WHERE type='trigger'" --json 2>/dev/null \
-  | python3 -c "import json,sys;print(' '.join(r['name'] for r in json.load(sys.stdin)[0]['results']))")
-
-echo "dropping triggers: $TRIGGERS"
-for t in $TRIGGERS; do q "DROP TRIGGER \"$t\""; done
-
-for tbl in audit_log transactions workflow_commits split_commits workspace_people workspace_currencies workspace_settings; do
-  q "DELETE FROM $tbl WHERE workspace_id <> $KEEP"
+for id in "$@"; do
+  case "$id" in
+    ''|*[!0-9]*) echo "not a numeric workspace id: $id" >&2; exit 2;;
+  esac
 done
-q "DELETE FROM workspaces WHERE id <> $KEEP"
 
-echo "restoring triggers from migrations"
-npx wrangler d1 execute DB --remote --file migrations/0002_audit_triggers.sql >/dev/null 2>&1
-npx wrangler d1 execute DB --remote --file migrations/0003_audit_lock.sql >/dev/null 2>&1
+for id in "$@"; do
+  echo "deactivating workspace $id (rows kept for recovery)"
+  npx wrangler d1 execute DB --remote \
+    --command "UPDATE workspaces SET is_active = 0, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = $id" >/dev/null
+done
 
-npx wrangler d1 execute DB --remote --command "SELECT id, name FROM workspaces" --json 2>/dev/null \
-  | python3 -c "import json,sys;print('workspaces:',json.load(sys.stdin)[0]['results'])"
-npx wrangler d1 execute DB --remote --command "SELECT (SELECT COUNT(*) FROM transactions) t, (SELECT COUNT(*) FROM workspace_people) p, (SELECT COUNT(*) FROM audit_log) a, (SELECT COUNT(*) FROM sqlite_master WHERE type='trigger') tr" --json 2>/dev/null \
-  | python3 -c "import json,sys;print('counts:',json.load(sys.stdin)[0]['results'][0])"
+echo "remaining workspaces:"
+npx wrangler d1 execute DB --remote \
+  --command "SELECT id, name, is_active FROM workspaces ORDER BY id" --json 2>/dev/null \
+  | python3 -c "import json,sys;[print(' ', r) for r in json.load(sys.stdin)[0]['results']]"

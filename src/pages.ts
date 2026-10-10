@@ -33,7 +33,10 @@ input,select,textarea{width:100%;padding:10px 11px;border:1px solid var(--line);
 input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:-1px}
 textarea{min-height:92px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.grid > *{min-width:0}
 .grid.three{grid-template-columns:1fr 1fr 1fr}
+/* a native date control is wider than its share of a three-up row, so give it the full width on phones */
+@media(max-width:559px){.grid.three{grid-template-columns:1fr 1fr}.grid.three > .field:last-child{grid-column:1 / -1}}
 .full{grid-column:1/-1}
 .field{margin-bottom:10px}
 button{background:var(--brand);color:var(--brand-ink);border:0;border-radius:10px;padding:11px 14px;font-weight:600;cursor:pointer;width:100%}
@@ -60,6 +63,7 @@ button.mini{width:auto;padding:5px 10px;font-size:.8rem;border-radius:8px}
 details{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px}
 summary{cursor:pointer;font-size:.86rem;font-weight:600}
 pre{background:var(--chip);border-radius:8px;padding:10px;overflow-x:auto;font-size:12px;margin:8px 0 0}
+#ai-prompt{max-height:340px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:50;background:var(--ink);color:var(--bg);border-radius:999px;padding:10px 16px;font-size:.86rem;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:92vw;text-align:center;transition:opacity .2s;opacity:0;pointer-events:none}
 .toast.show{opacity:1}
 .toast.bad{background:var(--bad);color:#fff}
@@ -68,6 +72,21 @@ pre{background:var(--chip);border-radius:8px;padding:10px;overflow-x:auto;font-s
 .swap button{width:auto;background:var(--chip);color:var(--ink);padding:4px 10px;font-size:.78rem;font-weight:600}
 .inline{display:flex;gap:8px;align-items:flex-end}
 .inline > *{flex:1} .inline button{flex:0 0 auto;width:auto}
+.people{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.check{display:flex;align-items:center;gap:8px;margin:0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;font-size:.9rem;font-weight:600;color:var(--ink)}
+.check input{width:18px;height:18px;padding:0;flex:0 0 auto;accent-color:var(--brand)}
+.check.off{opacity:.5}
+.chip.split{color:var(--brand)}
+.split-sum{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.split-sum:last-child{border-bottom:0}
+.split-sum .who{font-weight:600;font-size:.92rem}
+.split-sum .paid{color:var(--muted);font-size:.76rem;margin-top:1px}
+.split-sum .share{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.people-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
+.people-actions button{flex:0 0 auto;width:auto}
+.people-actions .hint{margin:0}
+#split .btns button{white-space:nowrap}
+#split .totals{margin:10px 0 0}
 `;
 
 const page = (title: string, head: string, body: string, script = '') => `<!doctype html>
@@ -160,15 +179,21 @@ async function call(path,opts){
 }
 function busy(btn,on){ if(btn){ btn.disabled=!!on } }
 
+var TABS=(function(){
+  var out=[], nodes=null;
+  try{ nodes=document.querySelectorAll('.tabs button') }catch(e){ nodes=null }
+  if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
+  return out.length?out:['ledger','balances','split','tools','audit','settings'];
+})();
 function showTab(tab){
-  var tabs=['ledger','balances','tools','audit','settings'];
-  for(var i=0;i<tabs.length;i++){
-    var section=$(tabs[i]); if(section){section.hidden=tabs[i]!==tab}
-    var btn=$('tab-'+tabs[i]); if(btn){btn.setAttribute('aria-selected',String(tabs[i]===tab))}
+  for(var i=0;i<TABS.length;i++){
+    var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
+    var btn=$('tab-'+TABS[i]); if(btn){btn.setAttribute('aria-selected',String(TABS[i]===tab))}
   }
   if(location.hash!=='#'+tab){try{history.replaceState(null,'','#'+tab)}catch(e){}}
   if(tab==='ledger'){loadLedger()}
   if(tab==='balances'){loadBalances()}
+  if(tab==='split'){renderSplit()}
   if(tab==='audit'){loadAudit()}
   if(tab==='settings'){renderSettings()}
 }
@@ -279,39 +304,7 @@ async function doOffset(a,b,c,btn){
   if(!r.ok){ toast(r.error,true); return }
   toast('Offset recorded'); loadBalances();
 }
-/* ---------------- tools: quick entry + import ---------------- */
-function parseQuick(text){
-  var out=[],problems=[];
-  var lines=String(text||'').split(/\\r?\\n/);
-  for(var i=0;i<lines.length;i++){
-    var line=lines[i].trim(); if(!line){continue}
-    var parts=line.split('|').map(function(s){return s.trim()});
-    if(parts.length<8){ problems.push('Line '+(i+1)+': need 8 fields separated by |'); continue }
-    var kind=parts[1].toLowerCase(); if(kind==='debt'||kind==='paid'){kind='debt'}else if(kind==='payment'||kind==='paid back'||kind==='repay'){kind='payment'}else{problems.push('Line '+(i+1)+': kind must be debt or payment'); continue}
-    var cr=null,dr=null;
-    for(var p=0;p<people.length;p++){ if(people[p].display_name.toLowerCase()===parts[4].toLowerCase()){cr=people[p].id} if(people[p].display_name.toLowerCase()===parts[5].toLowerCase()){dr=people[p].id} }
-    if(!cr){problems.push('Line '+(i+1)+': unknown creditor "'+parts[4]+'"');continue}
-    if(!dr){problems.push('Line '+(i+1)+': unknown debtor "'+parts[5]+'"');continue}
-    if(cr===dr){problems.push('Line '+(i+1)+': creditor and debtor are the same');continue}
-    var minor=toMinor(parts[6]); if(!minor){problems.push('Line '+(i+1)+': bad amount "'+parts[6]+'"');continue}
-    var code=parts[7].toUpperCase(); var known=false;
-    for(var c=0;c<currencies.length;c++){ if(currencies[c].code===code&&!currencies[c].is_archived){known=true} }
-    if(!known){problems.push('Line '+(i+1)+': currency '+code+' is not enabled');continue}
-    out.push({occurred_on:parts[0],entry_kind:kind,topic:parts[2],category:parts[3],creditor_person_id:cr,debtor_person_id:dr,amount_minor:minor,currency_code:code,notes:parts[8]||null});
-  }
-  return {rows:out,problems:problems};
-}
-function renderQuick(){
-  var parsed=parseQuick($('q-text').value);
-  var box=$('q-preview-out'); box.innerHTML='';
-  if(parsed.problems.length){ box.innerHTML='<div class="err">'+esc(parsed.problems.join('\\n'))+'</div>' }
-  if(!parsed.rows.length){ if(!parsed.problems.length){box.innerHTML='<div class="empty">Nothing parsed yet.</div>'} $('q-commit').disabled=true; return }
-  var t=document.createElement('table');
-  t.innerHTML='<tr><th>Date</th><th>Kind</th><th>Topic</th><th>From → To</th><th class="num">Amount</th></tr>'+
-    parsed.rows.map(function(r){return '<tr><td>'+esc(r.occurred_on)+'</td><td>'+esc(r.entry_kind)+'</td><td>'+esc(r.topic)+'</td><td>'+esc(name(r.creditor_person_id))+' → '+esc(name(r.debtor_person_id))+'</td><td class="num">'+esc(money(r.amount_minor,r.currency_code))+'</td></tr>'}).join('');
-  box.appendChild(t);
-  $('q-commit').disabled=false;
-}
+/* ---------------- tools: receipt instructions + import ---------------- */
 async function previewImport(){
   var btn=$('csv-preview'); var out=$('csv-result'); out.innerHTML='';
   busy(btn,true);
@@ -370,6 +363,105 @@ function renderSettings(){
   }
   $('s-name').value=(me&&me.name)||'';
 }
+/* ---------------- split an expense ---------------- */
+function splitBoxes(){
+  var el=$('sp-people'); if(!el){return []}
+  var found=[], list=null;
+  try{ list=(el.querySelectorAll?el.querySelectorAll('input[type=checkbox]'):null) }catch(e){ list=null }
+  if(list&&list.length){ for(var i=0;i<list.length;i++){ found.push(list[i]) } return found }
+  var kids=el.children||[];
+  for(var j=0;j<kids.length;j++){ var inp=(kids[j].querySelector?kids[j].querySelector('input'):null); if(inp){ found.push(inp) } }
+  return found;
+}
+function splitPicked(){
+  var out=[], bs=splitBoxes();
+  for(var i=0;i<bs.length;i++){ if(bs[i].checked){ out.push(Number(bs[i].value)) } }
+  return out;
+}
+/* Mirrors the server's allocation exactly: floor the share, then hand the leftover
+   minor units to the lowest ids one each. Anything else would let the preview lie. */
+function allocate(total,ids){
+  var sorted=ids.slice().sort(function(a,b){return a-b});
+  var base=Math.floor(total/sorted.length), rem=total%sorted.length, out=[];
+  for(var i=0;i<sorted.length;i++){ out.push({person_id:sorted[i],amount_minor:base+(i<rem?1:0)}) }
+  return out;
+}
+function splitDraft(){
+  return {
+    occurred_on:($('sp-date')||{}).value,
+    payer_person_id:Number(($('sp-payer')||{}).value),
+    participant_person_ids:splitPicked(),
+    amount_minor:toMinor($('sp-amount')?$('sp-amount').value:''),
+    topic:($('sp-topic')||{}).value.trim(),
+    category:($('sp-category')||{}).value.trim(),
+    currency_code:($('sp-currency')||{}).value,
+    notes:null
+  };
+}
+function splitProblem(d){
+  if(!d.topic){return 'Say what the expense was for.'}
+  if(!d.category){return 'Add a category.'}
+  if(!d.occurred_on){return 'Pick a date.'}
+  if(!d.participant_person_ids.length){return 'Tick who is sharing this expense.'}
+  var others=d.participant_person_ids.filter(function(id){return id!==d.payer_person_id});
+  if(!others.length){return 'Tick at least one person besides whoever paid — the payer cannot owe themselves.'}
+  if(!d.amount_minor){return 'Enter a total amount above zero.'}
+  return '';
+}
+function renderSplit(){
+  var count=$('sp-count'), box=$('sp-people');
+  if(box&&box.children){ for(var i=0;i<box.children.length;i++){
+    var row=box.children[i], inp=(row.querySelector?row.querySelector('input'):null);
+    if(inp&&row.classList&&row.classList.toggle){ row.classList.toggle('off',!inp.checked) }
+  } }
+  var d=splitDraft();
+  if(count){ count.textContent=splitPicked().length+' sharing' }
+  var out=$('sp-out'); if(!out){return}
+  if(!d.amount_minor||!d.participant_person_ids.length){ out.innerHTML='<div class="empty">Enter an amount and tick who is sharing to see each share.</div>'; return }
+  var alloc=allocate(d.amount_minor,d.participant_person_ids), owed=0, rows='';
+  for(var j=0;j<alloc.length;j++){
+    var a=alloc[j], payer=a.person_id===d.payer_person_id;
+    if(!payer){ owed+=a.amount_minor }
+    rows+='<div class="split-sum"><div><div class="who">'+esc(name(a.person_id))+'</div><div class="paid">'+(payer?'paid — owes nothing':'owes '+esc(name(d.payer_person_id)))+'</div></div>'+
+      '<div class="share">'+esc(money(a.amount_minor,d.currency_code))+'</div></div>';
+  }
+  out.innerHTML='<div class="totals" style="margin:10px 0 0"><div class="total"><span>Bill</span><b>'+esc(money(d.amount_minor,d.currency_code))+'</b></div>'+
+    '<div class="total"><span>New debts</span><b>'+esc(money(owed,d.currency_code))+'</b></div></div>'+rows;
+}
+async function previewSplit(){
+  var btn=$('sp-preview'), err=$('sp-err'), out=$('sp-out');
+  err.textContent='';
+  var d=splitDraft(), problem=splitProblem(d);
+  if(problem){ err.textContent=problem; return }
+  busy(btn,true);
+  var r=await call('/splits/preview',{method:'POST',body:d});
+  busy(btn,false);
+  if(!r.ok){ err.textContent=r.error; return }
+  var data=r.data||{}, alloc=data.participant_allocations||[], txs=data.transactions||[];
+  var rows='';
+  for(var i=0;i<alloc.length;i++){ var a=alloc[i];
+    rows+='<div class="split-sum"><div><div class="who">'+esc(name(a.person_id))+'</div><div class="paid">'+(a.person_id===d.payer_person_id?'paid — owes nothing':'owes '+esc(name(d.payer_person_id)))+'</div></div>'+
+      '<div class="share">'+esc(money(a.amount_minor,d.currency_code))+'</div></div>';
+  }
+  out.innerHTML='<div class="hint">Checked against the server: '+txs.length+' debt(s) totalling '+esc(money(data.debt_amount_minor,d.currency_code))+'.</div>'+rows;
+}
+async function commitSplit(){
+  var btn=$('sp-commit'), err=$('sp-err'); err.textContent='';
+  var d=splitDraft(), problem=splitProblem(d);
+  if(problem){ err.textContent=problem; toast(problem,true); return }
+  busy(btn,true);
+  var r=await call('/splits',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:d});
+  busy(btn,false);
+  if(!r.ok){ err.textContent=r.error; toast(r.error,true); return }
+  var txs=(r.data&&r.data.transactions)||[], owed=(r.data&&r.data.debt_amount_minor)||0;
+  toast(txs.length+(txs.length===1?' debt':' debts')+' added');
+  $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='';
+  renderSplit();
+  var out=$('sp-out');
+  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
+    txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
+  loadLedger();
+}
 /* ---------------- wiring ---------------- */
 document.addEventListener('click',async function(ev){
   var t=ev.target; if(!t||!t.getAttribute){return}
@@ -387,24 +479,31 @@ document.addEventListener('click',async function(ev){
 function init(){
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
-  var tabs=['ledger','balances','tools','audit','settings'];
-  tabs.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
+  TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
   if($('t-date')){ $('t-date').value=today() }
   if($('t-add')){ $('t-add').onclick=addTx }
+  if($('sp-date')){ $('sp-date').value=today() }
+  if($('sp-people')){ $('sp-people').addEventListener('change',function(){ renderSplit() }) }
+  if($('sp-all')){ $('sp-all').onclick=function(){ var bs=splitBoxes(); for(var i=0;i<bs.length;i++){bs[i].checked=true} renderSplit() } }
+  if($('sp-none')){ $('sp-none').onclick=function(){ var bs=splitBoxes(); for(var i=0;i<bs.length;i++){bs[i].checked=false} renderSplit() } }
+  if($('sp-payer')){ $('sp-payer').onchange=function(){ var pid=Number(this.value), bs=splitBoxes(); for(var i=0;i<bs.length;i++){ if(Number(bs[i].value)===pid){bs[i].checked=true} } renderSplit() } }
+  if($('sp-amount')){ $('sp-amount').oninput=renderSplit }
+  if($('sp-topic')){ $('sp-topic').oninput=renderSplit }
+  if($('sp-currency')){ $('sp-currency').onchange=renderSplit }
+  if($('sp-preview')){ $('sp-preview').onclick=previewSplit }
+  if($('sp-commit')){ $('sp-commit').onclick=commitSplit }
   if($('t-swap')){ $('t-swap').onclick=function(){ var a=$('t-creditor'),b=$('t-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
-  if($('q-text')){ $('q-text').oninput=renderQuick }
-  if($('q-preview')){ $('q-preview').onclick=renderQuick }
-  if($('q-commit')){ $('q-commit').onclick=async function(){ var parsed=parseQuick($('q-text').value); var err=$('q-err'); err.textContent=parsed.problems.join('\\n'); if(parsed.problems.length){return} if(await commitRows(parsed.rows,this,err)){ $('q-text').value=''; renderQuick() } } }
+  if($('ai-copy')){ $('ai-copy').onclick=async function(){ var txt=$('ai-prompt').textContent; try{ await navigator.clipboard.writeText(txt); toast('Instructions copied') }catch(e){ try{ var range=document.createRange(); range.selectNodeContents($('ai-prompt')); var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range); toast('Press Ctrl/Cmd+C to copy') }catch(e2){ toast('Copy failed - select the instructions and copy them',true) } } } }
   if($('csv-preview')){ $('csv-preview').onclick=previewImport }
   if($('csv-commit')){ $('csv-commit').onclick=commitImport; $('csv-commit').disabled=true }
   if($('csv-template')){ $('csv-template').onclick=function(){ var head='occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes\\n'; var sample=today()+',debt,Dinner,Food,'+(people[0]?people[0].display_name:'Ada')+','+(people[1]?people[1].display_name:'Lin')+',12.50,'+((currencies[0]&&currencies[0].code)||'USD')+',\\n'; var url='data:text/csv;charset=utf-8,'+encodeURIComponent(head+sample); var a=document.createElement('a'); a.href=url; a.download='transactions-template.csv'; a.click() } }
   if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var r=await call('/people',{method:'POST',body:{display_name:v}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast('Person added') } }
   if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
   if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
-  window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(['ledger','balances','tools','audit','settings'].indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
-  var start=(location.hash||'#ledger').slice(1); if(['ledger','balances','tools','audit','settings'].indexOf(start)<0){start='ledger'}
+  window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
+  var start=(location.hash||'#ledger').slice(1); if(TABS.indexOf(start)<0){start='ledger'}
   showTab(start);
-  loadState().then(function(ok){ if(ok){ renderParty(); renderQuick() } });
+  loadState().then(function(ok){ if(ok){ renderParty(); renderSplit() } });
 }
 function renderParty(){
   var cs=$('t-creditor'), ds=$('t-debtor'), cur=$('t-currency');
@@ -435,6 +534,38 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   const liveCurrencies = currencies.filter((c) => !c.is_archived);
   const personOptions = livePeople.map((p) => `<option value="${p.id}">${esc(p.display_name)}</option>`).join('');
   const currencyOptions = liveCurrencies.map((c) => `<option value="${esc(c.code)}"${c.is_default ? ' selected' : ''}>${esc(c.code)}</option>`).join('');
+  const personChecks = livePeople.map((p) => `<label class="check"><input type="checkbox" value="${p.id}" checked><span>${esc(p.display_name)}</span></label>`).join('');
+  const todayServer = new Date().toISOString().slice(0, 10);
+  const aiNames = livePeople.map((p) => p.display_name).join(', ');
+  const aiCodes = liveCurrencies.map((c) => c.code);
+  const aiDefault = (liveCurrencies.find((c) => c.is_default) ?? liveCurrencies[0])?.code ?? 'USD';
+  const aiPrompt = `You convert trip receipts into CSV rows for a shared expense ledger.
+
+Reply with CSV only - no explanation, no code fences, no markdown.
+
+First line must be exactly this header:
+occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes
+
+What each column means
+- occurred_on: the date as YYYY-MM-DD. Use the date on the receipt; if there is none, use ${todayServer}.
+- entry_kind: "debt" when someone owes money for something paid on their behalf; "payment" when someone is paying money back.
+- topic: what the money was for, short (max 200 characters).
+- category: one short label (max 80 characters), for example Food, Transport, Lodging, Activities, Shopping, Other.
+- creditor: the person who PAID and is owed. Use exactly one of: ${aiNames}
+- debtor: the person who OWES. Use exactly one of those same names, and never the same person as the creditor.
+- amount: a positive number in major units, up to 2 decimals - write 12.50, never 1250, with no currency symbol and no thousands separator.
+- currency: one of: ${aiCodes.join(', ')}. Use ${aiDefault} unless the receipt is clearly in another listed currency.
+- notes: optional; keep item detail here (max 4000 characters).
+
+Rules
+- One row per person who owes. For a bill paid by one person and shared equally, write one row per other sharer, with their own share, the same date and the same topic.
+- Never invent people: only use the names listed above, spelled exactly that way.
+- No totals, no subtotals, no blank lines, and do not merge several people into one row.
+- Quote any field that contains a comma.
+
+Example
+occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes
+2026-10-10,debt,Night market dinner,Food,${livePeople[0]?.display_name ?? 'Ada'},${livePeople[1]?.display_name ?? 'Lin'},40.00,${aiDefault},pad thai and drinks`;
   return page(name, `<script>window.__initial=${initial};</script>`, `
 <main>
 <header>
@@ -446,11 +577,12 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <button id="c-copy" class="mini ghost" type="button">Copy link</button>
   </div>
   <div class="tabs" role="tablist">
-    <button id="tab-ledger" role="tab" aria-selected="true" type="button">Ledger</button>
-    <button id="tab-balances" role="tab" aria-selected="false" type="button">Balances</button>
-    <button id="tab-tools" role="tab" aria-selected="false" type="button">Bulk &amp; import</button>
-    <button id="tab-audit" role="tab" aria-selected="false" type="button">Audit</button>
-    <button id="tab-settings" role="tab" aria-selected="false" type="button">Setup</button>
+    <button id="tab-ledger" role="tab" aria-selected="true" type="button"><span aria-hidden="true">📒</span> Ledger</button>
+    <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split</button>
+    <button id="tab-balances" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚖️</span> Balances</button>
+    <button id="tab-tools" role="tab" aria-selected="false" type="button"><span aria-hidden="true">📥</span> Bulk &amp; import</button>
+    <button id="tab-audit" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🕐</span> Audit</button>
+    <button id="tab-settings" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚙️</span> Setup</button>
   </div>
 </header>
 <div id="banner" class="err" hidden></div>
@@ -489,6 +621,38 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   </div>
 </section>
 
+<section id="split" hidden>
+  <div class="card">
+    <h2>Split an expense</h2>
+    <p class="hint">One person pays the bill. Everyone ticked shares it equally: each other person's share is recorded as a debt to whoever paid.</p>
+    <div class="grid">
+      <div class="field"><label for="sp-topic">What for</label><input id="sp-topic" placeholder="Dinner" autocomplete="off"></div>
+      <div class="field"><label for="sp-category">Category</label><input id="sp-category" placeholder="Food" autocomplete="off"></div>
+    </div>
+    <div class="grid three">
+      <div class="field"><label for="sp-amount">Total amount</label><input id="sp-amount" type="text" inputmode="decimal" placeholder="120.00" autocomplete="off"></div>
+      <div class="field"><label for="sp-currency">Currency</label><select id="sp-currency">${currencyOptions}</select></div>
+      <div class="field"><label for="sp-date">Date</label><input id="sp-date" type="date"></div>
+    </div>
+    <div class="field"><label for="sp-payer">Paid by</label><select id="sp-payer">${personOptions}</select></div>
+    <div class="field">
+      <label id="sp-people-label">Split between</label>
+      <div class="people-actions">
+        <button id="sp-all" class="mini ghost" type="button">Everyone</button>
+        <button id="sp-none" class="mini ghost" type="button">Nobody</button>
+        <span id="sp-count" class="hint"></span>
+      </div>
+      <div class="people" id="sp-people" role="group" aria-labelledby="sp-people-label">${personChecks}</div>
+    </div>
+    <div class="btns">
+      <button id="sp-preview" class="ghost" type="button">Preview shares</button>
+      <button id="sp-commit" type="button">Add split</button>
+    </div>
+    <div id="sp-err" class="err"></div>
+    <div id="sp-out"></div>
+  </div>
+</section>
+
 <section id="balances" hidden>
   <div class="card"><h2>Who owes whom</h2><div id="bal-list"><div class="empty">Loading…</div></div></div>
   <div class="card"><h2>Settle up (offsets)</h2><div id="offset-list"><div class="empty">Loading…</div></div>
@@ -497,15 +661,12 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="tools" hidden>
   <div class="card">
-    <h2>Quick entry (many at once)</h2>
-    <p class="hint">One line per transaction: <b>date | debt or payment | what for | category | paid by | for | amount | currency</b></p>
-    <div class="field"><textarea id="q-text" placeholder="2026-10-09 | debt | Dinner | Food | Ada | Lin | 12.50 | USD"></textarea></div>
+    <h2>Turn a receipt into a CSV</h2>
+    <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo with it. Paste the CSV it replies with into the box below.</p>
+    <div class="field"><pre id="ai-prompt">${esc(aiPrompt)}</pre></div>
     <div class="btns">
-      <button id="q-preview" class="ghost" type="button">Preview</button>
-      <button id="q-commit" type="button" disabled>Add all</button>
+      <button id="ai-copy" type="button">Copy instructions</button>
     </div>
-    <div id="q-err" class="err"></div>
-    <div id="q-preview-out"></div>
   </div>
   <div class="card">
     <h2>Import CSV</h2>
