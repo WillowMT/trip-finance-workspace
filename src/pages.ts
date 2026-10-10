@@ -697,4 +697,15 @@ occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes
 </main>`, APP_SCRIPT);
 };
 
+export const linkRetiredHtml = () => page('Link not active', '', `
+<main>
+<header><div class="head"><div><h1>&#128274; This link isn&rsquo;t active</h1><p class="sub">No workspace answers to it.</p></div></div></header>
+<div class="card">
+<p>The link was retired and replaced with a fresh one, or the trip&rsquo;s workspace was closed.</p>
+<p class="hint">Ask whoever shared the trip for the current link &mdash; or start a new workspace.</p>
+<div class="btns"><a href="/" style="display:inline-block;padding:11px 14px;border-radius:10px;background:var(--brand);color:var(--brand-ink);font-weight:600;text-decoration:none;text-align:center;flex:1;min-width:120px">Create a new workspace</a></div>
+</div>
+</main>
+`);
+
 export const appHtml = async (db: D1Database, workspaceId: number, name: string) => app(db, workspaceId, name);

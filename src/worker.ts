@@ -1,4 +1,4 @@
-import { appHtml, homeHtml } from './pages';
+import { appHtml, homeHtml, linkRetiredHtml } from './pages';
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
 import { hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 
@@ -87,7 +87,10 @@ function createSecret(): string {
 }
 async function resolveWorkspace(db: D1Database, secret: string): Promise<Workspace | null> {
   if (!secretPattern.test(secret)) return null;
-  return db.prepare('SELECT id, name, is_active, created_at, updated_at FROM workspaces WHERE secret_hash = ? AND is_active = 1').bind(await sha256(secret)).first<Workspace>();
+  // Either the current secret or the one it superseded resolves: rotating a link
+  // must never strand the people still holding the previous one.
+  const hash = await sha256(secret);
+  return db.prepare('SELECT id, name, is_active, created_at, updated_at FROM workspaces WHERE (secret_hash = ? OR prev_secret_hash = ?) AND is_active = 1').bind(hash, hash).first<Workspace>();
 }
 async function requireWorkspace(db: D1Database, secret: string): Promise<Workspace | Response> {
   const workspace = await resolveWorkspace(db, secret);
@@ -149,7 +152,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
   const workspaceApi = rawTail === 'api' || rawTail.startsWith('api/');
   const tail = rawTail.startsWith('api/') ? rawTail.slice(4) : workspaceApi ? '' : rawTail;
   const required = await requireWorkspace(env.DB, secret);
-  if (required instanceof Response) return required;
+  if (required instanceof Response) {
+    // A bare `{"error":"Workspace not found"}` in the address bar reads like the
+    // site is broken; the page path gets a real answer instead.
+    if (workspacePage && request.method === 'GET') return new Response(linkRetiredHtml(), { status: 404, headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } });
+    return required;
+  }
   const workspace = required;
   if (workspacePage) return request.method === 'GET' ? new Response(await appHtml(env.DB, workspace.id, workspace.name), { headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } }) : new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
