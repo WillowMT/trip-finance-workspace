@@ -122,6 +122,180 @@ test('the ledger delete button works: DELETE /transactions/:id hides the row and
    });
  });
 
+test('the ledger colours signed amounts, deletes with an icon, and pages at 50 rows', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[]; currencies: { code: string }[] };
+    const [creditor, debtor] = state.people;
+    const code = state.currencies[0].code;
+    for (let i = 0; i < 55; i += 1) {
+      const res = await request(`${api}/transactions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ occurred_on: '2026-10-08', entry_kind: 'debt', topic: `Row ${i}`, category: 'Food', creditor_person_id: creditor.id, debtor_person_id: debtor.id, amount_minor: 100 + i, currency_code: code }),
+      });
+      assert.equal(res.status, 201);
+    }
+    const listed = await (await request(`${api}/transactions`)).json() as { transactions: unknown[] };
+    assert.equal(listed.transactions.length, 55, 'every row is still served');
+    const html = await (await request(`/w/${secret}`)).text();
+
+    assert.match(html, /var TXPAGE=50/, 'rows are capped at 50 per page');
+    assert.match(html, /id="tx-pager"/);
+    assert.match(html, /id="tx-prev"/);
+    assert.match(html, /id="tx-next"/);
+    assert.match(html, /class="amt '\+cls\+'"/, 'the amount carries a signed colour class');
+    assert.match(html, /class="mini icon danger"/, 'delete is an icon button');
+    assert.ok(!html.includes('>Delete</button>'), 'the old text delete button is gone');
+    assert.match(html, /id="t-kind-hint"/, 'the mode hint is rendered');
+    assert.match(html, /t-creditor-label">(<span[^>]*>[^<]*<\/span>\s*)?Paid by \(is owed\)/);
+    assert.match(html, /t-debtor-label">(<span[^>]*>[^<]*<\/span>\s*)?For \(owes\)/);
+    assert.match(html, /Repaid to \(was owed\)/, 'the repayment wording is shipped');
+    assert.match(html, /Repaid by \(who owed it\)/);
+  });
+});
+
+test('every page is styled from one token-based design system', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const pages: [string, Response][] = [
+      ['workspace', await request(`/w/${secret}`)],
+      ['home', await request('/')],
+    ];
+    for (const [label, res] of pages) {
+      const html = await res.text();
+      const style = /<style>([\s\S]*?)<\/style>/.exec(html);
+      assert.ok(style, `${label} page carries the stylesheet`);
+      const sheet = style![1];
+
+      // the size scales are declared exactly once, and nothing hardcodes them
+      for (const token of ['--ctl:44px', '--ctl-sm:34px', '--ctl-tab:36px', '--r-md:10px', '--r-lg:12px', '--r-xl:16px', '--sp-5:12px', '--fs-base:.95rem']) {
+        assert.equal(sheet.split(token).length - 1, 1, `${token} is declared once`);
+      }
+      assert.ok(!/min-height:(34|36|44|92)px/.test(sheet), `${label}: control heights come from tokens`);
+      assert.ok(!/border-radius:(8|10|12|14|16)px/.test(sheet), `${label}: radii come from tokens`);
+
+      // the polish the design system promises
+      assert.match(sheet, /select\{[\s\S]*?appearance:none/, 'dropdown arrows are drawn by us, not the browser default');
+      assert.match(sheet, /data:image\/svg\+xml/, 'and drawn inline, with no external asset');
+      assert.match(sheet, /:focus-visible/, 'keyboard focus is visible');
+      assert.match(sheet, /prefers-reduced-motion/, 'motion is reduced when the OS asks for it');
+      assert.match(sheet, /button\[aria-busy=true\]/, 'writes show a loading state');
+      assert.match(sheet, /prefers-color-scheme:dark/, 'the dark theme is preserved');
+
+      // no route-specific patches, no dead selectors
+      assert.ok(!/#split \.btns|\.top-actions/.test(sheet), `${label}: no route-specific patches or dead selectors`);
+    }
+  });
+});
+
+test('the category field is a select that defaults to Other', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    assert.ok(!/<input id="t-category"/.test(html), 'the ledger category is no longer free text');
+    assert.ok(!/<input id="sp-category"/.test(html), 'neither is the split one');
+    for (const id of ['t-category', 'sp-category']) {
+      assert.match(html, new RegExp('<select id="' + id + '">[\\s\\S]*?</select>'), id + ' is a select');
+    }
+    const select = /<select id="t-category">([\s\S]*?)<\/select>/.exec(html);
+    assert.ok(select, 'the ledger category select is present');
+    const options = [...select![1].matchAll(/<option value="([^"]+)"( selected)?>/g)].map((m) => m[1]);
+    assert.deepEqual(options, ['Other', 'Food', 'Transport', 'Shopping']);
+    assert.match(select![1], /<option value="Other" selected>/, 'Other is the default');
+    assert.match(html, /\$\('t-category'\)\.value='Other'/, 'the entry form resets to Other');
+    assert.match(html, /\$\('sp-category'\)\.value='Other'/, 'so does the split form');
+  });
+});
+
+test('creating a transaction or a split asks for review before it writes', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    assert.match(html, /id="review-modal"/, 'the review sheet is shipped');
+    assert.match(html, /id="rv-confirm"/);
+    assert.match(html, /id="rv-back"[^>]*>/, 'Back to edit exists');
+    assert.match(html, /aria-labelledby="rv-title"/);
+    assert.match(html, /role="dialog" aria-modal="true" aria-labelledby="rv-title"/);
+
+    assert.match(html, /openReview\(txReview\(rows\)/, 'the ledger entry is reviewed before it is sent');
+    assert.match(html, /openReview\(splitReview\(d\)/, 'so is a split');
+    assert.ok(!html.includes('commitRows('), 'the ledger no longer posts straight from the form handler');
+    assert.match(html, /async function postRows\(rows,btn,err\)\{/, 'the only write path is postRows, reached from the sheet');
+    assert.match(html, /async function postSplit\(d,btn,err\)\{/, 'and postSplit for a split');
+
+    assert.match(html, /Confirm debt/);
+    assert.match(html, /Confirm repayment/);
+    assert.match(html, /Confirm split/);
+    assert.match(html, /rf-amt '\+\(pay\?'neg':'pos'\)\+'/, 'the reviewed amount carries the ledger colours');
+
+    assert.match(html, /signedMoney\(pay\?-one\.amount_minor:one\.amount_minor/, 'and is signed like the ledger row it will produce');
+    assert.match(html, /signedMoney\(owed,d\.currency_code\)/, 'a split reviews the debt it will actually create, not the bill');
+    assert.match(html, /allocate\(d\.amount_minor,ids\)/, 'per-person shares come from the same allocator the server uses');
+    assert.match(html, /if\(ev\.key==='Escape'\)\{[^}]*closeReview\(\)/, 'Escape backs out of the review');
+    assert.match(html, /ev\.target\.id==='review-modal'/, 'a backdrop tap backs out too');
+  });
+});
+
+test('a person carries an emoji that reaches every surface and is audited', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const edit = (id: number, payload: Record<string, unknown>) => request(`${api}/people/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) });
+    const roster = async () => (await (await request(api)).json()) as { people: { id: number; display_name: string; emoji: string }[] };
+
+    const person = (await roster()).people[0];
+    assert.equal(person.emoji, '', 'people start without an emoji');
+
+    const set = await edit(person.id, { emoji: '\u{1F98A}' });
+    assert.equal(set.status, 200);
+    assert.equal(((await set.json()) as { person: { emoji: string } }).person.emoji, '\u{1F98A}', 'the emoji is stored');
+    assert.equal((await roster()).people.find((entry) => entry.id === person.id)!.emoji, '\u{1F98A}');
+
+    assert.equal((await edit(person.id, { emoji: 'Ada' })).status, 400, 'letters belong in the name');
+    assert.equal((await edit(person.id, { emoji: '\u{1F98A}'.repeat(9) })).status, 400, 'one emoji, not a paragraph');
+    assert.equal((await edit(person.id, {})).status, 400, 'an empty patch changes nothing');
+
+    const renamed = await edit(person.id, { display_name: 'Ada Lovelace' });
+    assert.equal(renamed.status, 200);
+    assert.equal(((await renamed.json()) as { person: { display_name: string; emoji: string } }).person.emoji, '\u{1F98A}', 'renaming keeps the emoji');
+
+    const cleared = await edit(person.id, { emoji: '' });
+    assert.equal(cleared.status, 200);
+    assert.equal(((await cleared.json()) as { person: { emoji: string } }).person.emoji, '', 'an empty string clears it');
+
+    const audit = (await (await request(`${api}/audit?entity=person`)).json()) as { audit: { action: string; before_json: string | null; after_json: string | null }[] };
+    const emojiOf = (row: { before_json: string | null; after_json: string | null }, key: 'before_json' | 'after_json') =>
+      row[key] === null ? null : (JSON.parse(row[key]!) as { emoji?: string }).emoji;
+    const updates = audit.audit.filter((row) => row.action === 'update');
+    assert.ok(
+      updates.some((row) => emojiOf(row, 'before_json') === '' && emojiOf(row, 'after_json') === '\u{1F98A}'),
+      'setting the emoji is audited with the value before and after',
+    );
+    assert.ok(
+      updates.some((row) => emojiOf(row, 'before_json') === '\u{1F98A}' && emojiOf(row, 'after_json') === ''),
+      'and so is clearing it',
+    );
+
+    const html = await (await request(`/w/${secret}`)).text();
+    assert.match(html, /data-emoji-input/, 'the setup tab renders an emoji field per person');
+    assert.match(html, /data-emoji-save/, 'and a control to save it');
+
+    const onboarded = await request('/api/workspaces', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Emoji roster', people: ['\u{1F98A} Ada', { display_name: 'Lin', emoji: '\u{1F422}' }, 'Bo'], currencies: [{ code: 'USD', is_default: true }] }),
+    });
+    assert.equal(onboarded.status, 201);
+    const created = (await onboarded.json()) as { workspace_url: string };
+    const onboardRoster = (await (await request(`${created.workspace_url}/api`)).json()) as { people: { display_name: string; emoji: string }[] };
+    assert.deepEqual(onboardRoster.people.map(({ display_name, emoji }) => [display_name, emoji]), [['Ada', '\u{1F98A}'], ['Lin', '\u{1F422}'], ['Bo', '']], 'onboarding accepts both spellings');
+  });
+});
+
 test('split preview is read-only and commit revalidates, allocates deterministically, audits atomically, and is idempotent', async () => {
   await withWorkspaceApi(async (request, query) => {
     const secret = await createWorkspace(request);
@@ -174,7 +348,7 @@ test('the bulk tab ships copy-ready receipt instructions instead of the quick-en
 
     assert.ok(!html.includes('id="q-text"'), 'the quick-entry textarea is gone');
     assert.match(html, /id="ai-prompt"/, 'the instruction block is server-rendered');
-    assert.match(html, /<button id="ai-copy" type="button">Copy instructions</);
+    assert.match(html, /<button id="ai-copy" type="button">(<span[^>]*>[^<]*<\/span>\s*)?Copy instructions</);
     // the instructions must state the real contract, not a paraphrase
     assert.match(html, /occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes/);
     assert.match(html, new RegExp(`Use exactly one of: ${names.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`), 'the model is given this workspace\'s real names');
@@ -432,6 +606,112 @@ test('the audit log can be filtered by entity, action, search text, and entity i
   });
 });
 
+test('the balance-by-person view says who owes whom instead of leaning on colour', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    // the sign is stated in words, so green can never be read as "a debt I owe"
+    assert.ok(html.includes('function netPhrase(v,who)'), 'one helper turns a net amount into a sentence');
+    assert.ok(html.includes('function pairLine(pr,me)'), 'and one builds each counterparty row');
+    assert.ok(html.includes("'<span class=\"p-main\">'+pairLine(pr,meName)"), 'the row keeps its p-main wrapper so the amount and meta stack');
+    assert.ok(html.includes("pr.counterparty+' owes '+me"), 'the row names the person who owes');
+    assert.ok(html.includes("me+' owes '+pr.counterparty"), 'and the other direction too');
+    assert.ok(html.includes('Each line names who owes whom.'), 'the section says what it is');
+    assert.ok(html.includes('Green means the money is owed to '), 'green is defined in words');
+    assert.ok(html.includes(' owes it.</p>'), 'and so is red');
+    assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
+    assert.ok(html.includes("fronted for others") && html.includes("Covered for '+meName"), 'the tiles name the person instead of saying "them"');
+    assert.ok(html.includes("+esc(meName)+' fronted '") && html.includes("+esc(pr.counterparty)+' covered '"), 'the meta line names both people too');
+    assert.ok(!html.includes('owed to them'), 'no pronoun-only net phrasing survives');
+    assert.ok(!html.includes("kpi('Covered for them'"), 'nor the ambiguous tile label');
+  });
+});
+
+test('VND-scale amounts format and parse without losing precision', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    // lift the shipped client helpers out of the page and run them for real
+    const grab = (name: string) => {
+      const at = html.indexOf(`function ${name}(`);
+      assert.ok(at > 0, `${name} is shipped to the client`);
+      let depth = 0;
+      for (let k = html.indexOf('{', at); k < html.length; k++) {
+        if (html[k] === '{') depth += 1;
+        else if (html[k] === '}') { depth -= 1; if (depth === 0) return html.slice(at, k + 1); }
+      }
+      throw new Error(`unterminated ${name}`);
+    };
+    const nodecAt = html.indexOf('var NODEC=');
+    assert.ok(nodecAt > 0, 'the zero-decimal currency list ships with the helpers');
+    const nodec = html.slice(nodecAt, html.indexOf(';', nodecAt) + 1);
+    const src = nodec + '\n' + ['money', 'toMinor', 'netPhrase', 'netChip'].map(grab).join('\n') + '\nfunction esc(s){return String(s)}';
+    const helpers = new Function(`${src};return {toMinor:toMinor,money:money,netChip:netChip}`)() as {
+      toMinor: (v: string) => number | null;
+      money: (m: number, c?: string) => string;
+      netChip: (v: number, c: string, who: string) => string;
+    };
+
+    // a whole VND amount drops the ".00"; a fractional one keeps both decimals so sub-units are never hidden
+    assert.equal(helpers.money(20_570_800, 'VND'), 'VND 205,708');
+    assert.equal(helpers.money(149_332_428, 'VND'), 'VND 1,493,324.28');
+    assert.equal(helpers.money(20_570_800, 'USD'), 'USD 205,708.00');
+    assert.equal(helpers.money(999_999_999_999_99, 'VND'), 'VND 999,999,999,999.99');
+    // a billion-đồng chip keeps its words out of the nowrap amount span, so it wraps instead of clipping
+    const chip = helpers.netChip(101_234_588_460_922, 'VND', 'Ada');
+    assert.match(chip, /<span class="amt pos">\+VND 1,012,345,884,609\.22<\/span>/);
+    assert.match(chip, /<span class="say">owed to Ada<\/span>/);
+    assert.match(html, /\.p-nets \.amt,\.pm-nets \.amt\{flex:0 0 auto;white-space:normal;overflow-wrap:anywhere\}/);
+
+    // grouping forms and comma decimals both resolve to the same minor units
+    assert.equal(helpers.toMinor('205708'), 20_570_800);
+    assert.equal(helpers.toMinor('205,708'), 20_570_800);
+    assert.equal(helpers.toMinor('1.234.567'), 123_456_700);
+    assert.equal(helpers.toMinor('205708,50'), 20_570_850, 'a comma decimal is not read as grouping');
+    assert.equal(helpers.toMinor('1.234,56'), 123_456);
+    assert.equal(helpers.toMinor('12,345'), 1_234_500, 'three digits after the comma stays grouping');
+    assert.equal(helpers.toMinor('0,5'), 50);
+    assert.equal(helpers.toMinor('999999999999999999999'), null, 'beyond the safe-integer ceiling');
+    assert.equal(helpers.toMinor('1e21'), null);
+    assert.equal(helpers.toMinor('-5'), null);
+
+    // a long amount wraps to its own line instead of colliding with the row's text
+    assert.match(html, /\.row\{display:flex;flex-wrap:wrap/);
+    assert.match(html, /\.row-main\{flex:1 1 auto;min-width:0\}/);
+    assert.match(html, /\.rec\{display:flex;flex-wrap:wrap/);
+    assert.match(html, /\.split-sum\{display:flex;flex-wrap:wrap/);
+    assert.match(html, /\.rf-amt\{font-size:clamp\(/);
+  });
+});
+
+test('a VND-scale amount is stored, returned, and summed exactly', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    assert.equal((await request(`${api}/currencies`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'VND', is_default: false }),
+    })).status, 201);
+    const state = await (await request(`${api}`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const post = (amount_minor: number) => request(`${api}/transactions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Brunch', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor, currency_code: 'VND' }),
+    });
+
+    assert.equal((await post(99_999_999_999_99)).status, 201);
+    assert.equal((await post(99_999_999_999_99)).status, 201);
+    const listed = await (await request(`${api}/transactions`)).json() as { transactions: { amount_minor: number }[] };
+    const large = listed.transactions.map((t) => t.amount_minor).filter((a) => a > 1e12);
+    assert.deepEqual(large, [99_999_999_999_99, 99_999_999_999_99], 'no rounding on the way in or out');
+    assert.equal(large.reduce((a, b) => a + b, 0), 199_999_999_999_98, 'summing stays exact');
+
+    // past the safe-integer ceiling the write is refused rather than silently rounded
+    assert.equal((await post(1e21)).status, 400);
+  });
+});
+
 test('a person summary reports what they fronted, what was covered for them, and every counterparty', async () => {
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
@@ -607,5 +887,152 @@ test('automatic backups snapshot the workspace every N transactions and restore 
     assert.match(page, /id="s-backup-list"/);
     assert.match(page, /'\/backups\/'\+e\.sequence/, 'the snapshot list links at the download route');
     assert.match(page, /'\/backups\/'\+seq\+'\/restore'/, 'the restore button targets the restore route');
+  });
+});
+
+test('a tap anywhere on the delete icon resolves to its button', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    // the delete glyph is a child span, so reading the action off the tapped node leaves the whole icon dead
+    assert.match(
+      html,
+      /src\.closest\('\[data-del\],\[data-off\][^')]*\[data-def\][^')]*'\)/,
+      'the click handler resolves row actions from the nearest ancestor'
+    );
+    // a 34px icon still has to answer a 44px finger
+    assert.match(html, /button\.icon\{position:relative;width:var\(--ctl-sm\);padding:0;font-size:var\(--fs-base\)\}/, 'icon buttons anchor a hit ring');
+    assert.match(html, /button\.icon::after\{content:'';position:absolute;inset:-5px/, 'the ring reaches 44px');
+    assert.match(html, /button\.icon>span\{pointer-events:none\}/, 'the glyph never swallows the tap');
+  });
+});
+
+test('mobile zoom is off and the tab carries an icon', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    for (const path of ['/', `/w/${secret}`]) {
+      const html = await (await request(path)).text();
+      assert.match(html, /<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">/, `${path} locks the mobile viewport`);
+      assert.match(html, /<link rel="icon" type="image\/svg\+xml" href="\/favicon\.svg">/, `${path} links the icon`);
+      assert.match(html, /<link rel="apple-touch-icon" href="\/apple-touch-icon\.png">/, `${path} links the touch icon`);
+      assert.match(html, /touch-action:pan-x pan-y/, `${path} refuses pinch-zoom`);
+      assert.match(html, /@media \(max-width:600px\)\{:where\(input,select,textarea\)\{font-size:16px\}\}/, `${path} keeps controls at 16px`);
+    }
+    const svg = await request('/favicon.svg');
+    assert.equal(svg.status, 200);
+    assert.match(svg.headers.get('content-type') || '', /image\/svg\+xml/);
+    assert.match(await svg.text(), /<svg[^>]*viewBox="0 0 64 64"/, 'the icon is a real svg');
+    assert.equal((await request('/favicon.ico')).status, 200, 'the legacy icon path answers too');
+
+    const apple = await request('/apple-touch-icon.png');
+    assert.equal(apple.status, 200);
+    assert.equal(apple.headers.get('content-type'), 'image/png');
+    const bytes = new Uint8Array(await apple.arrayBuffer());
+    assert.deepEqual([...bytes.slice(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10], 'the touch icon is a real png');
+    assert.deepEqual([...bytes.slice(16, 24)], [0, 0, 0, 180, 0, 0, 0, 180], 'and it is 180x180 for iOS');
+  });
+});
+
+
+type ReceiptAttachmentRow = { id: number; receipt_id: number; label: string; image_type: string; image_bytes: number; created_at: string };
+type ReceiptCardRow = { id: number; title: string; note: string; link: string | null; is_added: number; added_at: string | null; created_at: string; attachments: ReceiptAttachmentRow[]; attachment_count: number };
+
+test('the receipts backlog is a hand-kept tracker: two lanes, several attachments per card, notes, and an audit trail', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const send = (path: string, init: RequestInit = {}) => request(`${api}${path}`, { ...init, headers: { 'content-type': 'application/json', ...(init.headers ?? {}) } });
+    const board = async () => ((await (await send('/receipts')).json()) as { receipts: ReceiptCardRow[] }).receipts;
+    const count = (table: string) => (query(`SELECT COUNT(*) AS count FROM ${table}`) as { count: number }[])[0].count;
+
+    assert.deepEqual(await board(), [], 'a fresh workspace starts with an empty board');
+    assert.equal((await send('/receipts', { method: 'POST', body: JSON.stringify({ title: '   ' }) })).status, 400, 'a receipt needs a title');
+    assert.equal((await send('/receipts', { method: 'POST', body: JSON.stringify({ title: 'Big C', link: 'ftp://example.com/r' }) })).status, 400, 'receipt links must be http(s)');
+    assert.equal((await send('/receipts', { method: 'POST', body: JSON.stringify({ title: 'Big C', is_added: 'yes' }) })).status, 400, 'is_added is a boolean - the app never infers it');
+    assert.equal((await send('/receipts', { method: 'POST', body: JSON.stringify({ title: 'Big C', note: 'x'.repeat(2001) }) })).status, 400, 'notes are capped');
+
+    const created = await send('/receipts', { method: 'POST', body: JSON.stringify({ title: 'Big C groceries', note: 'Ada paid', link: 'https://example.com/r/1' }) });
+    assert.equal(created.status, 201);
+    const card = ((await created.json()) as { receipt: ReceiptCardRow }).receipt;
+    assert.equal(card.is_added, 0, 'a new card starts out not added');
+    assert.equal(card.added_at, null);
+    assert.equal(card.attachment_count, 0);
+
+    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 42, 7]);
+    const upload = (id: number, label: string, bytes: Uint8Array = png, type = 'image/png') =>
+      request(`${api}/receipts/${id}/attachments?label=${encodeURIComponent(label)}`, { method: 'POST', headers: { 'content-type': type }, body: bytes });
+    assert.equal((await upload(card.id, 'notes.txt', png, 'text/plain')).status, 400, 'only images are accepted');
+    assert.equal((await upload(card.id, 'empty.png', new Uint8Array(0))).status, 400, 'an empty file is not a photo');
+
+    const firstUpload = await upload(card.id, 'front.jpg');
+    assert.equal(firstUpload.status, 201);
+    const firstAttachment = ((await firstUpload.json()) as { attachment: ReceiptAttachmentRow }).attachment;
+    assert.equal(firstAttachment.label, 'front.jpg');
+    assert.equal(Object.keys(firstAttachment).filter((key) => key.includes('key')).length, 0, 'the R2 object key never reaches the client');
+
+    for (let extra = 1; extra <= 5; extra += 1) {
+      assert.equal((await upload(card.id, `shot-${extra}.jpg`, new Uint8Array([extra, extra + 1]), 'image/jpeg')).status, 201, `photo ${extra + 1} lands`);
+    }
+    const over = await upload(card.id, 'seventh.jpg');
+    assert.equal(over.status, 400, 'the seventh photo is refused');
+    assert.match(((await over.json()) as { error: string }).error, /up to 6/);
+    assert.equal(count('receipt_attachments'), 6);
+
+    const listed = (await board())[0];
+    assert.equal(listed.attachment_count, 6, 'the card reports how many photos it holds');
+    assert.equal(listed.attachments.length, 6);
+
+    const served = await request(`${api}/receipts/${card.id}/attachments/${firstAttachment.id}`);
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get('content-type'), 'image/png');
+    assert.deepEqual(new Uint8Array(await served.arrayBuffer()), png, 'the photo comes back byte for byte');
+
+    const detached = await request(`${api}/receipts/${card.id}/attachments/${firstAttachment.id}`, { method: 'DELETE' });
+    assert.equal(detached.status, 200);
+    assert.equal((await request(`${api}/receipts/${card.id}/attachments/${firstAttachment.id}`)).status, 404, 'a detached photo stops being served');
+    assert.equal(count('receipt_attachments'), 5);
+
+    const added = await send(`/receipts/${card.id}`, { method: 'PATCH', body: JSON.stringify({ is_added: true, note: 'Entered as a Shopping row' }) });
+    assert.equal(added.status, 200);
+    const addedCard = ((await added.json()) as { receipt: ReceiptCardRow }).receipt;
+    assert.equal(addedCard.is_added, 1);
+    assert.ok(addedCard.added_at, 'moving it across stamps the time');
+    assert.equal(addedCard.note, 'Entered as a Shopping row');
+    const backAgain = ((await (await send(`/receipts/${card.id}`, { method: 'PATCH', body: JSON.stringify({ is_added: false }) })).json()) as { receipt: ReceiptCardRow }).receipt;
+    assert.equal(backAgain.is_added, 0);
+    assert.equal(backAgain.added_at, null, 'moving it back clears the stamp');
+
+    const state = (await (await send('')).json()) as { receipts: ReceiptCardRow[] };
+    assert.equal(state.receipts.length, 1, 'the board rides along in the state payload');
+    assert.ok(!JSON.stringify(state).includes('image_key'), 'object keys stay server-side');
+
+    const otherSecret = await createWorkspace(request);
+    const foreign = { headers: { 'content-type': 'application/json' }, body: JSON.stringify({ is_added: true }) };
+    assert.equal((await request(`/w/${otherSecret}/api/receipts/${card.id}`, { method: 'PATCH', ...foreign })).status, 404, 'another workspace cannot reach the card');
+    assert.equal((await request(`/w/${otherSecret}/api/receipts/${card.id}/attachments`)).status, 404);
+    assert.equal((await request(`/w/${otherSecret}/api/receipts/${card.id}/attachments/${firstAttachment.id}`)).status, 404);
+
+    const audit = ((await (await send('/audit')).json()) as { audit: { entity_type: string; action: string }[] }).audit;
+    assert.ok(audit.some((row) => row.entity_type === 'receipt' && row.action === 'create'), 'cards are audited');
+    assert.ok(audit.some((row) => row.entity_type === 'receipt' && row.action === 'update'), 'so is moving one across');
+    assert.ok(audit.some((row) => row.entity_type === 'receipt_attachment' && row.action === 'create'), 'each photo is audited');
+    assert.ok(audit.some((row) => row.entity_type === 'receipt_attachment' && row.action === 'delete'), 'so is taking one off');
+
+    const removed = await send(`/receipts/${card.id}/delete`, { method: 'POST', body: JSON.stringify({}) });
+    assert.equal(removed.status, 200);
+    assert.equal(count('receipt_attachments'), 0, 'deleting a card takes its photos with it');
+    assert.equal(count('receipts'), 0);
+
+    const html = await (await request(`/w/${secret}`)).text();
+    assert.match(html, /id="tab-receipts"/, 'the nav carries a receipts entry');
+    assert.match(html, /id="rec-open"/, 'lane one: not added');
+    assert.match(html, /id="rec-added"/, 'lane two: added');
+    assert.match(html, /id="rec-files"[^>]*multiple/, 'a few photos can be picked in one go');
+    assert.match(html, /id="rec-add"/, 'each receipt manages its photos from the edit sheet');
+    assert.doesNotMatch(html, /data-rec-action="attach"/, 'the card hands image work to the sheet');
+    assert.match(html, /function renderReceiptPhotos/, 'a photo can be taken off from the receipt edit sheet');
+    assert.equal((html.match(/class="att-x"/g) ?? []).length, 1, 'the only ✖ is the one in the edit sheet — card thumbnails carry none');
+    assert.match(html, /Nothing here writes transactions by itself/, 'the copy says the app never files receipts for you');
   });
 });

@@ -11,3 +11,8 @@ database_id = "421accfb-ae28-4f33-b7ef-4d25415a0d8c"
 [[r2_buckets]]
 binding = "BACKUPS"
 bucket_name = "trip-finance-backups"
+
+# Receipt photos are workspace-private: served only through the capability route, never the public cdn bucket.
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "trip-finance-receipts"

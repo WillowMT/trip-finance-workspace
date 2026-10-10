@@ -2,129 +2,278 @@ import { KEEP_BACKUPS } from './backups';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
-const CSS = `
+const CSS = `/* ── tokens: every colour, size and space comes from here ───────────────── */
 :root{
-  --bg:#f4f4f5; --card:#ffffff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7;
-  --brand:#2563eb; --brand-ink:#ffffff; --ok:#15803d; --bad:#dc2626; --chip:#f4f4f5;
-  --radius:14px; --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.1);
+  --bg:#f4f4f5; --card:#ffffff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7; --line-strong:#d4d4d8;
+  --brand:#2563eb; --brand-ink:#ffffff; --brand-hover:#1d4ed8; --ok:#15803d; --bad:#dc2626;
+  --surface:#f4f4f5; --hover:#ececee;
+  --shadow:0 1px 2px rgba(16,24,40,.06),0 1px 3px rgba(16,24,40,.1);
+  --ctl:44px; --ctl-sm:34px; --ctl-tab:36px; --ctl-area:92px; --avatar:36px; --emoji-w:88px;
+  --r-sm:8px; --r-md:10px; --r-lg:12px; --r-xl:16px; --r-pill:999px;
+  --sp-1:4px; --sp-2:6px; --sp-3:8px; --sp-4:10px; --sp-5:12px; --sp-6:14px; --sp-7:16px; --sp-8:24px;
+  --fs-2xs:.68rem; --fs-xs:.75rem; --fs-sm:.8rem; --fs-md:.88rem; --fs-base:.95rem; --fs-lg:1rem; --fs-xl:1.15rem; --fs-2xl:1.6rem;
+  --dur:.15s; --ease:cubic-bezier(.2,.7,.2,1); --maxw:680px;
 }
 @media (prefers-color-scheme:dark){
-  :root{ --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a;
-    --brand:#3b82f6; --ok:#4ade80; --bad:#f87171; --chip:#27272a; --shadow:none; }
+  :root{
+    --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a; --line-strong:#3f3f46;
+    --brand:#3b82f6; --brand-hover:#2f6fe0; --ok:#4ade80; --bad:#f87171; --surface:#27272a; --hover:#212124; --shadow:none;
+  }
 }
-*{box-sizing:border-box}
+*,*::before,*::after{box-sizing:border-box}
 html,body{margin:0}
+/* mobile: pinch-zoom and double-tap zoom are off, and controls stay at 16px so focusing a field cannot zoom the page */
+*{touch-action:pan-x pan-y;-webkit-tap-highlight-color:transparent;}
+@media (max-width:600px){:where(input,select,textarea){font-size:16px}}
+:root{color-scheme:light dark}
 body{background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-text-size-adjust:100%}
-main{max-width:680px;margin:0 auto;padding:0 14px 96px}
-header{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--line);padding:12px 14px 8px;margin:0 -14px 14px}
-.head{display:flex;align-items:center;justify-content:space-between;gap:10px;max-width:680px;margin:0 auto}
-h1{font-size:1.15rem;margin:0;letter-spacing:-.01em}
-h2{font-size:1rem;margin:0 0 10px;letter-spacing:-.01em}
-h3{font-size:.85rem;margin:0 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
-p.sub{color:var(--muted);font-size:.8rem;margin:2px 0 0}
-.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:10px auto 0;max-width:680px;padding:2px 2px 4px}
-.tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px;padding:7px 13px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
-.tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
-.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
-label{display:block;font-size:.78rem;color:var(--muted);font-weight:600;margin:0 0 4px}
+main{max-width:var(--maxw);margin:0 auto;padding:0 var(--sp-6) 96px}
+header{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--line);padding:var(--sp-5) var(--sp-6) var(--sp-3);margin:0 calc(var(--sp-6) * -1) var(--sp-6)}
+.head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-5);max-width:var(--maxw);margin:0 auto}
+a{color:var(--brand);text-decoration-thickness:1px;text-underline-offset:2px}
+h1{font-size:var(--fs-xl);margin:0;letter-spacing:-.01em}
+h2{font-size:var(--fs-lg);margin:0 0 var(--sp-4);letter-spacing:-.01em}
+h3{font-size:var(--fs-2xs);margin:0 0 var(--sp-2);color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+p.sub{color:var(--muted);font-size:var(--fs-sm);margin:var(--sp-1) 0 0}
+[hidden]{display:none !important}
+::selection{background:var(--brand);color:var(--brand-ink)}
+
+/* ── one focus treatment for everything you can tab to ──────────────────── */
+:where(a,button,select,input,textarea,summary,[tabindex]):focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+:where(input,select,textarea):focus-visible{outline-offset:-1px}
+
+/* ── form controls: one height, one radius, arrows we draw ourselves ────── */
+label{display:block;font-size:var(--fs-xs);color:var(--muted);font-weight:600;margin:0 0 var(--sp-1)}
 input,select,textarea,button{font:inherit;color:var(--ink)}
-input,select,textarea{width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);font-size:16px}
-input[readonly]{background:rgba(127,127,127,.09);color:var(--muted);cursor:not-allowed}
-input:focus,select:focus,textarea:focus{outline:2px solid var(--brand);outline-offset:-1px}
-textarea{min-height:92px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+:where(input:not([type=checkbox]):not([type=radio]),select,textarea){
+  width:100%;min-height:var(--ctl);padding:0 var(--sp-5);border:1px solid var(--line);border-radius:var(--r-lg);
+  background-color:var(--card);font-size:16px;line-height:1.2;
+  transition:border-color var(--dur) var(--ease),background-color var(--dur) var(--ease),opacity var(--dur) var(--ease);
+}
+:where(input:not([type=checkbox]):not([type=radio]),select,textarea):hover{border-color:var(--line-strong)}
+:where(input:not([type=checkbox]):not([type=radio]),select,textarea):disabled{opacity:.6;cursor:not-allowed;background-color:var(--surface)}
+:where(input,textarea)[readonly]{background-color:var(--surface);color:var(--muted);cursor:not-allowed}
+:where(input,select,textarea)[aria-invalid=true]{border-color:var(--bad)}
+::placeholder{color:var(--muted);opacity:.85}
+select{
+  appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:calc(var(--sp-5) + 22px);
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2371717a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-position:right var(--sp-5) center;background-size:12px 8px;
+}
+@media (prefers-color-scheme:dark){
+  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23a1a1aa' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
+}
+option{background:var(--card);color:var(--ink)}
+select::-ms-expand{display:none}
+textarea{min-height:var(--ctl-area);padding:var(--sp-4) var(--sp-5);line-height:1.5;resize:vertical}
+textarea.mono,pre,code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+textarea.mono{font-size:13px}
+
+/* ── buttons: one scale (44px / 34px / icon) with real states ───────────── */
+button{
+  background:var(--brand);color:var(--brand-ink);border:1px solid transparent;border-radius:var(--r-lg);min-height:var(--ctl);
+  padding:0 var(--sp-7);font-weight:600;cursor:pointer;width:100%;display:inline-flex;align-items:center;justify-content:center;
+  gap:var(--sp-2);line-height:1.2;white-space:nowrap;
+  transition:background var(--dur) var(--ease),color var(--dur) var(--ease),border-color var(--dur) var(--ease),opacity var(--dur) var(--ease);
+}
+button:hover{background:var(--brand-hover)}
+button:active{transform:translateY(1px)}
+button:disabled{opacity:.55;cursor:not-allowed;pointer-events:none}
+button[aria-busy=true]{pointer-events:none;opacity:.75}
+button[aria-busy=true]::after{content:"";width:12px;height:12px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
+button.ghost:hover{background:var(--hover);border-color:var(--line-strong)}
+button.danger{background:transparent;color:var(--bad);border-color:var(--line)}
+button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+/* every compact action in the app shares this one rule */
+button.mini,button.icon,.swap button,.pager button,.emoji-edit button,.people-actions button{width:auto;flex:0 0 auto;min-height:var(--ctl-sm);padding:0 var(--sp-5);font-size:var(--fs-sm);border-radius:var(--r-md)}
+button.icon{position:relative;width:var(--ctl-sm);padding:0;font-size:var(--fs-base)}
+button.icon::after{content:'';position:absolute;inset:-5px;border-radius:var(--r-md)}
+button.icon>span{pointer-events:none}
+.btns{display:flex;gap:var(--sp-3);flex-wrap:wrap;margin-top:var(--sp-4)}
+.btns button{width:auto;flex:1 1 140px;min-width:0}
+
+/* ── layout helpers ─────────────────────────────────────────────────────── */
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r-xl);padding:var(--sp-6);margin-bottom:var(--sp-5);box-shadow:var(--shadow)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-4)}
 .grid > *{min-width:0}
 .grid.three{grid-template-columns:1fr 1fr 1fr}
 /* a native date control is wider than its share of a three-up row, so give it the full width on phones */
 @media(max-width:559px){.grid.three{grid-template-columns:1fr 1fr}.grid.three > .field:last-child{grid-column:1 / -1}}
 .full{grid-column:1/-1}
-.field{margin-bottom:10px}
-button{background:var(--brand);color:var(--brand-ink);border:0;border-radius:10px;padding:11px 14px;font-weight:600;cursor:pointer;width:100%}
-button:active{transform:translateY(1px)}
-button:disabled{opacity:.5;cursor:default}
-button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
-button.danger{background:transparent;color:var(--bad);border:1px solid var(--line)}
-button.mini{width:auto;padding:5px 10px;font-size:.8rem;border-radius:8px}
-.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-.btns button{width:auto;flex:1;min-width:120px}
-.row{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--line)}
+.field{margin-bottom:var(--sp-4)}
+.inline{display:flex;gap:var(--sp-3);align-items:flex-end}
+.inline > *{flex:1} .inline button{flex:0 0 auto;width:auto}
+.people{display:grid;grid-template-columns:1fr 1fr;gap:var(--sp-2)}
+.check{display:flex;align-items:center;gap:var(--sp-3);margin:0;padding:var(--sp-4) var(--sp-4);border:1px solid var(--line);border-radius:var(--r-md);font-size:var(--fs-md);font-weight:600;color:var(--ink);cursor:pointer;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+.check:hover{border-color:var(--line-strong)}
+.check input{width:18px;height:18px;min-height:0;padding:0;flex:0 0 auto;accent-color:var(--brand);cursor:pointer}
+.check.off{opacity:.5}
+
+/* ── navigation ─────────────────────────────────────────────────────────── */
+.tabs{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) auto 0;max-width:var(--maxw);padding:2px 2px 4px}
+.tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-pill);padding:0 var(--sp-5);min-height:var(--ctl-tab);font-size:var(--fs-sm)}
+.tabs button:hover{background:var(--hover);color:var(--ink)}
+.tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
+
+/* ── lists: ledger rows, pairs, records, split summary ──────────────────── */
+.row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-2);margin:0 calc(var(--sp-2) * -1);border-bottom:1px solid var(--line);border-radius:var(--r-sm)}
 .row:last-child{border-bottom:0}
-.row .who{font-weight:600;font-size:.92rem}
-.row .meta{color:var(--muted);font-size:.78rem;margin-top:1px}
+.row:hover{background:var(--hover)}
+.row .who{font-weight:600;font-size:var(--fs-base)}
+.row .meta{color:var(--muted);font-size:var(--fs-xs);margin-top:1px;overflow-wrap:anywhere}
+.row-main{flex:1 1 auto;min-width:0}
+.row-side{display:flex;flex-direction:row;align-items:center;gap:var(--sp-3);flex:0 0 auto;margin-left:auto}
 .amt{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.amt.zero{color:var(--muted)}
 .pos{color:var(--ok)} .neg{color:var(--bad)}
-.person-card{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:transparent;border:1px solid var(--line);border-radius:12px;padding:11px;margin-bottom:8px;cursor:pointer;color:inherit;font:inherit}
-.person-card:hover{border-color:var(--brand)} .person-card:focus-visible{outline:2px solid var(--brand);outline-offset:1px}
-.person-card.archived{opacity:.6}
-.person-card .avatar{flex:0 0 36px;width:36px;height:36px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--chip);color:var(--brand);font-weight:800;font-size:.82rem}
-.person-card .p-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.person-card .p-nets{display:flex;flex-wrap:wrap;gap:8px;margin-top:3px}
-.person-card .chev{color:var(--muted);font-size:1.3rem;line-height:1;flex:0 0 auto}
-.modal{position:fixed;inset:0;background:rgba(9,9,11,.55);display:flex;align-items:flex-end;justify-content:center;z-index:60}
-.modal[hidden]{display:none}
-.modal .sheet{background:var(--card);width:100%;max-width:640px;max-height:90vh;overflow:auto;border-radius:16px 16px 0 0;padding:16px;border:1px solid var(--line)}
-@media(min-width:620px){ .modal{align-items:center;padding:18px} .modal .sheet{border-radius:16px;max-height:86vh} }
-.dlg-head{display:flex;align-items:center;justify-content:space-between;gap:10px;position:sticky;top:-16px;background:var(--card);padding:2px 0 8px;margin:-2px 0 0;border-bottom:1px solid var(--line);z-index:2}
-.dlg-head h2{margin:0;font-size:1.05rem}
-.pm-nets{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 4px;font-size:.95rem}
-.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(132px,1fr));gap:8px;margin:10px 0 4px}
-.kpi{background:var(--chip);border-radius:12px;padding:10px}
-.kpi .k-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;line-height:1.25}
-.kpi .k-value{font-size:.98rem;font-weight:800;margin-top:4px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.p-block{min-width:0;flex:1 1 auto}
 .pair{border-bottom:1px solid var(--line)}
-.pair-head{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;background:none;border:0;padding:10px 0;color:inherit;font:inherit;text-align:left;cursor:pointer}
-.pair-head .p-open{color:var(--muted);font-size:.78rem;font-weight:700;white-space:nowrap}
-.pair-head .who{display:block;font-weight:600;font-size:.92rem}
-.pair-head .who .amt{margin-left:6px;font-size:.88rem}
-.pair-head .p-open{margin-left:auto;flex:0 0 auto}
-.pair-head .meta{display:block;color:var(--muted);font-size:.76rem;margin-top:2px}
-.pair-detail{border-left:2px solid var(--line);margin:0 0 10px 3px;padding:2px 0 2px 11px}
-.rec{display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:5px 0;font-size:.85rem}
-.rec .r-main{min-width:0;display:block}
+.pair:last-child{border-bottom:0}
+.pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:var(--r-sm);padding:var(--sp-4) var(--sp-2);color:inherit;font:inherit;text-align:left;cursor:pointer}
+/* content cards are buttons too, but their text must wrap (the base button rule is nowrap) */
+.pair-head,.person-card{white-space:normal}
+.pair-head:hover{background:var(--hover)}
+.pair-head .who{display:block;min-width:0;flex:1 1 auto;font-weight:600;font-size:var(--fs-base)}
+.pair-head .who .amt{margin-left:var(--sp-2);font-size:var(--fs-md)}
+.pair-head .p-open{margin-left:auto;flex:0 0 auto;color:var(--muted);font-size:var(--fs-xs);font-weight:700;white-space:nowrap}
+.pair-head .meta{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px;overflow-wrap:anywhere}
+.pair-detail{border-left:2px solid var(--line);margin:0 0 var(--sp-4) 3px;padding:2px 0 2px var(--sp-5)}
+.rec{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-2) 0;font-size:var(--fs-sm)}
+.rec .r-main{flex:1 1 auto;min-width:0;display:block}
 .rec .r-main>span{display:block}
-.rec .r-meta{display:block;color:var(--muted);font-size:.75rem;margin-top:1px;line-height:1.3}
+.rec .r-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-width:0}
+.rec .r-topic{min-width:0;overflow-wrap:anywhere}
+.rec .r-head .tag-arch{margin-left:0}
+.rec.is-arch .r-topic{color:var(--muted)}
+.rec .r-meta{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:1px;line-height:1.3}
 .rec .r-amt{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
-.tag-arch{display:inline-block;background:var(--chip);color:var(--muted);border-radius:999px;padding:1px 7px;font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;margin-left:6px}
-.chip{display:inline-block;background:var(--chip);color:var(--muted);border-radius:999px;padding:2px 8px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
-.chip.debt{color:var(--brand)} .chip.payment{color:var(--ok)}
-.totals{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px}
-.total{background:var(--chip);border-radius:10px;padding:8px 11px;font-variant-numeric:tabular-nums;font-size:.85rem}
-.total b{display:block;font-size:1rem}
-.empty{color:var(--muted);font-size:.88rem;padding:6px 0}
-.err{color:var(--bad);font-size:.85rem;margin-top:8px;white-space:pre-wrap}
-details{border:1px solid var(--line);border-radius:10px;padding:9px 11px;margin-bottom:8px}
-summary{cursor:pointer;font-size:.86rem;font-weight:600}
-pre{background:var(--chip);border-radius:8px;padding:10px;overflow-x:auto;font-size:12px;margin:8px 0 0}
-#ai-prompt{max-height:340px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:50;background:var(--ink);color:var(--bg);border-radius:999px;padding:10px 16px;font-size:.86rem;font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:92vw;text-align:center;transition:opacity .2s;opacity:0;pointer-events:none}
+.split-sum{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
+.split-sum:last-child{border-bottom:0}
+.split-sum .who{font-weight:600;font-size:var(--fs-base)}
+.split-sum .paid{color:var(--muted);font-size:var(--fs-xs);margin-top:1px}
+.split-sum .share{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.empty{color:var(--muted);font-size:var(--fs-md);padding:var(--sp-2) 0}
+.err{color:var(--bad);font-size:var(--fs-sm);margin-top:var(--sp-3);white-space:pre-wrap}
+.hint{color:var(--muted);font-size:var(--fs-xs);margin-top:var(--sp-2)}
+
+/* ── chips, stats, avatars ──────────────────────────────────────────────── */
+.chip,.tag-arch{display:inline-block;background:var(--surface);color:var(--muted);border-radius:var(--r-pill);padding:2px var(--sp-3);font-size:var(--fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.tag-arch{margin-left:var(--sp-2)}
+.chip.debt{color:var(--brand)} .chip.payment{color:var(--ok)} .chip.split{color:var(--brand)}
+.totals{display:flex;gap:var(--sp-3);flex-wrap:wrap;margin-bottom:var(--sp-4)}
+.total,.kpi{background:var(--surface);border-radius:var(--r-md);padding:var(--sp-4) var(--sp-5);font-variant-numeric:tabular-nums;font-size:var(--fs-md)}
+.total b,.kpi .k-value{display:block;font-size:var(--fs-lg);font-weight:800;margin-top:var(--sp-1);overflow-wrap:anywhere}
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(132px,100%),1fr));gap:var(--sp-3);margin:var(--sp-4) 0 var(--sp-1)}
+.kpi-grid > .kpi.wide{grid-column:1/-1}
+.kpi-grid > *,.kpi,.total{min-width:0}
+.kpi{padding:var(--sp-4);min-width:0}
+.kpi .k-label{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;line-height:1.25}
+.person-card{display:flex;align-items:center;gap:var(--sp-5);width:100%;text-align:left;background:transparent;color:inherit;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-5);margin-bottom:var(--sp-3);font:inherit;cursor:pointer;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+.person-card:hover{background:transparent;border-color:var(--brand)}
+.person-card.archived{opacity:.6}
+.person-card .avatar{flex:0 0 var(--avatar);width:var(--avatar);height:var(--avatar);border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface);color:var(--brand);font-weight:800;font-size:var(--fs-sm)}
+.person-card .p-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.person-card .p-nets{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin-top:3px}
+.person-card .chev{color:var(--muted);font-size:var(--fs-xl);line-height:1;flex:0 0 auto}
+.emoji-edit{display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3)}
+#s-people input.emoji-input{width:var(--emoji-w);min-height:var(--ctl-sm);padding:0 var(--sp-3);text-align:center;font-size:var(--fs-lg)}
+.people-actions{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin:0 0 var(--sp-3)}
+.people-actions .hint{margin:0}
+.swap{display:flex;justify-content:center;margin:calc(var(--sp-1) * -1) 0 var(--sp-2)}
+.swap button{background:var(--surface);color:var(--ink);border-radius:var(--r-pill)}
+.swap button:hover{background:var(--hover)}
+
+/* ── review sheet, dialogs, toast, pager ────────────────────────────────── */
+.rf-head{font-size:var(--fs-lg);font-weight:650;line-height:1.5;margin:0 0 2px}
+.rf-head .rf-v{color:var(--muted);font-weight:500}
+.rf-head .rf-who{font-weight:700}
+.rf-amt{font-size:clamp(var(--fs-lg),5.5vw,var(--fs-2xl));font-weight:700;font-variant-numeric:tabular-nums;line-height:1.2;margin:var(--sp-1) 0 0;overflow-wrap:anywhere}
+.rf-why{color:var(--muted);font-size:var(--fs-md);margin:var(--sp-2) 0 0;line-height:1.45}
+.rf-rows{display:grid;grid-template-columns:auto 1fr;gap:var(--sp-2) var(--sp-6);font-size:var(--fs-md);margin:var(--sp-5) 0 0;padding-top:var(--sp-4);border-top:1px solid var(--line)}
+.rf-rows .k{color:var(--muted);white-space:nowrap}
+.rf-rows .v{font-weight:550;word-break:break-word}
+.rf-chips{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-5) 0 0}
+.rf-chips .chip{white-space:nowrap}
+.rf-chips .chip.payer{background:var(--surface);border-color:var(--line)}
+.modal{position:fixed;inset:0;background:rgba(9,9,11,.55);display:flex;align-items:flex-end;justify-content:center;z-index:60;animation:fade var(--dur) var(--ease)}
+.modal[hidden]{display:none}
+.modal .sheet{background:var(--card);width:100%;max-width:640px;max-height:90vh;overflow:auto;border-radius:var(--r-xl) var(--r-xl) 0 0;padding:var(--sp-7);border:1px solid var(--line)}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+@media(min-width:620px){.modal{align-items:center;padding:var(--sp-7)}.modal .sheet{border-radius:var(--r-xl);max-height:86vh}}
+.dlg-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);position:sticky;top:calc(var(--sp-7) * -1);background:var(--card);padding:2px 0 var(--sp-3);margin:-2px 0 0;border-bottom:1px solid var(--line);z-index:2}
+.dlg-head h2{margin:0;font-size:var(--fs-lg)}
+.pm-nets{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin:var(--sp-4) 0 var(--sp-1);font-size:var(--fs-base)}
+.p-nets .amt,.pm-nets .amt{flex:0 0 auto;white-space:normal;overflow-wrap:anywhere}
+.p-nets .say,.pm-nets .say{color:var(--muted)}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:var(--sp-7);z-index:50;background:var(--ink);color:var(--bg);border-radius:var(--r-pill);padding:var(--sp-4) var(--sp-7);font-size:var(--fs-md);font-weight:600;box-shadow:0 6px 20px rgba(0,0,0,.25);max-width:92vw;text-align:center;transition:opacity .2s;opacity:0;pointer-events:none}
 .toast.show{opacity:1}
 .toast.bad{background:var(--bad);color:#fff}
-.hint{color:var(--muted);font-size:.76rem;margin-top:6px}
-.swap{display:flex;justify-content:center;margin:-4px 0 6px}
-.swap button{width:auto;background:var(--chip);color:var(--ink);padding:4px 10px;font-size:.78rem;font-weight:600}
-.inline{display:flex;gap:8px;align-items:flex-end}
-.inline > *{flex:1} .inline button{flex:0 0 auto;width:auto}
-.people{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-.check{display:flex;align-items:center;gap:8px;margin:0;padding:9px 10px;border:1px solid var(--line);border-radius:10px;font-size:.9rem;font-weight:600;color:var(--ink)}
-.check input{width:18px;height:18px;padding:0;flex:0 0 auto;accent-color:var(--brand)}
-.check.off{opacity:.5}
-.chip.split{color:var(--brand)}
-.split-sum{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
-.split-sum:last-child{border-bottom:0}
-.split-sum .who{font-weight:600;font-size:.92rem}
-.split-sum .paid{color:var(--muted);font-size:.76rem;margin-top:1px}
-.split-sum .share{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
-.people-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0 0 8px}
-.people-actions button{flex:0 0 auto;width:auto}
-.people-actions .hint{margin:0}
-#split .btns button{white-space:nowrap}
-#split .totals{margin:10px 0 0}
-`;
+.pager{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);margin-top:var(--sp-5);padding-top:var(--sp-5);border-top:1px solid var(--line)}
+.pager[hidden]{display:none}
+.pager .pager-info{flex:1 1 auto;text-align:center;color:var(--muted);font-size:var(--fs-xs);font-variant-numeric:tabular-nums}
+details{border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-5);margin-bottom:var(--sp-3)}
+summary{cursor:pointer;font-size:var(--fs-md);font-weight:600}
+summary:hover{color:var(--brand)}
+pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);overflow-x:auto;font-size:12px;margin:var(--sp-3) 0 0}
+#ai-prompt{max-height:340px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.5}
+
+/* ── phone ──────────────────────────────────────────────────────────────── */
+@media (max-width:520px){
+  main{padding:0 var(--sp-5) 88px}
+  header{padding:var(--sp-4) var(--sp-5) var(--sp-3);margin:0 calc(var(--sp-5) * -1) var(--sp-5)}
+  .head{gap:var(--sp-3)}
+  .card{padding:var(--sp-5)}
+  .tabs{gap:var(--sp-1)}
+  .tabs button{padding:0 var(--sp-4);min-height:var(--ctl-sm);font-size:var(--fs-xs)}
+  .row .meta .cat{display:none}
+  .kpi .k-value{font-size:var(--fs-base)}
+}
+@media (max-width:400px){.people{grid-template-columns:1fr}}
+/* layout utilities — one consistent replacement for one-off inline styles */
+.flush{margin:0}
+.stack{display:flex;flex-direction:column;gap:var(--sp-1)}
+.filter-bar{display:flex;flex-wrap:wrap;gap:var(--sp-4);align-items:flex-end;margin:var(--sp-4) 0}
+.filter-bar > label{flex:1 1 150px;min-width:0}
+.filter-bar > .btns{flex:1 1 100%;margin:0}
+.mt-8{margin-top:var(--sp-3)}
+.mt-10{margin-top:var(--sp-4)}
+.mt-12{margin-top:var(--sp-5)}
+.mt-14{margin-top:var(--sp-6)}
+.mt-16{margin-top:var(--sp-7)}
+.link-plain{text-decoration:none}
+/* receipt backlog board: a manual two-column tracker, not an importer */
+.rec-board{display:grid;grid-template-columns:minmax(min(260px,100%),1fr) minmax(min(260px,100%),1fr);gap:var(--sp-4);align-items:start;margin-top:var(--sp-4)}
+.rec-col{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.rec-head{display:flex;flex-direction:column;gap:2px;padding:0 var(--sp-1)}
+.rec-head h3{display:flex;align-items:center;gap:var(--sp-2);margin:0;font-size:var(--fs-md)}
+.rec-head .count{display:inline-flex;align-items:center;justify-content:center;min-width:22px;height:22px;padding:0 6px;border-radius:999px;background:var(--hover);color:var(--muted);font-size:var(--fs-2xs);font-weight:600}
+.rec-list{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0}
+.rec-card{display:flex;flex-direction:column;gap:var(--sp-2);border:1px solid var(--line);border-radius:var(--r-lg);padding:var(--sp-5);background:var(--surface);min-width:0;white-space:normal}
+.rec-main{display:flex;flex-direction:column;gap:var(--sp-2);min-width:0}
+.rec-title{font-weight:600;font-size:var(--fs-md);overflow-wrap:anywhere}
+.rec-note{color:var(--muted);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere}
+.rec-meta{color:var(--muted);font-size:var(--fs-2xs);overflow-wrap:anywhere}
+.rec-meta a{color:var(--brand)}
+.rec-atts{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+.att{position:relative;display:block;width:56px;height:56px;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--line);background:var(--hover)}
+.att img{width:100%;height:100%;object-fit:cover;display:block}
+.att-x{position:absolute;top:0;right:0;width:22px;height:22px;min-width:0;padding:0;border:0;border-radius:0 0 0 var(--r-md);background:rgba(0,0,0,.62);color:#fff;font-size:11px;line-height:1;display:grid;place-items:center;cursor:pointer;white-space:normal}
+.att-x::after{content:'';position:absolute;inset:-11px}
+.att-x span{pointer-events:none}
+.rec-acts{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+@media (max-width:640px){.rec-board{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}`;
 
 const page = (title: string, head: string, body: string, script = '') => `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
 <style>${CSS}</style>
@@ -174,22 +323,39 @@ const APP_SCRIPT = `
 var $=function(id){return document.getElementById(id)};
 var api=location.pathname.replace(/\\/+$/,'')+'/api';
 var boot=window.__initial||{};
-var people=boot.people||[], currencies=boot.currencies||[], settings=null, me=null, rosterSig='', backups=null;
+var people=boot.people||[], currencies=boot.currencies||[], settings=null, me=null, rosterSig='', backups=null, receipts=boot.receipts||[];
 
 function toast(msg,bad){var t=$('toast');t.textContent=msg;t.className='toast show'+(bad?' bad':'');clearTimeout(t._t);t._t=setTimeout(function(){t.className='toast'},2800)}
 function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
-function name(id){for(var i=0;i<people.length;i++){if(people[i].id===id){return people[i].display_name}}return '#'+id}
+function name(id){for(var i=0;i<people.length;i++){if(people[i].id===id){var p=people[i];return (p.emoji?p.emoji+' ':'')+p.display_name}}return '#'+id}
+function bareName(id){for(var i=0;i<people.length;i++){if(people[i].id===id){return people[i].display_name}}return ''}
+/* Reads "205708", "205,708" and "1.234.567" as grouping, "205708,50" and "1.234,56" as comma
+   decimals (one comma with up to two digits after it). Built by string digit math, so a VND-sized
+   amount cannot drift through a float, and the result is always an integer count of minor units. */
 function toMinor(v){
-  var s=String(v==null?'':v).replace(/[\\s,]/g,'');
-  if(s===''){return null}
-  var n=Number(s);
-  if(!isFinite(n)||n<=0){return null}
-  var m=Math.round(n*100);
-  return Number.isSafeInteger(m)&&m>0?m:null;
+  var s=String(v==null?'':v).replace(/[\\s\\u00a0]/g,'');
+  if(s===''||!/^[\\d.,]+$/.test(s)){return null}
+  var comma=s.lastIndexOf(','), dot=s.lastIndexOf('.'), dec=-1;
+  if(comma>=0&&dot>=0){dec=comma>dot?comma:dot}
+  else if(comma>=0){dec=(s.length-comma-1)<=2&&s.indexOf(',')===comma?comma:-1}
+  else if(dot>=0){dec=(s.length-dot-1)<=2&&s.indexOf('.')===dot?dot:-1}
+  var intp=(dec>=0?s.slice(0,dec):s).replace(/[.,]/g,'');
+  var frac=(dec>=0?s.slice(dec+1):'').replace(/[.,]/g,'');
+  if(intp===''){intp='0'}
+  if(!/^\\d*$/.test(intp)||!/^\\d*$/.test(frac)){return null}
+  var m=(intp+(frac+'00').slice(0,2)).replace(/^0+/,'');
+  if(m.length===0||m.length>15){return null}
+  var n=Number(m);
+  return Number.isSafeInteger(n)&&n>0?n:null;
 }
+/* Currencies whose everyday unit is the whole unit: a whole amount drops the ".00", a fractional
+   one keeps both decimals, so a sub-unit value in the data is never hidden. Grouping uses the comma
+   convention, which is also what toMinor() reads back, so display and input agree. */
+var NODEC=['BIF','CLP','DJF','GNF','HUF','ISK','JPY','KMF','KRW','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF'];
 function money(minor,code){
-  var v=(Number(minor)||0)/100;
-  var s=v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
+  var m=Number(minor)||0, cur=String(code||'').toUpperCase();
+  var dec=(NODEC.indexOf(cur)>=0&&m%100===0)?0:2;
+  var s=(m/100).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
   return (code?code+' ':'')+s;
 }
 function iso(d){return d.toISOString().slice(0,10)}
@@ -209,7 +375,7 @@ async function call(path,opts){
   }
   return {ok:true,status:res.status,data:data};
 }
-function busy(btn,on){ if(btn){ btn.disabled=!!on } }
+function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria-busy','true')}else{btn.removeAttribute('aria-busy')} } }
 
 var TABS=(function(){
   var out=[], nodes=null;
@@ -228,10 +394,11 @@ function showTab(tab){
   if(tab==='split'){renderSplit()}
   if(tab==='audit'){loadAudit()}
   if(tab==='settings'){renderSettings()}
+  if(tab==='receipts'){refreshReceipts()}
 }
 
 function rosterSignature(){
-  return people.map(function(p){return p.id+':'+p.display_name+':'+(p.is_archived?1:0)}).join('|')+'/'+currencies.map(function(c){return c.id+':'+c.code+':'+(c.is_archived?1:0)+':'+(c.is_default?1:0)}).join('|')+'/'+((settings&&settings.timezone)||'');
+  return people.map(function(p){return p.id+':'+p.display_name+':'+(p.emoji||'')+':'+(p.is_archived?1:0)}).join('|')+'/'+currencies.map(function(c){return c.id+':'+c.code+':'+(c.is_archived?1:0)+':'+(c.is_default?1:0)}).join('|')+'/'+((settings&&settings.timezone)||'');
 }
 function renderSplitPeople(){
   var box=$('sp-people'); if(!box){return}
@@ -240,7 +407,7 @@ function renderSplitPeople(){
   var html='';
   for(var k=0;k<people.length;k++){ var p=people[k]; if(p.is_archived){continue}
     var on=any?!!chosen[String(p.id)]:true;
-    html+='<label class="check"><input type="checkbox" value="'+p.id+'"'+(on?' checked':'')+'><span>'+esc(p.display_name)+'</span></label>';
+    html+='<label class="check"><input type="checkbox" value="'+p.id+'"'+(on?' checked':'')+'><span>'+esc((p.emoji?p.emoji+' ':'')+p.display_name)+'</span></label>';
   }
   box.innerHTML=html;
 }
@@ -260,26 +427,56 @@ async function loadState(){
 }
 
 /* ---------------- ledger ---------------- */
+/* the two people fields mean different things per mode, so say what they are instead of leaving "Paid by / For" to guesswork */
+function syncKindLabels(){
+  var kind=$('t-kind'); if(!kind){return}
+  var pay=kind.value==='payment';
+  var c=$('t-creditor-label'), d=$('t-debtor-label'), hint=$('t-kind-hint');
+  if(c){ c.innerHTML=pay?'<span aria-hidden="true">📥</span> Repaid to (was owed)':'<span aria-hidden="true">💳</span> Paid by (is owed)' }
+  if(d){ d.innerHTML=pay?'<span aria-hidden="true">📤</span> Repaid by (who owed it)':'<span aria-hidden="true">🧾</span> For (owes)' }
+  if(hint){ hint.textContent=pay?'Money goes from "Repaid by" ➜ "Repaid to": the person who owed it hands the money back.':'One person paid the bill for someone else, so the other person owes them.' }
+  var sw=$('t-swap'); if(sw){ sw.textContent=pay?'↔️ Swap who paid back':'↔️ Swap people' }
+}
 function txRow(t){
   var el=document.createElement('div'); el.className='row';
-  var amount=(t.amount_minor<0?'-':'')+money(Math.abs(t.amount_minor),t.currency_code);
-  el.innerHTML='<div><div class="who">'+esc(t.topic)+' <span class="chip '+esc(t.entry_kind)+'">'+esc(t.entry_kind)+'</span></div><div class="meta">'+esc(t.occurred_on)+' · '+esc(name(t.creditor_person_id))+' → '+esc(name(t.debtor_person_id))+' · '+esc(t.category)+'</div></div>'+
-    '<div style="text-align:right"><div class="amt">'+esc(amount)+'</div><button class="mini danger" data-del="'+t.id+'" type="button">Delete</button></div>';
+  /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
+  var signed=(t.entry_kind==='payment')?-t.amount_minor:t.amount_minor;
+  var cls=signed>0?'pos':(signed<0?'neg':'zero');
+  el.innerHTML='<div class="row-main"><div class="who">'+esc(t.topic)+' <span class="chip '+esc(t.entry_kind)+'">'+esc(t.entry_kind)+'</span></div><div class="meta">'+esc(t.occurred_on)+' · '+esc(name(t.creditor_person_id))+' → '+esc(name(t.debtor_person_id))+'<span class="cat"> · '+esc(t.category)+'</span></div></div>'+
+    '<div class="row-side"><div class="amt '+cls+'">'+esc(signedMoney(signed,t.currency_code))+'</div><button class="mini icon danger" data-del="'+t.id+'" type="button" title="Delete transaction" aria-label="Delete transaction"><span aria-hidden="true">🗑️</span></button></div>';
   return el;
 }
+var TXPAGE=50, txPage=1, txCache=[];
 async function loadLedger(){
   var list=$('tx-list'); list.innerHTML='<div class="empty">Loading…</div>';
   var r=await call('/transactions');
-  if(!r.ok){ list.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
-  var txs=(r.data&&r.data.transactions)||[];
+  if(!r.ok){ list.innerHTML='<div class="err">'+esc(r.error)+'</div>'; var p0=$('tx-pager'); if(p0){p0.hidden=true} return }
+  var txs=(r.data&&r.data.transactions)||[]; txCache=txs;
   var totals={};
   for(var i=0;i<txs.length;i++){ var t=txs[i]; var signed=(t.entry_kind==='payment')?-t.amount_minor:t.amount_minor; totals[t.currency_code]=(totals[t.currency_code]||0)+signed }
   var keys=Object.keys(totals).sort();
   var box=$('tx-totals'); box.innerHTML='';
-  if(keys.length){ for(var k=0;k<keys.length;k++){ var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b>'+esc(money(totals[keys[k]],keys[k])||'')+'</b>'; box.appendChild(d) } }
+  if(keys.length){ for(var k=0;k<keys.length;k++){ var v=totals[keys[k]], cls2=v>0?'pos':(v<0?'neg':'zero'); var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b class="'+cls2+'">'+esc(money(v,keys[k])||'')+'</b>'; box.appendChild(d) } }
+  renderTxList();
+}
+function renderTxList(){
+  var list=$('tx-list'); if(!list){return}
   list.innerHTML='';
-  if(!txs.length){ list.innerHTML='<div class="empty">No transactions yet. Add the first one above.</div>'; return }
-  for(var j=0;j<txs.length;j++){ list.appendChild(txRow(txs[j])) }
+  var txs=txCache||[], pager=$('tx-pager');
+  var pages=Math.max(1,Math.ceil(txs.length/TXPAGE));
+  if(txPage>pages){ txPage=pages } if(txPage<1){ txPage=1 }
+  if(!txs.length){ list.innerHTML='<div class="empty">🗒️ No transactions yet. Add the first one above.</div>'; if(pager){pager.hidden=true} return }
+  var from=(txPage-1)*TXPAGE, slice=txs.slice(from,from+TXPAGE);
+  for(var j=0;j<slice.length;j++){ list.appendChild(txRow(slice[j])) }
+  if(!pager){return}
+  if(pages<=1){ pager.hidden=true; return }
+  pager.hidden=false;
+  $('tx-pager-info').textContent='Page '+txPage+' of '+pages+' · showing '+(from+1)+'–'+(from+slice.length)+' of '+txs.length;
+  $('tx-prev').disabled=(txPage<=1); $('tx-next').disabled=(txPage>=pages);
+}
+function txGo(delta){
+  txPage=txPage+delta; renderTxList();
+  var l=$('tx-list'); if(l&&l.scrollIntoView){ l.scrollIntoView({block:'nearest'}) }
 }
 async function delTx(id,btn){
   if(!confirm('Delete this transaction? It stays restorable in the audit log.')){return}
@@ -289,21 +486,98 @@ async function delTx(id,btn){
   if(!r.ok){ toast(r.error,true); return }
   toast('Transaction deleted'); loadLedger();
 }
+/* ---------------- review before writing ----------------
+   Both writes (a ledger entry and a split) pass through one review sheet. It shows the
+   least it can: who moved what to whom, the amount in the ledger's own colours, and one
+   plain sentence. Nothing reaches the API until Confirm is pressed - Back, Escape and a
+   backdrop tap all leave the form exactly as it was. */
+var reviewAction=null, reviewBusy=false, reviewOpener=null;
+function reviewRows(items){
+  var html='';
+  for(var i=0;i<items.length;i++){ if(items[i][1]){ html+='<div class="k">'+esc(items[i][0])+'</div><div class="v">'+items[i][1]+'</div>' } }
+  return html?'<div class="rf-rows">'+html+'</div>':'';
+}
+function reviewWho(id,strong){
+  var n=esc(name(id));
+  return strong?('<span class="rf-who">'+n+'</span>'):n;
+}
+function txReview(rows){
+  var one=rows[0], pay=one.entry_kind==='payment';
+  var debtor=name(one.debtor_person_id), creditor=name(one.creditor_person_id);
+  var body='<div class="rf-head">'+(pay
+      ? (reviewWho(one.debtor_person_id)+' <span class="rf-v">repaid</span> '+reviewWho(one.creditor_person_id))
+      : (reviewWho(one.creditor_person_id)+' <span class="rf-v">paid for</span> '+reviewWho(one.debtor_person_id)))+'</div>'+
+    '<div class="rf-amt '+(pay?'neg':'pos')+'">'+esc(signedMoney(pay?-one.amount_minor:one.amount_minor,one.currency_code))+'</div>'+
+    '<p class="rf-why">'+(pay
+      ? ('Money going back, so '+esc(debtor)+' owes less to '+esc(creditor)+'.')
+      : (esc(debtor)+' owes this to '+esc(creditor)+' from now on.'))+'</p>'+
+    reviewRows([['What',esc(one.topic)],['Category',esc(one.category)],['Date',esc(one.occurred_on)],['Note',one.notes?esc(one.notes):'']]);
+  return { title: pay?'Review repayment':'Review new debt', icon: pay?'📥':'💳',
+    confirm: pay?'Confirm repayment':'Confirm debt', body: body };
+}
+function splitReview(d){
+  var ids=d.participant_person_ids.slice(0).sort(function(a,b){return a-b});
+  var alloc=allocate(d.amount_minor,ids), owed=0, chips='', debts=0;
+  for(var i=0;i<alloc.length;i++){ var a=alloc[i], payer=a.person_id===d.payer_person_id;
+    if(payer){ chips+='<span class="chip payer">'+esc(name(a.person_id))+' · paid the bill</span>' }
+    else { owed+=a.amount_minor; debts++; chips+='<span class="chip">'+esc(name(a.person_id))+' · '+esc(money(a.amount_minor,d.currency_code))+'</span>' }
+  }
+  var payer=esc(name(d.payer_person_id));
+  var body='<div class="rf-head">'+reviewWho(d.payer_person_id)+' <span class="rf-v">paid</span> '+esc(money(d.amount_minor,d.currency_code))+' for '+ids.length+' people</div>'+
+    '<div class="rf-amt pos">'+esc(signedMoney(owed,d.currency_code))+'</div>'+
+    '<p class="rf-why">'+debts+(debts===1?' debt':' debts')+' will be created - each share is listed below.</p>'+
+    '<div class="rf-chips">'+chips+'</div>'+
+    reviewRows([['What',esc(d.topic)],['Category',esc(d.category)],['Date',esc(d.occurred_on)]]);
+  return { title:'Review split', icon:'✂️', confirm:'Confirm split', body: body };
+}
+function openReview(build,action,btn){
+  var m=$('review-modal');
+  if(!m){ action(); return }   /* never block a write if the sheet's markup is missing */
+  reviewAction=action; reviewBusy=false; reviewOpener=(btn&&btn.focus)?btn:(document.activeElement||null);
+  var t=$('rv-title'), c=$('rv-confirm');
+  if(t){ t.textContent=build.title }
+  $('rv-body').innerHTML=build.body;
+  if(c){ c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> '+esc(build.confirm); c.disabled=false }
+  m.hidden=false;
+  var back=$('rv-back'); if(back&&back.focus){ try{ back.focus() }catch(err){} }
+}
+function closeReview(){
+  var m=$('review-modal'); if(!m||m.hidden){return}
+  m.hidden=true; reviewAction=null; reviewBusy=false;
+  if(reviewOpener&&reviewOpener.focus){ try{ reviewOpener.focus() }catch(err){} }
+  reviewOpener=null;
+}
+async function confirmReview(){
+  var m=$('review-modal'); if(!m||m.hidden||reviewBusy||!reviewAction){return}
+  var btn=$('rv-confirm'), act=reviewAction, label=btn?btn.innerHTML:'';
+  reviewBusy=true;
+  if(btn){ btn.disabled=true; btn.innerHTML='<span aria-hidden="true">⏳</span> Saving…' }
+  try{ await act() }catch(err){}
+  if(btn){ btn.disabled=false; btn.innerHTML=label }
+  reviewBusy=false;
+  closeReview();
+}
 async function addTx(){
   var btn=$('t-add'); var err=$('t-err'); err.textContent='';
   var rows=[{occurred_on:$('t-date').value,entry_kind:$('t-kind').value,topic:$('t-topic').value.trim(),
     category:$('t-category').value.trim(),creditor_person_id:Number($('t-creditor').value),
     debtor_person_id:Number($('t-debtor').value),amount_minor:toMinor($('t-amount').value),
     currency_code:$('t-currency').value,notes:$('t-notes').value.trim()}];
-  await commitRows(rows,btn,err);
+  var problem=validateRows(rows);
+  if(problem){ err.textContent=problem; return }
+  /* nothing is written until the review sheet is confirmed */
+  openReview(txReview(rows), function(){ return postRows(rows,btn,err) }, btn);
 }
-async function commitRows(rows,btn,err){
-  if(!rows.length){err.textContent='Nothing to add.';return false}
+function validateRows(rows){
+  if(!rows.length){return 'Nothing to add.'}
   if(rows.length===1){ var one=rows[0];
-    if(!one.topic||!one.category){err.textContent='Topic and category are required.';return false}
-    if(!one.amount_minor){err.textContent='Enter a positive amount.';return false}
-    if(one.creditor_person_id===one.debtor_person_id){err.textContent='Creditor and debtor must differ.';return false}
+    if(!one.topic||!one.category){return 'Topic and category are required.'}
+    if(!one.amount_minor){return 'Enter a positive amount.'}
+    if(one.creditor_person_id===one.debtor_person_id){return 'Creditor and debtor must differ.'}
   }
+  return '';
+}
+async function postRows(rows,btn,err){
   busy(btn,true);
   var r=(rows.length===1)
     ? await call('/transactions',{method:'POST',body:rows[0]})
@@ -311,9 +585,9 @@ async function commitRows(rows,btn,err){
   busy(btn,false);
   if(!r.ok){ err.textContent=r.error; toast(r.error,true); return false }
   var doneMsg=rows.length===1?'Transaction added':(rows.length+' transactions added');
-  if(r.data&&r.data.netted_pairs){ doneMsg+=' \u00b7 '+r.data.netted_pairs+' reciprocal balance'+(r.data.netted_pairs===1?'':'s')+' netted' }
+  if(r.data&&r.data.netted_pairs){ doneMsg+=' · '+r.data.netted_pairs+' reciprocal balance'+(r.data.netted_pairs===1?'':'s')+' netted' }
   toast(doneMsg);
-  $('t-amount').value=''; $('t-topic').value=''; $('t-category').value=''; $('t-notes').value='';
+  $('t-amount').value=''; $('t-topic').value=''; $('t-category').value='Other'; $('t-notes').value='';
   loadLedger(); return true;
 }
 /* ---------------- balances ---------------- */
@@ -339,12 +613,12 @@ async function loadBalances(){
     codes.sort();
     var chips='';
     for(var z=0;z<codes.length;z++){ var v=(mineC[codes[z]]||0)+(mineD[codes[z]]||0); if(v===0){continue}
-      chips+='<span class="amt '+(v>0?'pos':'neg')+'">'+esc((v>0?'+':'−')+money(Math.abs(v),codes[z]))+'</span>';
+      chips+=netChip(v,codes[z],p.display_name);
     }
     var n=counts[p.id]||0;
     var el=document.createElement('button'); el.type='button';
     el.className='person-card'+(p.is_archived?' archived':''); el.setAttribute('data-person',p.id); el.setAttribute('aria-haspopup','dialog');
-    el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(initials(p.display_name))+'</span>'+
+    el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
       '<span class="meta">'+n+' record'+(n===1?'':'s')+'</span>'+
       '<span class="p-nets">'+(chips||'<span class="meta">nothing outstanding</span>')+'</span></span>'+
@@ -373,15 +647,32 @@ async function doOffset(a,b,c,btn){
 }
 /* ---------------- person popup ---------------- */
 var pmOpenId=null, pmData=null;
-function initials(n){ var parts=String(n==null?'':n).trim().split(/\s+/); if(!parts[0]){return '?'} var out=parts[0].slice(0,1); if(parts.length>1){ out=out+parts[parts.length-1].slice(0,1) } return out.toUpperCase() }
+function initials(n){ var parts=String(n==null?'':n).trim().split(/s+/); if(!parts[0]){return '?'} var out=parts[0].slice(0,1); if(parts.length>1){ out=out+parts[parts.length-1].slice(0,1) } return out.toUpperCase() }
 function signedMoney(v,code){ if(!v){return '—'} return (v>0?'+':'−')+money(Math.abs(v),code) }
-function kpi(label,value){ return '<div class="kpi"><div class="k-label">'+esc(label)+'</div><div class="k-value">'+esc(value)+'</div></div>' }
+function netPhrase(v,who){ return v>0?('owed to '+who):(v<0?('owed by '+who):'settled up') }
+function netChip(v,code,who){
+  /* the amount is its own span so a long one can drop to its own line; widowed words inside a
+     nowrap amount made billion-đồng chips overflow their card at phone width. */
+  var cls=v>0?'pos':(v<0?'neg':''), amt=v?((v>0?'+':'−')+money(Math.abs(v),code)):'';
+  return (amt?'<span class="amt '+cls+'">'+esc(amt)+'</span> ':'')+'<span class="say">'+esc(netPhrase(v,who))+'</span>';
+}
+function kpi(label,value,cls){
+  /* a tile holding a billion-đồng figure spans the row, so the number is never split mid-group */
+  var wide=String(value).length>16?' wide':'';
+  return '<div class="kpi'+wide+'"><div class="k-label">'+esc(label)+'</div><div class="k-value '+(cls||'')+'">'+esc(value)+'</div></div>' }
 function recRow(t){
-  var dir=t.direction, label=dir==='paid_for'?'fronted for '+t.counterparty:dir==='covered_for_them'?t.counterparty+' covered for them':dir==='settled_out'?'paid '+t.counterparty:'received from '+t.counterparty;
+  var dir=t.direction, label=dir==='paid_for'?'fronted for '+t.counterparty:dir==='covered_for_them'?'covered by '+t.counterparty:dir==='settled_out'?'paid '+t.counterparty:'received from '+t.counterparty;
   var cls=dir==='paid_for'?'pos':(dir==='covered_for_them'?'neg':'');
-  return '<div class="rec"><span class="r-main"><span>'+esc(t.topic)+'</span>'+((t.is_deleted===1)?'<span class="tag-arch">archived</span>':'')+
+  var arch=(t.is_deleted===1);
+  return '<div class="rec'+(arch?' is-arch':'')+'"><span class="r-main"><span class="r-head"><span class="r-topic">'+esc(t.topic)+'</span>'+(arch?'<span class="tag-arch">archived</span>':'')+'</span>'+
     '<span class="r-meta">'+esc(t.occurred_on)+' · '+esc(t.entry_kind)+(t.category?' · '+esc(t.category):'')+' · '+esc(label)+'</span></span>'+
     '<span class="r-amt '+cls+'">'+esc(money(Math.abs(t.amount_minor),t.currency_code))+'</span></div>';
+}
+function pairLine(pr,me){
+  var owesMe=pr.net_minor>0, meOwes=pr.net_minor<0;
+  var line=owesMe?(pr.counterparty+' owes '+me):(meOwes?(me+' owes '+pr.counterparty):(pr.counterparty+' — settled up'));
+  var amt=(owesMe||meOwes)?' <span class="amt '+(owesMe?'pos':'neg')+'">'+esc(money(Math.abs(pr.net_minor),pr.currency_code))+'</span>':'';
+  return '<span class="who">'+esc(line)+amt+'</span>';
 }
 function pairRecords(id){ var out=[], recs=(pmData&&pmData.recent)||[]; for(var i=0;i<recs.length;i++){ if(recs[i].counterparty_id===id){ out.push(recs[i]) } } return out }
 function togglePair(key){
@@ -407,41 +698,39 @@ function closePerson(){
 }
 function renderPerson(){
   var d=pmData||{}, p=d.person||{}, body=$('pm-body'), title=$('pm-title');
-  if(title){ title.textContent=(p.display_name||'Person')+(p.is_archived?' (archived)':'') }
+  if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
   var totals=d.totals||[], records=d.records||{}, html='';
   var chips='';
-  for(var i=0;i<totals.length;i++){ var t0=totals[i];
-    chips+='<span class="amt '+(t0.net_minor>0?'pos':(t0.net_minor<0?'neg':''))+'">'+esc(signedMoney(t0.net_minor,t0.currency_code))+
-      (t0.net_minor>0?' owed to them':(t0.net_minor<0?' they owe':''))+'</span>';
-  }
+  var meName=p.display_name||'this person';
+  for(var i=0;i<totals.length;i++){ var t0=totals[i]; chips+=netChip(t0.net_minor,t0.currency_code,meName) }
   html+='<div class="pm-nets">'+(chips||'<span class="empty">Nothing outstanding — settled up.</span>')+'</div>';
   html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
   for(var c=0;c<totals.length;c++){ var t=totals[c];
-    html+='<h3 style="margin-top:14px">'+esc(t.currency_code)+'</h3><div class="kpi-grid">'+
-      kpi('Fronted for others',money(t.paid_for_minor,t.currency_code))+
-      kpi('Covered for them',money(t.covered_for_them_minor,t.currency_code))+
-      kpi('Net position',signedMoney(t.net_minor,t.currency_code))+
-      kpi('Settled out / in',money(t.settled_out_minor,t.currency_code)+' / '+money(t.settled_in_minor,t.currency_code))+
+    html+='<h3 class="mt-14">'+esc(t.currency_code)+'</h3><div class="kpi-grid">'+
+      kpi(meName+' fronted for others',money(t.paid_for_minor,t.currency_code))+
+      kpi('Covered for '+meName,money(t.covered_for_them_minor,t.currency_code))+
+      kpi('Net for '+meName,signedMoney(t.net_minor,t.currency_code),(t.net_minor>0?'pos':(t.net_minor<0?'neg':'')))+
+      kpi('Settled — paid / received',money(t.settled_out_minor,t.currency_code)+' / '+money(t.settled_in_minor,t.currency_code))+
       '</div>';
   }
   var pairs=d.counterparties||[];
-  html+='<h3 style="margin-top:16px">Balances by person</h3>';
+  html+='<h3 class="mt-16">Balances by person</h3><p class="hint">Each line names who owes whom. Green means the money is owed to '+esc(meName)+'; red means '+esc(meName)+' owes it.</p>';
   if(!pairs.length){ html+='<div class="empty">No counterparties yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id; var recs=pairRecords(pr.counterparty_id);
     var settled=(pr.settled_out_minor||0)+(pr.settled_in_minor||0);
     html+='<div class="pair"><button class="pair-head" type="button" data-pair="'+esc(key)+'" aria-expanded="false">'+
-      '<span class="p-main"><span class="who">'+esc(pr.counterparty)+' <span class="amt '+(pr.net_minor>0?'pos':(pr.net_minor<0?'neg':''))+'">'+esc(signedMoney(pr.net_minor,pr.currency_code))+'</span></span>'+
-      '<span class="meta">'+esc(pr.currency_code)+' · '+pr.records+' active record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+' · fronted '+esc(money(pr.paid_for_minor,pr.currency_code))+' · covered '+esc(money(pr.covered_minor,pr.currency_code))+(settled?' · settled '+esc(money(settled,pr.currency_code)):'')+'</span></span>'+
+      '<span class="p-main">'+pairLine(pr,meName)+
+      '<span class="meta">'+esc(pr.currency_code)+' · '+pr.records+' active record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+' · '+esc(meName)+' fronted '+esc(money(pr.paid_for_minor,pr.currency_code))+' · '+esc(pr.counterparty)+' covered '+esc(money(pr.covered_minor,pr.currency_code))+(settled?' · settled '+esc(money(settled,pr.currency_code)):'')+'</span></span>'+
       '<span class="p-open">View records</span></button>'+
       '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+(recs.length?recs.map(recRow).join(''):'<div class="empty">No records in the latest window.</div>')+'</div></div>';
   }
   var recs2=d.recent||[];
-  html+='<h3 style="margin-top:16px">Recent activity</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
+  html+='<h3 class="mt-16">Recent activity</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
   if((records.total||0)>recs2.length){ html+='<p class="hint">Showing the latest '+recs2.length+' of '+records.total+' records.</p>' }
   var sug=d.suggestions||[];
-  if(sug.length){ html+='<h3 style="margin-top:16px">Settle up</h3>';
+  if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];
-      html+='<div class="row"><div><div class="who">'+esc(g.counterparty)+' ↔ '+esc(p.display_name||'')+'</div><div class="meta">offsettable '+esc(money(g.offset_amount_minor,g.currency_code))+'</div></div>'+
+      html+='<div class="row"><div><div class="who">'+esc(g.counterparty)+' ↔ '+esc((p.emoji?p.emoji+' ':'')+(p.display_name||''))+'</div><div class="meta">offsettable '+esc(money(g.offset_amount_minor,g.currency_code))+'</div></div>'+
         '<button class="mini" type="button" data-off="'+p.id+':'+g.counterparty_id+':'+esc(g.currency_code)+'">Offset</button></div>';
     }
   }
@@ -553,7 +842,7 @@ function renderBackups(){
     var row=document.createElement('div'); row.className='row';
     row.innerHTML='<div><div class="who">Backup #'+e.sequence+' · '+e.rows+' transactions <span class="chip">'+(e.trigger==='manual'?'manual':'automatic')+'</span></div>'+
       '<div class="meta">'+stamp(e.created_at)+' · '+bytesLabel(e.bytes)+'</div></div>'+
-      '<div class="btns" style="margin:0"><a class="mini ghost" style="text-decoration:none" href="'+api+'/backups/'+e.sequence+'" download>Download</a>'+
+      '<div class="btns flush"><a class="mini ghost link-plain" href="'+api+'/backups/'+e.sequence+'" download>Download</a>'+
       '<button class="mini ghost" type="button" data-restore="'+e.sequence+'">Restore</button></div>';
     list.appendChild(row);
   }
@@ -562,16 +851,17 @@ function renderSettings(){
   var pbox=$('s-people'); pbox.innerHTML='';
   for(var i=0;i<people.length;i++){var p=people[i];
     var el=document.createElement('div'); el.className='row';
-    el.innerHTML='<div><div class="who">'+esc(p.display_name)+'</div><div class="meta">'+(p.is_archived?'archived':'active')+'</div></div>'+
-      '<div class="btns" style="margin:0"><button class="mini ghost" type="button" data-ren="'+p.id+'">Rename</button>'+
+    el.innerHTML='<div class="p-block"><div class="who">'+(p.emoji?esc(p.emoji)+' ':'')+esc(p.display_name)+'</div><div class="meta">'+(p.is_archived?'archived':'active')+'</div>'+
+      '<div class="emoji-edit"><input class="emoji-input" type="text" maxlength="16" value="'+esc(p.emoji||'')+'" placeholder="🦊" aria-label="Emoji for '+esc(p.display_name)+'" data-emoji-input="'+p.id+'"><button class="mini ghost" type="button" data-emoji-save="'+p.id+'">Save emoji</button></div></div>'+
+      '<div class="btns flush"><button class="mini ghost" type="button" data-ren="'+p.id+'">Rename</button>'+
       '<button class="mini '+(p.is_archived?'':'danger')+'" type="button" data-arch="'+p.id+':'+(p.is_archived?'restore':'archive')+'">'+(p.is_archived?'Restore':'Archive')+'</button></div>';
     pbox.appendChild(el);
   }
   var cbox=$('s-currencies'); cbox.innerHTML='';
   for(var j=0;j<currencies.length;j++){var c=currencies[j];
     var cel=document.createElement('div'); cel.className='row';
-    cel.innerHTML='<div><div class="who">'+esc(c.code)+(c.is_default?' <span class="chip">default</span>':'')+'</div><div class="meta">'+(c.is_archived?'archived':'active')+'</div></div>'+
-      '<div class="btns" style="margin:0">'+(c.is_default?'':'<button class="mini ghost" type="button" data-def="'+c.id+'">Set default</button>')+
+    cel.innerHTML='<div class="row-main"><div class="who">'+esc(c.code)+(c.is_default?' <span class="chip">default</span>':'')+'</div><div class="meta">'+(c.is_archived?'archived':'active')+'</div></div>'+
+      '<div class="btns flush">'+(c.is_default?'':'<button class="mini ghost" type="button" data-def="'+c.id+'">Set default</button>')+
       '<button class="mini '+(c.is_archived?'':'danger')+'" type="button" data-carch="'+c.id+':'+(c.is_archived?'restore':'archive')+'">'+(c.is_archived?'Restore':'Archive')+'</button></div>';
     cbox.appendChild(cel);
   }
@@ -641,7 +931,7 @@ function renderSplit(){
     rows+='<div class="split-sum"><div><div class="who">'+esc(name(a.person_id))+'</div><div class="paid">'+(payer?'paid — owes nothing':'owes '+esc(name(d.payer_person_id)))+'</div></div>'+
       '<div class="share">'+esc(money(a.amount_minor,d.currency_code))+'</div></div>';
   }
-  out.innerHTML='<div class="totals" style="margin:10px 0 0"><div class="total"><span>Bill</span><b>'+esc(money(d.amount_minor,d.currency_code))+'</b></div>'+
+  out.innerHTML='<div class="totals mt-10"><div class="total"><span>Bill</span><b>'+esc(money(d.amount_minor,d.currency_code))+'</b></div>'+
     '<div class="total"><span>New debts</span><b>'+esc(money(owed,d.currency_code))+'</b></div></div>'+rows;
 }
 async function previewSplit(){
@@ -665,32 +955,191 @@ async function commitSplit(){
   var btn=$('sp-commit'), err=$('sp-err'); err.textContent='';
   var d=splitDraft(), problem=splitProblem(d);
   if(problem){ err.textContent=problem; toast(problem,true); return }
+  openReview(splitReview(d), function(){ return postSplit(d,btn,err) }, btn);
+}
+async function postSplit(d,btn,err){
   busy(btn,true);
   var r=await call('/splits',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:d});
   busy(btn,false);
   if(!r.ok){ err.textContent=r.error; toast(r.error,true); return }
   var txs=(r.data&&r.data.transactions)||[], owed=(r.data&&r.data.debt_amount_minor)||0;
   toast(txs.length+(txs.length===1?' debt':' debts')+' added');
-  $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='';
+  $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='Other';
   renderSplit();
   var out=$('sp-out');
   if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
     txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
   loadLedger();
 }
+/* ---------------- receipt backlog ---------------- */
+/* A tracker, not an importer: the two columns are the state the user set, and nothing here
+   creates transactions. A card carries its notes and a few attachments (photos live in a
+   private R2 bucket and are fetched through the capability route). */
+function receiptCard(r){
+  var atts=r.attachments||[], i, thumbs='';
+  for(i=0;i<atts.length;i++){
+    var label=esc(atts[i].label||'Receipt photo');
+    thumbs+='<span class="att"><a href="'+api+'/receipts/'+r.id+'/attachments/'+atts[i].id+'" target="_blank" rel="noopener noreferrer" title="'+label+'"><img src="'+api+'/receipts/'+r.id+'/attachments/'+atts[i].id+'" alt="'+label+'" loading="lazy" decoding="async"></a></span>';
+  }
+  var when=r.is_added?('Added '+stamp(r.added_at||r.updated_at)):('Captured '+stamp(r.created_at));
+  var count=r.attachment_count||0;
+  var meta=[when,count?(count+(count===1?' photo':' photos')):''].filter(Boolean).join(' · ');
+  var acts='<button class="mini" type="button" data-rec-action="toggle" data-rec-id="'+r.id+'"><span aria-hidden="true">'+(r.is_added?'↩️':'✅')+'</span> '+(r.is_added?'Not added yet':'Mark added')+'</button>'
+    +'<button class="mini ghost" type="button" data-rec-action="edit" data-rec-id="'+r.id+'"><span aria-hidden="true">✏️</span> Edit</button>'
+    +'<button class="mini ghost" type="button" data-rec-action="delete" data-rec-id="'+r.id+'" aria-label="Delete receipt"><span aria-hidden="true">🗑️</span></button>';
+  return '<div class="rec-card"><div class="rec-main">'
+    +'<div class="rec-title">'+esc(r.title||'Untitled receipt')+'</div>'
+    +(r.note?('<div class="rec-note">'+esc(r.note)+'</div>'):'')
+    +(thumbs?('<div class="rec-atts">'+thumbs+'</div>'):'')
+    +(meta?('<div class="rec-meta">'+esc(meta)+'</div>'):'')
+    +'<div class="rec-acts">'+acts+'</div></div></div>';
+}
+function renderReceipts(){
+  var added=[], open=[], i;
+  for(i=0;i<receipts.length;i++){ (receipts[i].is_added?added:open).push(receipts[i]) }
+  var a=$('rec-added'), o=$('rec-open'); if(!a||!o){return}
+  $('rec-added-count').textContent=added.length; $('rec-open-count').textContent=open.length;
+  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in the ledger.</div>';
+  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is in the ledger 🎉</div>';
+}
+async function refreshReceipts(){
+  var state=await call('');
+  if(!state.ok){ toast(state.error,true); return }
+  receipts=state.data.receipts||[]; renderReceipts();
+}
+function renderReceiptPhotos(id){
+  var box=$('rec-photos'); if(!box){return}
+  var r=null, i, atts, out='', k;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  atts=r&&r.attachments?r.attachments:[];
+  if(!atts.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> on the card to attach them.</p>'; return }
+  for(k=0;k<atts.length;k++){
+    var label=esc(atts[k].label||'Receipt photo');
+    out+='<span class="att"><a href="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" target="_blank" rel="noopener noreferrer" title="'+label+'"><img src="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" alt="'+label+'" loading="lazy" decoding="async"></a>'
+      +'<button class="att-x" type="button" data-rec-action="detach" data-rec-id="'+id+'" data-att-id="'+atts[k].id+'" aria-label="Take this photo off"><span aria-hidden="true">✖</span></button></span>';
+  }
+  box.innerHTML=out;
+}
+var recAttachFor=null;
+async function uploadReceiptFiles(id,files){
+  if(!id||!files||!files.length){return}
+  var added=0, skipped=0, i;
+  for(i=0;i<files.length;i++){
+    var file=files[i];
+    if(files.length>1){ toast('Uploading '+(i+1)+' of '+files.length+'…') }
+    var up=await call('/receipts/'+id+'/attachments?label='+encodeURIComponent(String(file.name||'').slice(0,120)),
+      {method:'POST',raw:true,body:file,headers:{'content-type':file.type||'application/octet-stream'}});
+    if(up.ok){ added+=1 } else { skipped+=1; toast(up.error,true) }
+  }
+  await refreshReceipts();
+  renderReceiptPhotos(id);
+  if(added&&!skipped){ toast(added===1?'Photo attached':(added+' photos attached')) }
+  else if(added&&skipped){ toast(added+' attached · '+skipped+' skipped',true) }
+  else if(skipped&&!added){ toast('Nothing was attached',true) }
+}
+async function detachAttachment(id,attachmentId,btn){
+  if(!id||!attachmentId){return}
+  if(btn){ if(btn.disabled){return} btn.disabled=true }
+  try{
+    var gone=await call('/receipts/'+id+'/attachments/'+attachmentId,{method:'DELETE'});
+    if(!gone.ok){ toast(gone.error,true); return }
+    await refreshReceipts(); toast('Attachment removed');
+  } finally { if(btn){ btn.disabled=false } }
+}
+async function receiptAction(action,id,btn){
+  var r=null, i;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  if(action==='edit'){ openReceiptForm(id); return }
+  if(action==='detach'){ await detachAttachment(id,Number(btn&&btn.getAttribute?btn.getAttribute('data-att-id'):0),btn); renderReceiptPhotos(id); return }
+  if(!r){ toast('That receipt is no longer in the list.',true); return }
+  busy(btn,true);
+  try{
+    if(action==='toggle'){
+      var flip=await call('/receipts/'+id,{method:'PATCH',body:{is_added:!r.is_added}});
+      if(!flip.ok){ toast(flip.error,true); return }
+      await refreshReceipts();
+      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written to the ledger':'Moved back to Not added');
+      return;
+    }
+    if(action==='delete'){
+      var gone=await call('/receipts/'+id,{method:'DELETE'});
+      if(!gone.ok){ toast(gone.error,true); return }
+      await refreshReceipts(); toast('Receipt removed from the backlog');
+      return;
+    }
+  } finally { busy(btn,false) }
+}
+var recEditing=null;
+function openReceiptForm(id){
+  var r=null, i;
+  if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
+  if(id&&!r){ toast('That receipt is no longer in the list.',true); return }
+  recEditing=r;
+  var titled=$('rec-modal-title');
+  if(titled){ titled.textContent=r?'Edit receipt':'New receipt' }
+  $('rec-title').value=r?(r.title||''):'';
+  $('rec-note').value=r?(r.note||''):'';
+  $('rec-state').checked=!!(r&&r.is_added);
+  renderReceiptPhotos(id);
+  $('rec-modal').hidden=false;
+  try{ $('rec-title').focus() }catch(e){}
+}
+function closeReceiptForm(){
+  var box=$('rec-modal'); if(box){ box.hidden=true }
+  recEditing=null;
+}
+async function saveReceipt(){
+  var btn=$('rec-save'); if(!btn){return}
+  var id=recEditing?recEditing.id:null;
+  var payload={title:$('rec-title').value, note:$('rec-note').value, is_added:$('rec-state').checked};
+  if(!String(payload.title||'').trim()){ toast('Give the receipt a short title so you can spot it later',true); try{$('rec-title').focus()}catch(e){} return }
+  busy(btn,true);
+  try{
+    var saved=await call(id?('/receipts/'+id):'/receipts',{method:id?'PATCH':'POST',body:payload});
+    if(!saved.ok){ toast(saved.error,true); return }
+    var row=saved.data.receipt||null;
+    await refreshReceipts();
+    closeReceiptForm();
+    toast(row&&row.is_added?'Receipt saved in Added':'Receipt saved in Not added');
+  } finally { busy(btn,false) }
+}
+function wireReceipts(){
+  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files');
+  if(add){ add.addEventListener('click',function(){ openReceiptForm(null) }) }
+  if(close){ close.addEventListener('click',closeReceiptForm) }
+  if(save){ save.addEventListener('click',saveReceipt) }
+  if(pick){ pick.addEventListener('change',function(){ var files=pick.files; var target=recAttachFor; recAttachFor=null; uploadReceiptFiles(target,files) }) }
+  var addPh=$('rec-add');
+  if(addPh){ addPh.addEventListener('click',function(){ if(!recEditing){ toast('Save the receipt first — then add its photos',true); return } recAttachFor=recEditing.id; if($('rec-files')){ $('rec-files').click() } }) }
+  var modal=$('rec-modal');
+  if(modal){ modal.addEventListener('click',function(ev){ if(ev.target===modal){ closeReceiptForm() } }) }
+  renderReceipts();
+}
+wireReceipts();
 /* ---------------- wiring ---------------- */
-document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ closePerson() } });
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
 document.addEventListener('click',async function(ev){
-  var t=ev.target; if(!t||!t.getAttribute){return}
+  /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
+     the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action]')||src):src;
+  if(!t||!t.getAttribute){return}
+  var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
   var del=t.getAttribute('data-del'); if(del){ delTx(Number(del),t); return }
   var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
-  var ren=t.getAttribute('data-ren'); if(ren){
-    var id=Number(ren); var current=name(id); var next=prompt('Rename person',current);
-    if(next&&next.trim()&&next.trim()!==current){ var r=await call('/people/'+id,{method:'PATCH',body:{display_name:next.trim()}}); if(!r.ok){toast(r.error,true)}else{await loadState(); renderSettings(); toast('Renamed')} }
+  var emo=t.getAttribute('data-emoji-save'); if(emo){
+    var eid=Number(emo); var ebox=document.querySelector('[data-emoji-input="'+eid+'"]');
+    var er=await call('/people/'+eid,{method:'PATCH',body:{emoji:ebox?ebox.value.trim():''}});
+    if(!er.ok){toast(er.error,true)}else{await loadState(); renderSettings(); renderParty(); renderSplit(); toast(ebox&&ebox.value.trim()?'Emoji saved':'Emoji cleared')}
     return;
   }
-  var arch=t.getAttribute('data-arch'); if(arch){ var ap=arch.split(':'); var ar=await call('/people/'+ap[0]+'/'+ap[1],{method:'POST'}); if(!ar.ok){toast(ar.error,true)}else{await loadState();renderSettings();toast('Updated')} return }
+  var ren=t.getAttribute('data-ren'); if(ren){
+    var id=Number(ren); var current=bareName(id); var next=prompt('Rename person',current);
+    if(next&&next.trim()&&next.trim()!==current){ var r=await call('/people/'+id,{method:'PATCH',body:{display_name:next.trim()}}); if(!r.ok){toast(r.error,true)}else{await loadState(); renderSettings(); renderParty(); renderSplit(); toast('Renamed')} }
+    return;
+  }
+  var arch=t.getAttribute('data-arch'); if(arch){ var ap=arch.split(':'); var ar=await call('/people/'+ap[0]+'/'+ap[1],{method:'POST'}); if(!ar.ok){toast(ar.error,true)}else{await loadState();renderSettings();renderParty();renderSplit();toast('Updated')} return }
   var def=t.getAttribute('data-def'); if(def){ var dr=await call('/currencies/'+def,{method:'PATCH',body:{is_default:true}}); if(!dr.ok){toast(dr.error,true)}else{await loadState();renderSettings();toast('Default currency updated')} return }
+  if(ev.target.id==='review-modal'){ closeReview(); return }
   if(ev.target.id==='person-modal'){ closePerson(); return }
   var pclose=ev.target.closest?ev.target.closest('#pm-close'):null; if(pclose){ closePerson(); return }
   var pcard=ev.target.closest?ev.target.closest('[data-person]'):null; if(pcard){ openPerson(Number(pcard.getAttribute('data-person'))); return }
@@ -702,6 +1151,10 @@ function init(){
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
   if($('t-add')){ $('t-add').onclick=addTx }
+  if($('t-kind')){ $('t-kind').onchange=syncKindLabels }
+  syncKindLabels();
+  if($('tx-prev')){ $('tx-prev').onclick=function(){ txGo(-1) } }
+  if($('tx-next')){ $('tx-next').onclick=function(){ txGo(1) } }
   if($('au-apply')){ $('au-apply').onclick=function(){ loadAudit() } }
   if($('au-clear')){ $('au-clear').onclick=function(){ if($('au-entity')){$('au-entity').value=''} if($('au-action')){$('au-action').value=''} if($('au-q')){$('au-q').value=''} loadAudit() } }
   if($('au-entity')){ $('au-entity').onchange=function(){ loadAudit() } }
@@ -718,6 +1171,9 @@ function init(){
   if($('sp-currency')){ $('sp-currency').onchange=renderSplit }
   if($('sp-preview')){ $('sp-preview').onclick=previewSplit }
   if($('sp-commit')){ $('sp-commit').onclick=commitSplit }
+  if($('rv-back')){ $('rv-back').onclick=function(){ closeReview() } }
+  if($('rv-close')){ $('rv-close').onclick=function(){ closeReview() } }
+  if($('rv-confirm')){ $('rv-confirm').onclick=confirmReview }
   if($('t-swap')){ $('t-swap').onclick=function(){ var a=$('t-creditor'),b=$('t-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
   if($('ai-copy')){ $('ai-copy').onclick=async function(){ var txt=$('ai-prompt').textContent; try{ await navigator.clipboard.writeText(txt); toast('Instructions copied') }catch(e){ try{ var range=document.createRange(); range.selectNodeContents($('ai-prompt')); var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range); toast('Press Ctrl/Cmd+C to copy') }catch(e2){ toast('Copy failed - select the instructions and copy them',true) } } } }
   if($('csv-preview')){ $('csv-preview').onclick=previewImport }
@@ -726,7 +1182,7 @@ function init(){
   if($('s-save-backup-every')){ $('s-save-backup-every').onclick=async function(){ var every=Number($('s-backup-every').value); if(!isFinite(every)||Math.round(every)!==every||every<5||every>10000){ toast('Back up every 5 to 10000 transactions',true); return } var r=await call('',{method:'PATCH',body:{settings:{backup_every:every}}}); if(!r.ok){ toast(r.error||'Could not save the backup interval',true); return } await loadState(); renderSettings(); toast('Backups will run every '+every+' transactions') } }
   if($('s-backup-now')){ $('s-backup-now').onclick=async function(){ var btn=$('s-backup-now'); btn.disabled=true; var r=await call('/backups',{method:'POST'}); btn.disabled=false; if(!r.ok){ toast(r.error||'Could not write a backup',true); return } await loadState(); renderSettings(); toast('Backup #'+r.data.backup.sequence+' written ('+r.data.backup.rows+' transactions)') } }
   if($('s-backup-list')){ $('s-backup-list').onclick=async function(ev){ var t=ev.target; var seq=t&&t.getAttribute?t.getAttribute('data-restore'):null; if(!seq){return} if(!confirm('Restore backup #'+seq+' into a new workspace? This workspace is left untouched.')){return} t.disabled=true; var r=await call('/backups/'+seq+'/restore',{method:'POST'}); t.disabled=false; var out=$('s-restore-out'); if(!r.ok){ toast(r.error||'Could not restore this backup',true); return } var link=location.origin+r.data.workspace_url; out.innerHTML='Restored into a new workspace: <b>'+r.data.restored.transactions+'</b> transactions, '+r.data.restored.people+' people'+(r.data.restored.skipped_transactions?(' · '+r.data.restored.skipped_transactions+' rows skipped'):'')+'.<br>Open or share: <a href="'+r.data.workspace_url+'">'+esc(link)+'</a>'; toast('Restored into a new workspace') } }
-  if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var r=await call('/people',{method:'POST',body:{display_name:v}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast('Person added') } }
+  if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var emoji=''; var parts=v.split(/s+/); if(parts.length>1){ var last=parts[parts.length-1]; if(last.length<=16&&!/[p{L}p{N}]/u.test(last)){ emoji=last; v=parts.slice(0,-1).join(' ') } } var r=await call('/people',{method:'POST',body:{display_name:v,emoji:emoji}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast(emoji?('Person added with '+emoji):'Person added') } }
   if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
   if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
   window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
@@ -738,19 +1194,31 @@ function renderParty(){
   var cs=$('t-creditor'), ds=$('t-debtor'), cur=$('t-currency');
   if(!cs||!ds||!cur){return}
   var keepC=cs.value, keepD=ds.value;
+  var ps=$('sp-payer'), keepP=ps?ps.value:'';
   cs.innerHTML=''; ds.innerHTML='';
   for(var i=0;i<people.length;i++){ if(people[i].is_archived){continue}
-    var o1=document.createElement('option'); o1.value=people[i].id; o1.textContent=people[i].display_name; cs.appendChild(o1);
-    var o2=document.createElement('option'); o2.value=people[i].id; o2.textContent=people[i].display_name; ds.appendChild(o2);
+    var shown=(people[i].emoji?people[i].emoji+' ':'')+people[i].display_name;
+    var o1=document.createElement('option'); o1.value=people[i].id; o1.textContent=shown; cs.appendChild(o1);
+    var o2=document.createElement('option'); o2.value=people[i].id; o2.textContent=shown; ds.appendChild(o2);
   }
   if(keepC){cs.value=keepC} if(keepD){ds.value=keepD}
   if(cs.options.length>1&&cs.value===ds.value){ ds.value=cs.options[1].value }
+  if(ps){
+    ps.innerHTML='';
+    for(var k=0;k<people.length;k++){ if(people[k].is_archived){continue}
+      var op=document.createElement('option'); op.value=people[k].id;
+      op.textContent=(people[k].emoji?people[k].emoji+' ':'')+people[k].display_name; ps.appendChild(op);
+    }
+    if(keepP){ ps.value=keepP }
+    if(!ps.value&&ps.options.length){ ps.value=ps.options[0].value }
+  }
   cur.innerHTML='';
   for(var j=0;j<currencies.length;j++){ if(currencies[j].is_archived){continue}
     var o=document.createElement('option'); o.value=currencies[j].code; o.textContent=currencies[j].code; if(currencies[j].is_default){o.selected=true} cur.appendChild(o);
   }
 }
 if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',init) } else { init() }
+
 `;
 
 export const aiInstructions = (options: { names: string[]; codes: string[]; defaultCode: string; tz: string; today: string }): string => {
@@ -802,16 +1270,16 @@ export const zonedParts = (tz: string): { date: string; clock: string } => {
 };
 
 const app = async (db: D1Database, workspaceId: number, name: string): Promise<string> => {
-  const peopleResult = await db.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ? ORDER BY is_archived, id').bind(workspaceId).all<Row>();
+  const peopleResult = await db.prepare('SELECT id, display_name, emoji, is_archived FROM workspace_people WHERE workspace_id = ? ORDER BY is_archived, id').bind(workspaceId).all<Row>();
   const currencyResult = await db.prepare('SELECT id, code, is_default, is_archived FROM workspace_currencies WHERE workspace_id = ? ORDER BY is_archived, is_default DESC, id').bind(workspaceId).all<Row>();
   const people = peopleResult.results ?? [];
   const currencies = currencyResult.results ?? [];
   const initial = JSON.stringify({ people, currencies });
   const livePeople = people.filter((p) => !p.is_archived);
   const liveCurrencies = currencies.filter((c) => !c.is_archived);
-  const personOptions = livePeople.map((p) => `<option value="${p.id}">${esc(p.display_name)}</option>`).join('');
+  const personOptions = livePeople.map((p) => `<option value="${p.id}">${esc(p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)}</option>`).join('');
   const currencyOptions = liveCurrencies.map((c) => `<option value="${esc(c.code)}"${c.is_default ? ' selected' : ''}>${esc(c.code)}</option>`).join('');
-  const personChecks = livePeople.map((p) => `<label class="check"><input type="checkbox" value="${p.id}" checked><span>${esc(p.display_name)}</span></label>`).join('');
+  const personChecks = livePeople.map((p) => `<label class="check"><input type="checkbox" value="${p.id}" checked><span>${esc(p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)}</span></label>`).join('');
   const settingsRow = await db.prepare('SELECT timezone FROM workspace_settings WHERE workspace_id = ?').bind(workspaceId).first<{ timezone: string }>();
   const tz = settingsRow?.timezone && isValidTimeZone(settingsRow.timezone) ? settingsRow.timezone : DEFAULT_TIME_ZONE;
   const { date: dateToday, clock: clockNow } = zonedParts(tz);
@@ -819,7 +1287,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   const todayServer = dateToday;
   const aiCodes = liveCurrencies.map((c) => c.code);
   const aiDefault = (liveCurrencies.find((c) => c.is_default) ?? liveCurrencies[0])?.code ?? 'USD';
-  const aiPrompt = aiInstructions({ names: livePeople.map((p) => p.display_name), codes: aiCodes, defaultCode: aiDefault, tz, today: todayServer });
+  const aiPrompt = aiInstructions({ names: livePeople.map((p) => (p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)), codes: aiCodes, defaultCode: aiDefault, tz, today: todayServer });
   return page(name, `<script>window.__initial=${initial};</script>`, `
 <main>
 <header>
@@ -835,6 +1303,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split</button>
     <button id="tab-balances" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚖️</span> Balances</button>
     <button id="tab-tools" role="tab" aria-selected="false" type="button"><span aria-hidden="true">📥</span> Bulk &amp; import</button>
+    <button id="tab-receipts" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🧾</span> Receipts</button>
     <button id="tab-audit" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🕐</span> Audit</button>
     <button id="tab-settings" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚙️</span> Setup</button>
   </div>
@@ -843,12 +1312,13 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="ledger">
   <div class="card">
-    <h2>Add transaction</h2>
+    <h2><span aria-hidden="true">➕</span> Add transaction</h2>
     <div class="field"><label for="t-kind">Type</label>
       <select id="t-kind">
         <option value="debt">Someone owes — one person paid</option>
         <option value="payment">Repayment — someone paid back</option>
       </select>
+      <div class="hint" id="t-kind-hint"></div>
     </div>
     <div class="grid three">
       <div class="field"><label for="t-amount">Amount</label><input id="t-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
@@ -856,32 +1326,34 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="field"><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
     </div>
     <div class="grid">
-      <div class="field"><label for="t-creditor">Paid by (is owed)</label><select id="t-creditor">${personOptions}</select></div>
-      <div class="field"><label for="t-debtor">For (owes)</label><select id="t-debtor">${personOptions}</select></div>
+      <div class="field"><label for="t-creditor" id="t-creditor-label"><span aria-hidden="true">💳</span> Paid by (is owed)</label><select id="t-creditor">${personOptions}</select></div>
+      <div class="field"><label for="t-debtor" id="t-debtor-label"><span aria-hidden="true">🧾</span> For (owes)</label><select id="t-debtor">${personOptions}</select></div>
     </div>
-    <div class="swap"><button id="t-swap" type="button">↕ Swap people</button></div>
+    <div class="swap"><button id="t-swap" type="button">↔️ Swap people</button></div>
     <div class="grid">
       <div class="field"><label for="t-topic">What for</label><input id="t-topic" placeholder="Dinner" autocomplete="off"></div>
-      <div class="field"><label for="t-category">Category</label><input id="t-category" placeholder="Food" autocomplete="off"></div>
+      <div class="field"><label for="t-category">Category</label><select id="t-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
     </div>
     <div class="field"><label for="t-notes">Notes (optional)</label><input id="t-notes" autocomplete="off"></div>
-    <button id="t-add" type="button">Add transaction</button>
+    <button id="t-add" type="button"><span aria-hidden="true">✅</span> Add transaction</button>
     <div id="t-err" class="err"></div>
   </div>
   <div class="card">
-    <h2>Transactions</h2>
+    <h2><span aria-hidden="true">📒</span> Transactions</h2>
+    <p class="hint">Green <b>+</b> is a debt someone owes the payer · red <b>−</b> is a repayment coming back.</p>
     <div id="tx-totals" class="totals"></div>
     <div id="tx-list"><div class="empty">Loading…</div></div>
+    <div id="tx-pager" class="pager" hidden><button id="tx-prev" class="ghost" type="button">‹ Prev</button><span id="tx-pager-info" class="pager-info"></span><button id="tx-next" class="ghost" type="button">Next ›</button></div>
   </div>
 </section>
 
 <section id="split" hidden>
   <div class="card">
-    <h2>Split an expense</h2>
+    <h2><span aria-hidden="true">✂️</span> Split an expense</h2>
     <p class="hint">One person pays the bill. Everyone ticked shares it equally: each other person's share is recorded as a debt to whoever paid.</p>
     <div class="grid">
       <div class="field"><label for="sp-topic">What for</label><input id="sp-topic" placeholder="Dinner" autocomplete="off"></div>
-      <div class="field"><label for="sp-category">Category</label><input id="sp-category" placeholder="Food" autocomplete="off"></div>
+      <div class="field"><label for="sp-category">Category</label><select id="sp-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
     </div>
     <div class="grid three">
       <div class="field"><label for="sp-amount">Total amount</label><input id="sp-amount" type="text" inputmode="decimal" placeholder="120.00" autocomplete="off"></div>
@@ -892,15 +1364,15 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="field">
       <label id="sp-people-label">Split between</label>
       <div class="people-actions">
-        <button id="sp-all" class="mini ghost" type="button">Everyone</button>
-        <button id="sp-none" class="mini ghost" type="button">Nobody</button>
+        <button id="sp-all" class="mini ghost" type="button"><span aria-hidden="true">👥</span> Everyone</button>
+        <button id="sp-none" class="mini ghost" type="button"><span aria-hidden="true">🚫</span> Nobody</button>
         <span id="sp-count" class="hint"></span>
       </div>
       <div class="people" id="sp-people" role="group" aria-labelledby="sp-people-label">${personChecks}</div>
     </div>
     <div class="btns">
-      <button id="sp-preview" class="ghost" type="button">Preview shares</button>
-      <button id="sp-commit" type="button">Add split</button>
+      <button id="sp-preview" class="ghost" type="button"><span aria-hidden="true">🔍</span> Preview shares</button>
+      <button id="sp-commit" type="button"><span aria-hidden="true">✅</span> Add split</button>
     </div>
     <div id="sp-err" class="err"></div>
     <div id="sp-out"></div>
@@ -908,39 +1380,58 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 </section>
 
 <section id="balances" hidden>
-  <div class="card"><h2>People</h2><p class="hint">Tap a person for their full picture — what they fronted, what was covered for them, who they owe or are owed by, and every record behind it.</p><div id="bal-list"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2>Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
+  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><p class="hint">Tap a person for their full picture — what they fronted, what was covered for them, who they owe or are owed by, and every record behind it.</p><div id="bal-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">🤝</span> Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>
 
 <section id="tools" hidden>
   <div class="card">
-    <h2>Turn a receipt into a CSV</h2>
+    <h2><span aria-hidden="true">🧾</span> Turn a receipt into a CSV</h2>
     <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo with it. Paste the CSV it replies with into the box below.</p>
     <div class="field"><pre id="ai-prompt">${esc(aiPrompt)}</pre></div>
     <div class="btns">
-      <button id="ai-copy" type="button">Copy instructions</button>
+      <button id="ai-copy" type="button"><span aria-hidden="true">📋</span> Copy instructions</button>
     </div>
   </div>
   <div class="card">
-    <h2>Import CSV</h2>
+    <h2><span aria-hidden="true">📥</span> Import CSV</h2>
     <p class="hint">Header must be: occurred_on, entry_kind, topic, category, creditor, debtor, amount, currency, notes</p>
-    <div class="field"><textarea id="csv" placeholder="occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes"></textarea></div>
+    <div class="field"><textarea id="csv" class="mono" placeholder="occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes"></textarea></div>
     <div class="btns">
-      <button id="csv-template" class="ghost" type="button">Template</button>
-      <button id="csv-preview" class="ghost" type="button">Preview</button>
-      <button id="csv-commit" type="button">Import</button>
+      <button id="csv-template" class="ghost" type="button"><span aria-hidden="true">📄</span> Template</button>
+      <button id="csv-preview" class="ghost" type="button"><span aria-hidden="true">🔍</span> Preview</button>
+      <button id="csv-commit" type="button"><span aria-hidden="true">✅</span> Import</button>
     </div>
     <div id="csv-result"></div>
   </div>
 </section>
 
+<section id="receipts" hidden>
+  <div class="card"><h2><span aria-hidden="true">🧾</span> Receipts backlog</h2>
+    <p class="sub">Your own checklist of receipt photos and what each one was for. A card holds its notes and a few photos &mdash; move it across to <b>Added</b> once you have entered it in the ledger. Nothing here writes transactions by itself.</p>
+    <div class="btns">
+      <button type="button" id="rec-new"><span aria-hidden="true">&#10133;</span> New receipt</button>
+    </div>
+  </div>
+  <div class="rec-board">
+    <div class="rec-col">
+      <div class="rec-head"><h3><span aria-hidden="true">📥</span> Not added <span class="count" id="rec-open-count">0</span></h3><p class="hint">Receipts still to be entered in the ledger.</p></div>
+      <div class="rec-list" id="rec-open"><div class="empty">Loading&hellip;</div></div>
+    </div>
+    <div class="rec-col">
+      <div class="rec-head"><h3><span aria-hidden="true">✅</span> Added <span class="count" id="rec-added-count">0</span></h3><p class="hint">Already recorded in the ledger.</p></div>
+      <div class="rec-list" id="rec-added"><div class="empty">Loading&hellip;</div></div>
+    </div>
+  </div>
+</section>
+
 <section id="audit" hidden>
-  <div class="card"><h2>Audit log</h2>
+  <div class="card"><h2><span aria-hidden="true">🕵️</span> Audit log</h2>
     <p class="hint">Newest first · before/after snapshots · nothing is ever erased, only archived — filter for "Archived or deleted" to find removed entries.</p>
-    <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:10px 0">
-      <label class="hint" style="display:flex;flex-direction:column;gap:4px">Entity
-        <select id="au-entity" style="min-width:150px">
+    <div class="filter-bar">
+      <label class="hint stack">Entity
+        <select id="au-entity">
           <option value="">All entities</option>
           <option value="transaction">Transactions</option>
           <option value="person">People</option>
@@ -949,8 +1440,8 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
           <option value="workspace">Workspace</option>
         </select>
       </label>
-      <label class="hint" style="display:flex;flex-direction:column;gap:4px">Action
-        <select id="au-action" style="min-width:170px">
+      <label class="hint stack">Action
+        <select id="au-action">
           <option value="">All actions</option>
           <option value="create">Created</option>
           <option value="update">Updated</option>
@@ -960,10 +1451,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
           <option value="archive,delete">Archived or deleted</option>
         </select>
       </label>
-      <label class="hint" style="display:flex;flex-direction:column;gap:4px">Search
-        <input id="au-q" type="search" placeholder="topic, person, notes…" style="min-width:210px">
+      <label class="hint stack">Search
+        <input id="au-q" type="search" placeholder="topic, person, notes…">
       </label>
-      <div class="btns" style="margin:0"><button id="au-apply" type="button">Apply</button><button id="au-clear" class="ghost" type="button">Clear</button></div>
+      <div class="btns flush"><button id="au-apply" type="button"><span aria-hidden="true">✅</span> Apply</button><button id="au-clear" class="ghost" type="button"><span aria-hidden="true">🧹</span> Clear</button></div>
     </div>
     <div id="au-summary" class="hint"></div>
     <div id="audit-list"><div class="empty">Loading…</div></div>
@@ -971,38 +1462,63 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 </section>
 
 <section id="settings" hidden>
-  <div class="card"><h2>Trip</h2>
-    <div class="inline"><div class="field" style="margin:0"><label>Trip name</label><input id="s-name" readonly></div></div>
-    <div class="btns"><button class="ghost" type="button" id="s-rename" onclick="(function(){var v=prompt('Trip name',document.getElementById('s-name').value);if(v&&v.trim()){fetch(location.pathname.replace(/\\/+$/,'')+'/api',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name:v.trim()})}).then(function(){location.reload()})}})()">Rename trip</button></div>
+  <div class="card"><h2><span aria-hidden="true">🧳</span> Trip</h2>
+    <div class="inline"><div class="field flush"><label>Trip name</label><input id="s-name" readonly></div></div>
+    <div class="btns"><button class="ghost" type="button" id="s-rename" onclick="(function(){var v=prompt('Trip name',document.getElementById('s-name').value);if(v&&v.trim()){fetch(location.pathname.replace(/\\/+$/,'')+'/api',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name:v.trim()})}).then(function(){location.reload()})}})()"><span aria-hidden="true">✏️</span> Rename trip</button></div>
   </div>
-  <div class="card"><h2>Time zone</h2>
+  <div class="card"><h2><span aria-hidden="true">🕒</span> Time zone</h2>
     <p class="hint">Transactions are dated in this zone. The date fields are read-only and always show today's date here.</p>
-    <div class="inline"><div class="field" style="margin:0"><label for="s-tz">Zone</label><select id="s-tz">${tzOptions}</select></div><button id="s-save-tz" type="button">Save</button></div>
+    <div class="inline"><div class="field flush"><label for="s-tz">Zone</label><select id="s-tz">${tzOptions}</select></div><button id="s-save-tz" type="button"><span aria-hidden="true">💾</span> Save</button></div>
     <div id="s-tz-err" class="err"></div>
   </div>
-  <div class="card"><h2>Automatic netting</h2>
+  <div class="card"><h2><span aria-hidden="true">♻️</span> Automatic netting</h2>
     <p class="hint">When two people owe each other in the same currency, the overlapping amount is offset automatically with the entry that creates the overlap. Each netting is written as an audited offset, so the trail still shows both original debts.</p>
-    <label class="inline" for="s-auto-offset" style="gap:8px"><input type="checkbox" id="s-auto-offset" style="width:auto"> Offset reciprocal balances automatically</label>
-    <div class="btns" style="margin-top:8px"><button id="s-save-auto-offset" type="button">Save</button></div>
+    <label class="check" for="s-auto-offset"><input type="checkbox" id="s-auto-offset"> Offset reciprocal balances automatically</label>
+    <div class="btns mt-8"><button id="s-save-auto-offset" type="button"><span aria-hidden="true">✅</span> Save</button></div>
   </div>
-  <div class="card"><h2>Backups</h2>
+  <div class="card"><h2><span aria-hidden="true">💾</span> Backups</h2>
     <p class="hint">Once this workspace has added the set number of transactions since the last snapshot, the whole workspace &mdash; people, currencies, settings and every transaction &mdash; is exported automatically and kept privately. Restoring writes it into a <b>new</b> workspace, so nothing here is ever overwritten. The newest ${KEEP_BACKUPS} snapshots are kept; older ones roll off.</p>
     <div id="s-backup-status" class="meta"></div>
-    <div class="inline" style="margin-top:10px"><div class="field" style="margin:0"><label for="s-backup-every">Back up every (transactions)</label><input id="s-backup-every" type="number" min="5" max="10000" step="1" inputmode="numeric"></div><button id="s-save-backup-every" type="button">Save</button></div>
-    <div class="btns" style="margin-top:8px"><button class="ghost" type="button" id="s-backup-now">Back up now</button></div>
-    <div id="s-backup-list" style="margin-top:12px"></div>
-    <div id="s-restore-out" class="meta" style="margin-top:10px"></div>
+    <div class="inline mt-10"><div class="field flush"><label for="s-backup-every">Back up every (transactions)</label><input id="s-backup-every" type="number" min="5" max="10000" step="1" inputmode="numeric"></div><button id="s-save-backup-every" type="button"><span aria-hidden="true">💾</span> Save</button></div>
+    <div class="btns mt-8"><button class="ghost" type="button" id="s-backup-now"><span aria-hidden="true">💾</span> Back up now</button></div>
+    <div id="s-backup-list" class="mt-12"></div>
+    <div id="s-restore-out" class="meta mt-10"></div>
   </div>
-  <div class="card"><h2>People</h2><div id="s-people"></div>
-    <div class="inline"><div class="field" style="margin:0"><label>Add person</label><input id="s-person" autocomplete="off"></div><button id="s-add-person" type="button">Add</button></div>
+  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><div id="s-people"></div>
+    <div class="inline"><div class="field flush"><label>Add person</label><input id="s-person" autocomplete="off"></div><button id="s-add-person" type="button">Add</button></div>
   </div>
   <div class="card"><h2>Currencies</h2><div id="s-currencies"></div>
-    <div class="inline"><div class="field" style="margin:0"><label>Add currency (3-letter code)</label><input id="s-cur" maxlength="3" autocomplete="off"></div><button id="s-add-cur" type="button">Add</button></div>
+    <div class="inline"><div class="field flush"><label>Add currency (3-letter code)</label><input id="s-cur" maxlength="3" autocomplete="off"></div><button id="s-add-cur" type="button">Add</button></div>
   </div>
 </section>
+<div id="review-modal" class="modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="rv-title">
+    <div class="dlg-head"><h2 id="rv-title">Review</h2><button class="mini ghost" type="button" id="rv-close">Close</button></div>
+    <div id="rv-body"></div>
+    <div class="btns">
+      <button class="ghost" type="button" id="rv-back"><span aria-hidden="true">&#8592;</span> Back to edit</button>
+      <button type="button" id="rv-confirm"><span aria-hidden="true">&#9989;</span> Confirm</button>
+    </div>
+  </div>
+</div>
+<div id="rec-modal" class="modal" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="rec-modal-title">
+    <div class="dlg-head"><h2 id="rec-modal-title">New receipt</h2><button class="mini ghost" type="button" id="rec-close">Close</button></div>
+    <div class="field"><label for="rec-title">What is it?</label><input id="rec-title" type="text" maxlength="120" placeholder="Big C groceries"></div>
+    <div class="field"><label for="rec-note">Notes</label><textarea id="rec-note" rows="3" maxlength="2000" placeholder="Who paid, what it covered, anything to remember"></textarea></div>
+    <div class="field"><label>Photos</label><div id="rec-photos" class="rec-atts"></div>
+      <div class="btns">
+        <input id="rec-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/heic,image/heif" multiple hidden>
+        <button id="rec-add" class="ghost" type="button"><span aria-hidden="true">&#128206;</span> Add photos</button>
+      </div>
+      <p class="hint">Pick up to six from your gallery. The &#10006; on a photo takes it off the receipt.</p></div>
+    <div class="field"><label class="check"><input type="checkbox" id="rec-state"> <span>Already added to the ledger</span></label></div>
+    <div class="btns"><button type="button" id="rec-save"><span aria-hidden="true">&#128190;</span> Save receipt</button></div>
+  </div>
+</div>
 <div id="person-modal" class="modal" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="pm-title">
-    <div class="dlg-head"><h2 id="pm-title">Person</h2><button class="mini" type="button" id="pm-close">Close</button></div>
+    <div class="dlg-head"><h2 id="pm-title">Person</h2><button class="mini ghost" type="button" id="pm-close">Close</button></div>
     <div id="pm-body"><div class="empty">Loading…</div></div>
   </div>
 </div>

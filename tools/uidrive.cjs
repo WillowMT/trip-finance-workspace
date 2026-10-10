@@ -14,6 +14,7 @@ function makeEl(tag) {
   const el = { tagName: (tag || 'div').toUpperCase(), children: [], options: [], attrs: {}, style: {},
     childElementCount: 0, hidden: false, className: '', textContent: '', _html: '', _text: '',
     setAttribute(k, v) { this.attrs[k] = String(v); }, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; },
+    removeAttribute(k) { delete this.attrs[k]; }, hasAttribute(k) { return k in this.attrs; },
     appendChild(c) { this.children.push(c); this.childElementCount = this.children.length; if (String(c.tagName).toUpperCase() === 'OPTION') { this.options.push(c); if (String(this.tagName).toUpperCase() === 'SELECT' && !this.value && !this._userSet) { this.value = String(c.value); } } return c; },
     removeChild() {}, querySelector() { return null; },
     querySelectorAll(sel) {
@@ -47,19 +48,21 @@ for (const m of html.matchAll(/<(\w+)([^>]*?)id="([^"]+)"([^>]*?)>/g)) {
   }
   els[m[3]] = el;
 }
-// the split picker is server-rendered: give the stub the same checkboxes the browser sees
-(function giveSplitPickerItsBoxes() {
+// The split picker can arrive as server markup or be built by the page's own script; the stub
+// never parses innerHTML, so materialise its checkboxes from whichever markup exists.
+function fillSplitPicker() {
   const box = els['sp-people'];
-  const block = /<div class="people" id="sp-people"[^>]*>([\s\S]*?)<\/div>/.exec(html);
-  if (!box || !block) return;
-  for (const m of block[1].matchAll(/<label class="check"><input type="checkbox" value="([^"]+)"( checked)?><span>([^<]*)<\/span><\/label>/g)) {
+  if (!box || box.childElementCount) return;
+  const server = /<div class="people" id="sp-people"[^>]*>([\s\S]*?)<\/div>/.exec(html);
+  const markup = String(box._html || (server ? server[1] : ''));
+  for (const m of markup.matchAll(/<input[^>]*type="checkbox"[^>]*value="([^"]+)"[^>]*>/g)) {
     const label = makeEl('label');
     const input = makeEl('input');
-    input.type = 'checkbox'; input.value = m[1]; input.checked = Boolean(m[2]); input.attrs.value = m[1];
+    input.type = 'checkbox'; input.value = m[1]; input.checked = !/disabled/.test(m[0]); input.attrs.value = m[1];
     label.appendChild(input);
     box.appendChild(label);
   }
-})();
+}
 
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 const src = scripts[scripts.length - 1];
@@ -121,7 +124,15 @@ const run = new Function('window', 'document', 'location', 'history', 'navigator
     els['t-topic'].value = 'Harness dinner';
     els['t-category'].value = 'Food';
     await els['t-add'].onclick();
+    await new Promise((r) => setTimeout(r, 900));
+    const rowsWhileReviewing = (dump(els['tx-list']).match(/class="amt/g) || []).length;
+    console.log('REVIEW BEFORE ADD:', els['review-modal'].hidden ? '(not shown - BAD)'
+      : els['rv-title'].textContent + ' :: ' + dump(els['rv-body']).replace(/\s+/g, ' ').slice(0, 200));
+    console.log('LEDGER ROWS WHILE REVIEWING:', rowsWhileReviewing, '(must be unchanged)');
+    console.log('ADD ERR DURING REVIEW:', els['t-err'].textContent || els['t-err']._text || '(none)');
+    if (typeof els['rv-confirm'].onclick === 'function') { await els['rv-confirm'].onclick(); }
     await new Promise((r) => setTimeout(r, 2000));
+    console.log('REVIEW CLOSED AFTER CONFIRM:', els['review-modal'].hidden);
     console.log('ADD ERR:', els['t-err'].textContent || els['t-err']._text || '(none)');
     console.log('LEDGER AFTER ADD:', dump(els['tx-list']).replace(/\s+/g, ' ').slice(0, 400));
     console.log('TOTALS AFTER ADD:', dump(els['tx-totals']).replace(/\s+/g, ' ').slice(0, 200));
@@ -134,6 +145,7 @@ const run = new Function('window', 'document', 'location', 'history', 'navigator
   console.log('OFFSETS:', dump(els['offset-list']).replace(/\s+/g, ' ').slice(0, 240));
 
   clickTab('split'); await wait(600);
+  fillSplitPicker();
   const boxes = els['sp-people'].querySelectorAll('input');
   console.log('SPLIT PICKER:', boxes.length, 'people,', boxes.filter((b) => b.checked).length, 'ticked; payer=', els['sp-payer'].value);
   els['sp-topic'].value = 'Harness split'; els['sp-category'].value = 'Food';
@@ -148,7 +160,12 @@ const run = new Function('window', 'document', 'location', 'history', 'navigator
   els['sp-commit'].onclick(); await wait(400);
   console.log('SPLIT GUARD (nobody ticked):', els['sp-err'].textContent || '(none)');
   boxes.forEach((b) => { b.checked = true });
-  els['sp-commit'].onclick(); await wait(2200);
+  els['sp-commit'].onclick(); await wait(900);
+  console.log('REVIEW BEFORE SPLIT:', els['review-modal'].hidden ? '(not shown - BAD)'
+    : els['rv-title'].textContent + ' :: ' + dump(els['rv-body']).replace(/\s+/g, ' ').slice(0, 240));
+  if (typeof els['rv-confirm'].onclick === 'function') { await els['rv-confirm'].onclick(); }
+  await wait(2200);
+  console.log('SPLIT REVIEW CLOSED:', els['review-modal'].hidden);
   console.log('SPLIT ERR:', els['sp-err'].textContent || '(none)');
   console.log('SPLIT RESULT:', dump(els['sp-out']).replace(/\s+/g, ' ').slice(0, 300));
   clickTab('ledger'); await wait(1500);

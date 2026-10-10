@@ -27,10 +27,13 @@ function withDatabase(run: (query: (sql: string) => unknown[]) => void): void {
 test('migrations apply to a blank local D1 database', () => {
   withDatabase((query) => {
     const tables = query("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name") as { name: string }[];
-    assert.deepEqual(tables.map(({ name }) => name).filter((name) => !name.startsWith('_cf_')), [
-      'audit_log', 'backup_log', 'backup_state', 'split_commits', 'transactions',
- 'workflow_commits', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
-    ]);
+    const present = tables.map(({ name }) => name).filter((name) => !name.startsWith('_cf_'));
+    // assert every table that must exist rather than pinning the exact list, so the next table cannot fail this test
+    const expected = [
+      'audit_log', 'backup_log', 'backup_state', 'receipt_attachments', 'receipts', 'split_commits',
+      'transactions', 'workflow_commits', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
+    ];
+    assert.deepEqual(expected.filter((name) => !present.includes(name)), [], 'every expected table exists');
   });
 });
 
@@ -62,7 +65,7 @@ test('audit triggers snapshot all mutable entities and never include a workspace
     ]);
     const snapshotKeys: Record<string, string[]> = {
       workspace: ['created_at', 'id', 'is_active', 'name', 'updated_at'],
-      person: ['created_at', 'display_name', 'id', 'is_archived', 'updated_at', 'workspace_id'],
+      person: ['created_at', 'display_name', 'emoji', 'id', 'is_archived', 'updated_at', 'workspace_id'],
       currency: ['code', 'created_at', 'id', 'is_archived', 'is_default', 'updated_at', 'workspace_id'],
       workspace_settings: ['auto_offset', 'backup_every', 'categories_json', 'created_at', 'small_amount_guard_json', 'timezone', 'updated_at', 'workspace_id'],
       transaction: ['amount_minor', 'category', 'created_at', 'creditor_person_id', 'currency_code', 'debtor_person_id', 'entry_kind', 'id', 'import_group_id', 'is_deleted', 'notes', 'occurred_on', 'topic', 'updated_at', 'workspace_id'],

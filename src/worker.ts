@@ -2,17 +2,18 @@ import { aiInstructions, appHtml, homeHtml, linkRetiredHtml, isValidTimeZone, DE
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
 import { autoNettingStatements } from './netting';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
-import { hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
+import { canonicalName, hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 
 export interface Env {
   DB: D1Database;
   // Automatic snapshots. Optional so a bare local environment can still serve the ledger.
   BACKUPS?: R2Bucket;
+  RECEIPTS?: R2Bucket;
 }
 
 type Json = Record<string, unknown>;
 type Workspace = { id: number; name: string; is_active: number; created_at: string; updated_at: string };
-type Person = { id: number; workspace_id: number; display_name: string; is_archived: number; created_at: string; updated_at: string };
+type Person = { id: number; workspace_id: number; display_name: string; emoji: string; is_archived: number; created_at: string; updated_at: string };
 type Currency = { id: number; workspace_id: number; code: string; is_default: number; is_archived: number; created_at: string; updated_at: string };
 type Transaction = { id: number; workspace_id: number; occurred_on: string; entry_kind: string; topic: string; category: string; creditor_person_id: number; debtor_person_id: number; amount_minor: number; currency_code: string; notes: string | null; import_group_id: string | null; is_deleted: number; created_at: string; updated_at: string };
 
@@ -108,24 +109,57 @@ async function requireWorkspace(db: D1Database, secret: string): Promise<Workspa
 }
 async function state(env: Env, workspace: Workspace): Promise<Json> {
   const db = env.DB;
-  const [people, currencies, settings] = await Promise.all([
-    db.prepare('SELECT id, workspace_id, display_name, is_archived, created_at, updated_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Person>(),
+  const [people, currencies, settings, receipts, attachments] = await Promise.all([
+    db.prepare('SELECT id, workspace_id, display_name, emoji, is_archived, created_at, updated_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Person>(),
     db.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Currency>(),
     db.prepare('SELECT categories_json, small_amount_guard_json, timezone, auto_offset, backup_every, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; timezone: string; auto_offset: number; backup_every: number; created_at: string; updated_at: string }>(),
+    db.prepare(`SELECT ${RECEIPT_COLUMNS} FROM receipts WHERE workspace_id = ? ORDER BY is_added ASC, id DESC`).bind(workspace.id).all<Receipt>(),
+    db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? ORDER BY id`).bind(workspace.id).all<ReceiptAttachment>(),
   ]);
   const backups = await backupStatus(db, workspace.id);
-  return { workspace, people: people.results, currencies: currencies.results, settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS } };
+  return { workspace, people: people.results, currencies: currencies.results, receipts: boardReceipts(receipts.results, attachments.results), settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS } };
 }
 function workspaceTimeZone(value: unknown): string | null {
   const raw = typeof value === 'string' ? value.trim() : '';
   if (raw === '') return DEFAULT_TIME_ZONE;
   return isValidTimeZone(raw) ? raw : null;
 }
-function onboarding(input: Json): { name: string; people: string[]; currencies: { code: string; is_default: boolean }[]; timezone: string } | null {
+// A person's avatar is one emoji: letters and digits belong in the name, and the avatar
+// never reaches the ledger as free text.
+function cleanEmoji(value: unknown): string | null {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 16 || /[\p{L}\p{N}]/u.test(trimmed)) return null;
+  return trimmed;
+}
+function splitEmoji(value: string): { name: string; emoji: string } {
+  const parts = value.split(/\s+/).filter((part) => part !== '');
+  if (parts.length < 2) return { name: value, emoji: '' };
+  const avatar = (token: string): string => (/[\p{L}\p{N}]/u.test(token) ? '' : cleanEmoji(token) || '');
+  const trailing = avatar(parts[parts.length - 1]);
+  if (trailing) return { name: parts.slice(0, -1).join(' '), emoji: trailing };
+  const leading = avatar(parts[0]);
+  if (leading) return { name: parts.slice(1).join(' '), emoji: leading };
+  return { name: value, emoji: '' };
+}
+const personLabel = (person: { display_name: string; emoji?: string | null }): string => person.emoji ? `${person.emoji} ${person.display_name}` : person.display_name;
+function onboarding(input: Json): { name: string; people: { display_name: string; emoji: string }[]; currencies: { code: string; is_default: boolean }[]; timezone: string } | null {
   const name = cleanText(input.name, 100);
   if (!name || !Array.isArray(input.people) || !Array.isArray(input.currencies)) return null;
-  const people = input.people.map((person) => typeof person === 'string' ? cleanText(person, 80) : cleanText(asObject(person)?.display_name, 80));
-  if (people.some((person) => !person) || people.length < 2 || new Set(people.map((person) => person!.toLocaleLowerCase())).size !== people.length) return null;
+  // "Ada \ud83e\udd8a", "\ud83e\udd8a Ada" and { display_name, emoji } all work; an emoji token at either end becomes the avatar.
+  const people: { display_name: string; emoji: string }[] = [];
+  for (const person of input.people) {
+    const item = typeof person === 'string' ? null : asObject(person);
+    const cleaned = cleanText(typeof person === 'string' ? person : item?.display_name, 80);
+    if (!cleaned) return null;
+    const split = splitEmoji(cleaned);
+    const emoji = cleanEmoji(item?.emoji === undefined ? split.emoji : item.emoji);
+    if (emoji === null) return null;
+    people.push({ display_name: split.name, emoji });
+  }
+  if (people.length < 2 || new Set(people.map((person) => person.display_name.toLocaleLowerCase())).size !== people.length) return null;
   const currencies = input.currencies.map((currency) => {
     const item = asObject(currency);
     return item && typeof item.code === 'string' && currencyPattern.test(item.code) && typeof item.is_default === 'boolean' ? { code: item.code, is_default: item.is_default } : null;
@@ -133,11 +167,11 @@ function onboarding(input: Json): { name: string; people: string[]; currencies: 
   if (currencies.some((currency) => !currency) || currencies.length < 1 || new Set(currencies.map((currency) => currency!.code)).size !== currencies.length || currencies.filter((currency) => currency!.is_default).length !== 1) return null;
   const timezone = workspaceTimeZone(input.timezone);
   if (!timezone) return null;
-  return { name, people: people as string[], currencies: currencies as { code: string; is_default: boolean }[], timezone };
+  return { name, people, currencies: currencies as { code: string; is_default: boolean }[], timezone };
 }
 async function ownedPerson(db: D1Database, workspaceId: number, id: unknown, active = false): Promise<Person | null> {
   if (!Number.isSafeInteger(id)) return null;
-  return db.prepare(`SELECT id, workspace_id, display_name, is_archived, created_at, updated_at FROM workspace_people WHERE id = ? AND workspace_id = ?${active ? ' AND is_archived = 0' : ''}`).bind(id, workspaceId).first<Person>();
+  return db.prepare(`SELECT id, workspace_id, display_name, emoji, is_archived, created_at, updated_at FROM workspace_people WHERE id = ? AND workspace_id = ?${active ? ' AND is_archived = 0' : ''}`).bind(id, workspaceId).first<Person>();
 }
 async function ownedCurrency(db: D1Database, workspaceId: number, code: unknown, active = false): Promise<Currency | null> {
   if (typeof code !== 'string' || !currencyPattern.test(code)) return null;
@@ -152,13 +186,28 @@ async function validateTransaction(db: D1Database, workspaceId: number, input: J
 async function handle(request: Request, env: Env): Promise<Response> {
   const url = new URL(request.url);
   const { pathname } = url;
+  const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Trip finance">
+  <rect width="64" height="64" rx="14" fill="#0d0d10"/>
+  <circle cx="32" cy="32" r="22" fill="#2563eb"/>
+  <path d="M21 26h21m0 0-6-6m6 6-6 6" fill="none" stroke="#fafafa" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M43 38H22m0 0 6-6m-6 6 6 6" fill="none" stroke="#fafafa" stroke-width="4.6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>`;
+  if (request.method === 'GET' && (pathname === '/favicon.svg' || pathname === '/favicon.ico')) {
+    return new Response(FAVICON_SVG, { headers: { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'public, max-age=604800' } });
+  }
+  if (request.method === 'GET' && pathname === '/apple-touch-icon.png') {
+    const binary = atob(APPLE_TOUCH_ICON_PNG);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new Response(bytes, { headers: { 'content-type': 'image/png', 'cache-control': 'public, max-age=604800' } });
+  }
   if (request.method === 'GET' && pathname === '/') return new Response(homeHtml(), { headers: { 'content-type': 'text/html; charset=utf-8', ...pageHeaders() } });
   if (request.method === 'POST' && pathname === '/api/workspaces') {
     const input = await body(request); if (input === bodyTooLarge) return error('Request body too large', 413, secretHeaders()); const valid = input && onboarding(input);
     if (!valid) return error('Invalid workspace onboarding payload', 400, secretHeaders());
     const secret = createSecret(); const hash = await sha256(secret);
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO workspaces (secret_hash, name) VALUES (?, ?)').bind(hash, valid.name), env.DB.prepare(`INSERT INTO workspace_settings (workspace_id, timezone) SELECT id, ? FROM workspaces WHERE secret_hash = ?`).bind(valid.timezone, hash)];
-    for (const person of valid.people) statements.push(env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) SELECT id, ? FROM workspaces WHERE secret_hash = ?').bind(person, hash));
+    for (const person of valid.people) statements.push(env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name, emoji) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(person.display_name, person.emoji, hash));
     for (const currency of valid.currencies) statements.push(env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(currency.code, currency.is_default ? 1 : 0, hash));
     await env.DB.batch(statements);
     const workspace = await resolveWorkspace(env.DB, secret);
@@ -182,6 +231,83 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (!workspaceApi) return new Response('Not found', { status: 404, headers: secretHeaders() });
   if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && !allowedOrigin(request, url)) return secretResponse({ error: 'Origin does not match this capability URL' }, 403);
   if (tail === '' && request.method === 'GET') return secretResponse(await state(env, workspace));
+
+  if (tail === 'receipts' && request.method === 'GET') return secretResponse({ receipts: await listReceipts(env.DB, workspace.id) });
+  if (tail === 'receipts' && request.method === 'POST') {
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    const title = cleanText(input.title, 120); if (!title) return secretResponse({ error: 'Give the receipt a short title' }, 400);
+    const note = receiptNote(input.note); if (note === null) return secretResponse({ error: 'Notes must be 2000 characters or fewer' }, 400);
+    const link = receiptLink(input.link); if (link === null) return secretResponse({ error: 'A receipt link must start with http:// or https:// and stay under 1000 characters' }, 400);
+    const added = receiptState(input.is_added, 0); if (added === null) return secretResponse({ error: 'is_added must be true or false' }, 400);
+    const created = await env.DB.prepare(`INSERT INTO receipts (workspace_id, title, note, link, is_added, added_at) VALUES (?, ?, ?, ?, ?, CASE WHEN ? = 1 THEN ${now} ELSE NULL END) RETURNING ${RECEIPT_COLUMNS}`)
+      .bind(workspace.id, title, note, link, added, added).first<Receipt>();
+    return secretResponse({ receipt: { ...created!, attachments: [], attachment_count: 0 } }, 201);
+  }
+  const recRoute = tail.match(/^receipts\/(\d+)(?:\/(attachments|delete)(?:\/(\d+))?)?$/);
+  if (recRoute) {
+    const receiptId = Number(recRoute[1]); const recAction = recRoute[2]; const attachmentId = recRoute[3] === undefined ? null : Number(recRoute[3]);
+    const receipt = await env.DB.prepare(`SELECT ${RECEIPT_COLUMNS} FROM receipts WHERE id = ? AND workspace_id = ?`).bind(receiptId, workspace.id).first<Receipt>();
+    if (!receipt) return secretResponse({ error: 'Receipt not found' }, 404);
+    if (recAction === 'attachments') {
+      if (!env.RECEIPTS) return secretResponse({ error: 'Receipt photo storage is not configured on this deployment' }, 400);
+      if (attachmentId === null) {
+        if (request.method === 'GET') return secretResponse({ attachments: await listAttachments(env.DB, workspace.id, receiptId) });
+        if (request.method === 'POST') {
+          const held = await env.DB.prepare('SELECT COUNT(*) AS count FROM receipt_attachments WHERE workspace_id = ? AND receipt_id = ?').bind(workspace.id, receiptId).first<{ count: number }>();
+          if ((held?.count ?? 0) >= RECEIPT_MAX_ATTACHMENTS) return secretResponse({ error: `A card holds up to ${RECEIPT_MAX_ATTACHMENTS} attachments - remove one first` }, 400);
+          const type = (request.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase();
+          if (!RECEIPT_IMAGE_TYPES.includes(type)) return secretResponse({ error: 'Upload a PNG, JPEG, WebP, GIF, AVIF, or HEIC image' }, 400);
+          const declared = Number(request.headers.get('content-length') ?? '');
+          if (Number.isFinite(declared) && declared > RECEIPT_MAX_IMAGE_BYTES) return secretResponse({ error: 'Each attachment must be 6 MB or smaller' }, 413);
+          const bytes = await request.arrayBuffer();
+          if (bytes.byteLength === 0) return secretResponse({ error: 'That file was empty' }, 400);
+          if (bytes.byteLength > RECEIPT_MAX_IMAGE_BYTES) return secretResponse({ error: 'Each attachment must be 6 MB or smaller' }, 413);
+          const label = cleanText(new URL(request.url).searchParams.get('label') ?? '', 120) ?? '';
+          const key = `receipts/${workspace.id}/${receiptId}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+          await env.RECEIPTS.put(key, bytes, { httpMetadata: { contentType: type } });
+          const created = await env.DB.prepare(`INSERT INTO receipt_attachments (workspace_id, receipt_id, label, image_key, image_type, image_bytes) VALUES (?, ?, ?, ?, ?, ?) RETURNING ${ATTACHMENT_COLUMNS}`)
+            .bind(workspace.id, receiptId, label, key, type, bytes.byteLength).first<ReceiptAttachment>();
+          await env.DB.prepare(`UPDATE receipts SET updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(receiptId, workspace.id).run();
+          return secretResponse({ attachment: publicAttachment(created!) }, 201);
+        }
+        return secretResponse({ error: 'Method not allowed' }, 405);
+      }
+      const attachment = await env.DB.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE id = ? AND receipt_id = ? AND workspace_id = ?`).bind(attachmentId, receiptId, workspace.id).first<ReceiptAttachment>();
+      if (!attachment) return secretResponse({ error: 'Attachment not found' }, 404);
+      if (request.method === 'GET') {
+        const object = await env.RECEIPTS.get(attachment.image_key);
+        if (!object) return secretResponse({ error: 'That attachment is no longer stored' }, 404);
+        return new Response(object.body, { headers: { 'content-type': attachment.image_type || 'application/octet-stream', 'content-length': String(object.size), 'cache-control': 'private, max-age=300', ...secretHeaders() } });
+      }
+      if (request.method === 'DELETE' || (request.method === 'POST' && request.headers.get('x-action') === 'delete')) {
+        try { await env.RECEIPTS.delete(attachment.image_key) } catch { /* the row is going away anyway */ }
+        await env.DB.prepare('DELETE FROM receipt_attachments WHERE id = ? AND receipt_id = ? AND workspace_id = ?').bind(attachmentId, receiptId, workspace.id).run();
+        await env.DB.prepare(`UPDATE receipts SET updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(receiptId, workspace.id).run();
+        return secretResponse({ deleted: attachmentId });
+      }
+      return secretResponse({ error: 'Method not allowed' }, 405);
+    }
+    if ((recAction === 'delete' && request.method === 'POST') || (!recAction && request.method === 'DELETE')) {
+      const held = await env.DB.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? AND receipt_id = ?`).bind(workspace.id, receiptId).all<ReceiptAttachment>();
+      for (const attachment of held.results) { try { await env.RECEIPTS?.delete(attachment.image_key) } catch { /* the row is going away anyway */ } }
+      await env.DB.prepare('DELETE FROM receipt_attachments WHERE workspace_id = ? AND receipt_id = ?').bind(workspace.id, receiptId).run();
+      await env.DB.prepare('DELETE FROM receipts WHERE id = ? AND workspace_id = ?').bind(receiptId, workspace.id).run();
+      return secretResponse({ deleted: receiptId });
+    }
+    if (!recAction && request.method === 'PATCH') {
+      const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+      const title = input.title === undefined ? receipt.title : cleanText(input.title, 120); if (!title) return secretResponse({ error: 'Give the receipt a short title' }, 400);
+      const note = input.note === undefined ? receipt.note : receiptNote(input.note); if (note === null) return secretResponse({ error: 'Notes must be 2000 characters or fewer' }, 400);
+      const link = input.link === undefined ? receipt.link : receiptLink(input.link); if (link === null) return secretResponse({ error: 'A receipt link must start with http:// or https:// and stay under 1000 characters' }, 400);
+      const added = receiptState(input.is_added, receipt.is_added); if (added === null) return secretResponse({ error: 'is_added must be true or false' }, 400);
+      const updated = await env.DB.prepare(`UPDATE receipts SET title = ?, note = ?, link = ?, is_added = ?, added_at = CASE WHEN ? = 1 THEN COALESCE(added_at, ${now}) ELSE NULL END, updated_at = ${now} WHERE id = ? AND workspace_id = ? RETURNING ${RECEIPT_COLUMNS}`)
+        .bind(title, note, link, added, added, receiptId, workspace.id).first<Receipt>();
+      const attachments = await listAttachments(env.DB, workspace.id, receiptId);
+      return secretResponse({ receipt: { ...updated!, attachments, attachment_count: attachments.length } });
+    }
+    return secretResponse({ error: 'Method not allowed' }, 405);
+  }
+
   if (tail === 'instructions' && request.method === 'GET') {
     // Single source of truth: the card in the page is rendered from this same text, and the
     // client re-fetches it whenever the roster changes, so adding or archiving a person is
@@ -194,7 +320,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const liveCurrencies = currencies.filter((currency) => !currency.is_archived);
     const codes = liveCurrencies.map((currency) => currency.code);
     return secretResponse({ text: aiInstructions({
-      names: people.filter((person) => !person.is_archived).map((person) => person.display_name),
+      names: people.filter((person) => !person.is_archived).map((person) => personLabel(person)),
       codes,
       defaultCode: liveCurrencies.filter((currency) => currency.is_default)[0]?.code ?? codes[0] ?? 'USD',
       tz,
@@ -267,13 +393,20 @@ async function handle(request: Request, env: Env): Promise<Response> {
     await env.DB.batch(statements); const updated = (await requireWorkspace(env.DB, secret)) as Workspace; return secretResponse(await state(env, updated));
   }
   if (tail === 'people' && request.method === 'POST') {
-    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400);
-    const result = await env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name) VALUES (?, ?) RETURNING id, workspace_id, display_name, is_archived, created_at, updated_at').bind(workspace.id, displayName).first<Person>(); return secretResponse({ person: result }, 201);
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); const emoji = input ? cleanEmoji(input.emoji) : ''; if (!displayName || emoji === null) return secretResponse({ error: emoji === null ? 'Pick one emoji for the avatar - letters and numbers belong in the name' : 'Invalid person' }, 400);
+    const result = await env.DB.prepare('INSERT INTO workspace_people (workspace_id, display_name, emoji) VALUES (?, ?, ?) RETURNING id, workspace_id, display_name, emoji, is_archived, created_at, updated_at').bind(workspace.id, displayName, emoji).first<Person>(); return secretResponse({ person: result }, 201);
   }
   let route = tail.match(/^people\/(\d+)(?:\/(archive|restore))?$/);
   if (route) {
     const [, value, action] = route; const person = await ownedPerson(env.DB, workspace.id, Number(value)); if (!person) return secretResponse({ error: 'Person not found' }, 404);
-    if (!action && request.method === 'PATCH') { const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); const displayName = input && cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400); await env.DB.prepare(`UPDATE workspace_people SET display_name = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(displayName, person.id, workspace.id).run(); }
+    if (!action && request.method === 'PATCH') {
+      const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413);
+      const sets: string[] = []; const values: unknown[] = [];
+      if (input && input.display_name !== undefined) { const displayName = cleanText(input.display_name, 80); if (!displayName) return secretResponse({ error: 'Invalid person' }, 400); sets.push('display_name = ?'); values.push(displayName); }
+      if (input && input.emoji !== undefined) { const emoji = cleanEmoji(input.emoji); if (emoji === null) return secretResponse({ error: 'Pick one emoji for the avatar - letters and numbers belong in the name' }, 400); sets.push('emoji = ?'); values.push(emoji); }
+      if (!sets.length) return secretResponse({ error: 'No supported changes' }, 400);
+      await env.DB.prepare(`UPDATE workspace_people SET ${sets.join(', ')}, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(...values, person.id, workspace.id).run();
+    }
     else if ((action === 'archive' || action === 'restore') && request.method === 'POST') await env.DB.prepare(`UPDATE workspace_people SET is_archived = ?, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(action === 'archive' ? 1 : 0, person.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
     return secretResponse({ person: await ownedPerson(env.DB, workspace.id, person.id) });
   }
@@ -326,7 +459,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const person = await ownedPerson(env.DB, workspace.id, Number(personSummary[1])); if (!person) return secretResponse({ error: 'Person not found' }, 404);
     const rows = await env.DB.prepare('SELECT id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, is_deleted FROM transactions WHERE workspace_id = ? AND (creditor_person_id = ? OR debtor_person_id = ?) ORDER BY occurred_on DESC, id DESC').bind(workspace.id, person.id, person.id).all<{ id: number; occurred_on: string; entry_kind: string; topic: string; category: string; creditor_person_id: number; debtor_person_id: number; amount_minor: number; currency_code: string; notes: string | null; is_deleted: number }>();
     const roster = await env.DB.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<{ id: number; display_name: string; is_archived: number }>();
-    const nameOf = new Map<number, string>(); for (const entry of roster.results) nameOf.set(entry.id, entry.display_name);
+    const nameOf = new Map<number, string>(); for (const entry of roster.results) nameOf.set(entry.id, personLabel(entry));
     // outgoing = this person fronted the money or is owed it; incoming = a counterparty fronted it for them.
     type PersonTotals = { currency_code: string; paid_for_minor: number; covered_for_them_minor: number; settled_out_minor: number; settled_in_minor: number; net_minor: number; entries: number };
     type PersonPair = { counterparty_id: number; counterparty: string; currency_code: string; paid_for_minor: number; covered_minor: number; settled_out_minor: number; settled_in_minor: number; net_minor: number; records: number ; archived_records: number };
@@ -458,7 +591,12 @@ async function handle(request: Request, env: Env): Promise<Response> {
     if (contentLength && Number(contentLength) > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
     const raw = await request.text(); if (raw.length > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
     const peopleRows = await env.DB.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ?').bind(workspace.id).all<{ id: number; display_name: string; is_archived: number }>();
-    const peopleByName = new Map(peopleRows.results.map((person) => [person.display_name.toLowerCase(), person]));
+    const peopleByName = new Map<string, { id: number; display_name: string; is_archived: number }>();
+    for (const person of peopleRows.results) {
+      peopleByName.set(person.display_name.toLocaleLowerCase(), person);
+      const canonical = canonicalName(person.display_name);
+      if (canonical && !peopleByName.has(canonical)) peopleByName.set(canonical, person);
+    }
     const currencyRows = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0').bind(workspace.id).all<{ code: string }>();
     const currencyCodes = new Set(currencyRows.results.map((currency) => currency.code));
     const parsed = parseImportCsv(raw, peopleByName, currencyCodes);
@@ -540,7 +678,70 @@ async function handle(request: Request, env: Env): Promise<Response> {
   return new Response('Not found', { status: 404, headers: secretHeaders() });
 }
 
-const auditEntities = ['workspace', 'person', 'currency', 'workspace_settings', 'transaction', 'workspace_backup'];
+const auditEntities = ['workspace', 'person', 'currency', 'workspace_settings', 'transaction', 'workspace_backup', 'receipt', 'receipt_attachment'];
 const auditActions = ['create', 'update', 'archive', 'restore', 'delete'];
+
+// 180x180 PNG, generated from the same artwork as FAVICON_SVG (see the icon section below)
+const APPLE_TOUCH_ICON_PNG = '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';
+
+/* ---------------- receipt backlog (the user's own tracker, never an importer) ---------------- */
+const RECEIPT_COLUMNS = 'id, workspace_id, title, note, link, is_added, added_at, created_at, updated_at';
+const ATTACHMENT_COLUMNS = 'id, workspace_id, receipt_id, label, image_key, image_type, image_bytes, created_at';
+const RECEIPT_MAX_ATTACHMENTS = 6;
+const RECEIPT_MAX_IMAGE_BYTES = 6 * 1024 * 1024;
+const RECEIPT_IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif'];
+type Receipt = { id: number; workspace_id: number; title: string; note: string; link: string; is_added: number; added_at: string | null; created_at: string; updated_at: string };
+type ReceiptAttachment = { id: number; workspace_id: number; receipt_id: number; label: string; image_key: string; image_type: string; image_bytes: number; created_at: string };
+// Storage keys stay server-side: the client only learns that an attachment exists, its
+// label, type, and size.
+function publicAttachment(row: ReceiptAttachment) {
+  return { id: row.id, receipt_id: row.receipt_id, label: row.label, image_type: row.image_type, image_bytes: row.image_bytes, created_at: row.created_at };
+}
+async function listAttachments(db: D1Database, workspaceId: number, receiptId?: number) {
+  const statement = receiptId === undefined
+    ? db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? ORDER BY id`).bind(workspaceId)
+    : db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? AND receipt_id = ? ORDER BY id`).bind(workspaceId, receiptId);
+  const rows = await statement.all<ReceiptAttachment>();
+  return rows.results.map(publicAttachment);
+}
+// The board groups attachments onto their card, so a card arrives with everything it shows.
+function groupAttachments(rows: ReceiptAttachment[]) {
+  const grouped: Record<number, ReturnType<typeof publicAttachment>[]> = {};
+  for (const row of rows) { const bucket = grouped[row.receipt_id] ?? (grouped[row.receipt_id] = []); bucket.push(publicAttachment(row)); }
+  return grouped;
+}
+function boardReceipts(receipts: Receipt[], attachments: ReceiptAttachment[]) {
+  const grouped = groupAttachments(attachments);
+  return receipts.map((row) => ({ id: row.id, title: row.title, note: row.note, link: row.link, is_added: row.is_added, added_at: row.added_at, created_at: row.created_at, updated_at: row.updated_at, attachments: grouped[row.id] ?? [], attachment_count: (grouped[row.id] ?? []).length }));
+}
+async function listReceipts(db: D1Database, workspaceId: number) {
+  const [receipts, attachments] = await Promise.all([
+    db.prepare(`SELECT ${RECEIPT_COLUMNS} FROM receipts WHERE workspace_id = ? ORDER BY is_added ASC, id DESC`).bind(workspaceId).all<Receipt>(),
+    db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? ORDER BY id`).bind(workspaceId).all<ReceiptAttachment>(),
+  ]);
+  return boardReceipts(receipts.results, attachments.results);
+}
+// '' means "no value", null means "rejected" - the callers turn null into a 400.
+function receiptNote(value: unknown): string | null {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') return null;
+  const trimmed = value.replace(/\r\n/g, '\n').trim();
+  return trimmed.length > 2000 ? null : trimmed;
+}
+function receiptLink(value: unknown): string | null {
+  if (value === undefined || value === null) return '';
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed === '') return '';
+  if (trimmed.length > 1000) return null;
+  return /^https?:\/\/\S+$/i.test(trimmed) ? trimmed : null;
+}
+function receiptState(value: unknown, fallback: number): number | null {
+  if (value === undefined || value === null) return fallback;
+  if (value === true || value === 1 || value === '1') return 1;
+  if (value === false || value === 0 || value === '0') return 0;
+  return null;
+}
+
 
 export default { fetch: handle } satisfies ExportedHandler<Env>;

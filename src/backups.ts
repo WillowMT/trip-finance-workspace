@@ -28,7 +28,7 @@ type SnapshotDoc = {
 };
 
 const transactionColumns = ['occurred_on', 'entry_kind', 'topic', 'category', 'creditor_person_id', 'debtor_person_id', 'amount_minor', 'currency_code', 'notes', 'import_group_id', 'is_deleted', 'created_at'];
-const peopleColumns = ['display_name', 'is_archived', 'created_at'];
+const peopleColumns = ['display_name', 'emoji', 'is_archived', 'created_at'];
 const currencyColumns = ['code', 'is_default', 'is_archived', 'created_at'];
 const settingsColumns = ['categories_json', 'small_amount_guard_json', 'timezone', 'auto_offset', 'backup_every', 'created_at'];
 
@@ -66,7 +66,7 @@ export async function listBackups(db: D1Database, workspaceId: number, limit = 5
 
 async function snapshotText(db: D1Database, workspaceId: number, name: string, sequence: number, trigger: string): Promise<{ body: string; rows: number }> {
   const [people, currencies, settings, transactions, splits, workflows] = await Promise.all([
-    db.prepare('SELECT id, display_name, is_archived, created_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspaceId).all<Record<string, unknown>>(),
+    db.prepare('SELECT id, display_name, emoji, is_archived, created_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspaceId).all<Record<string, unknown>>(),
     db.prepare('SELECT id, code, is_default, is_archived, created_at FROM workspace_currencies WHERE workspace_id = ? ORDER BY id').bind(workspaceId).all<Record<string, unknown>>(),
     db.prepare('SELECT categories_json, small_amount_guard_json, timezone, auto_offset, backup_every, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspaceId).first<Record<string, unknown>>(),
     db.prepare(`SELECT id, ${transactionColumns.join(', ')} FROM transactions WHERE workspace_id = ? ORDER BY id`).bind(workspaceId).all<Record<string, unknown>>(),
@@ -174,7 +174,7 @@ export async function restoreSnapshot(env: Env, secretHash: string, snapshot: un
   const workspaceId = minted?.id;
   if (!workspaceId) throw new Error('Unable to create the restored workspace');
   const statements = [
-    ...peopleRows.map((row) => db.prepare('INSERT INTO workspace_people (workspace_id, display_name, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?) RETURNING id').bind(workspaceId, text(row.display_name), integer(row.is_archived, 0), text(row.created_at) ?? created, created)),
+    ...peopleRows.map((row) => db.prepare('INSERT INTO workspace_people (workspace_id, display_name, emoji, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id').bind(workspaceId, text(row.display_name), text(row.emoji) ?? '', integer(row.is_archived, 0), text(row.created_at) ?? created, created)),
     ...currencyRows.map((row) => db.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default, is_archived, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id').bind(workspaceId, text(row.code), integer(row.is_default, 0), integer(row.is_archived, 0), text(row.created_at) ?? created, created)),
     db.prepare('INSERT INTO workspace_settings (workspace_id, categories_json, small_amount_guard_json, timezone, auto_offset, backup_every, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').bind(workspaceId, text(settings.categories_json) ?? '[]', text(settings.small_amount_guard_json) ?? '{}', text(settings.timezone) ?? 'Asia/Bangkok', integer(settings.auto_offset, 1), backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created, created),
   ];

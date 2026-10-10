@@ -14,6 +14,10 @@ export function cleanText(value: unknown, max: number): string | null {
   return text.length >= 1 && text.length <= max ? text : null;
 }
 
+// Emoji-tolerant name key: "\ud83e\udd8a Ada", "ada" and "Ada" all resolve to the same person.
+export function canonicalName(value: string): string {
+  return value.replace(/[\p{Extended_Pictographic}\uFE0F\u200D]/gu, ' ').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+}
 export function validDate(value: unknown): value is string {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const date = new Date(`${value}T00:00:00.000Z`);
@@ -164,8 +168,8 @@ export function parseImportCsv(
     if (!category) problems.push('invalid category');
     const creditorName = value('creditor').toLowerCase();
     const debtorName = value('debtor').toLowerCase();
-    const creditor = peopleByName.get(creditorName);
-    const debtor = peopleByName.get(debtorName);
+    const creditor = peopleByName.get(creditorName) ?? peopleByName.get(canonicalName(creditorName));
+    const debtor = peopleByName.get(debtorName) ?? peopleByName.get(canonicalName(debtorName));
     if (!creditor || creditor.is_archived) problems.push('unknown or archived creditor');
     if (!debtor || debtor.is_archived) problems.push('unknown or archived debtor');
     if (creditor && debtor && creditor.id === debtor.id) problems.push('creditor and debtor must differ');
