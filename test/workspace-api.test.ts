@@ -85,6 +85,24 @@ test('workspace APIs isolate settings, people, currencies, and audited transacti
  });
  });
 
+test('the ledger delete button works: DELETE /transactions/:id hides the row and it stays restorable', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const created = await (await request(`/w/${secret}/api/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-10', entry_kind: 'debt', topic: 'Dinner', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 1250, currency_code: 'USD' }) })).json() as { transaction: { id: number } };
+    const id = created.transaction.id;
+    const removed = await request(`/w/${secret}/api/transactions/${id}`, { method: 'DELETE' });
+    assert.equal(removed.status, 200);
+    assert.equal(((await removed.json()) as { transaction: { is_deleted: number } }).transaction.is_deleted, 1);
+    assert.equal(((await (await request(`/w/${secret}/api/transactions`)).json()) as { transactions: unknown[] }).transactions.length, 0);
+    assert.equal((await request(`/w/${secret}/api/transactions/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'Edit after delete' }) })).status, 400);
+    assert.equal((await request(`/w/${secret}/api/transactions/${id}/restore`, { method: 'POST' })).status, 200);
+    assert.equal(((await (await request(`/w/${secret}/api/transactions`)).json()) as { transactions: unknown[] }).transactions.length, 1);
+    assert.equal((await request(`/w/${secret}/api/transactions/999999`, { method: 'DELETE' })).status, 404);
+  });
+});
+
  test('only canonical capability API routes resolve workspace secrets', async () => {
    await withWorkspaceApi(async (request) => {
      const secret = await createWorkspace(request);

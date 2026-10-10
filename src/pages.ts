@@ -20,11 +20,8 @@ h1{font-size:1.15rem;margin:0;letter-spacing:-.01em}
 h2{font-size:1rem;margin:0 0 10px;letter-spacing:-.01em}
 h3{font-size:.85rem;margin:0 0 6px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 p.sub{color:var(--muted);font-size:.8rem;margin:2px 0 0}
-.tabs{display:flex;gap:6px;overflow-x:auto;scroll-snap-type:x proximity;margin:10px auto 0;max-width:680px;padding:2px 2px 4px;scrollbar-width:none;-webkit-overflow-scrolling:touch}
-@media(min-width:560px){.tabs button{flex:1 1 0;min-width:0}}
-@media(max-width:559px){.tabs{flex-wrap:wrap;overflow:visible}.tabs button{flex:0 1 auto}}
-.tabs::-webkit-scrollbar{display:none}
-.tabs button{width:auto;flex:0 0 auto;scroll-snap-align:start;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px;padding:7px 13px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:10px auto 0;max-width:680px;padding:2px 2px 4px}
+.tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border:1px solid transparent;border-radius:999px;padding:7px 13px;font:inherit;font-size:.86rem;font-weight:600;cursor:pointer}
 .tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:14px;margin-bottom:12px;box-shadow:var(--shadow)}
 label{display:block;font-size:.78rem;color:var(--muted);font-weight:600;margin:0 0 4px}
