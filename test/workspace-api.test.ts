@@ -1288,3 +1288,48 @@ test('a repayment reduces what is owed in the summary, the plan, and every view 
     assert.deepEqual(lines.map((row) => [row.from_person_id, row.to_person_id, row.amount_minor]), [[lin.id, ada.id, 10_000]], 'the plan asks for the repayment-adjusted 100.00, never the gross 120.00');
   });
 });
+
+test('an archived row is restorable from the row itself and from the audit entry it left', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const created = await (await request(`${api}/transactions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Night market', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 900, currency_code: 'USD' }),
+    })).json() as { transaction: { id: number } };
+    const id = created.transaction.id;
+
+    // The app has to answer "how do I restore it?" with a button, in both places the archived row is visible:
+    // the ledger row that carries the ARCHIVED chip, and the audit entry that recorded the archiving.
+    const page = await (await request(`/w/${secret}`)).text();
+    assert.ok(page.includes('[data-txrestore]'), 'the click handler knows the restore control');
+    const row = lift(page, 'recRow');
+    assert.ok(row.includes("(arch?'<span class=\"r-act\">"), 'the archived row carries its own restore control');
+    const auditView = lift(page, 'loadAudit');
+    assert.ok(auditView.includes('archived_transactions'), 'the audit view reads the live archived set');
+    assert.ok(auditView.includes('canRestore'), 'and only offers the button while the row is still archived');
+
+    // Nothing is archived to begin with, so nothing may offer a restore.
+    const first = await (await request(`${api}/audit`)).json() as { archived_transactions: number[] };
+    assert.deepEqual(first.archived_transactions, []);
+
+    await request(`${api}/transactions/${id}`, { method: 'DELETE' });
+    const hidden = await (await request(`${api}/audit`)).json() as { archived_transactions: number[] };
+    assert.deepEqual(hidden.archived_transactions, [id], 'an archived row is reported as restorable');
+
+    const restored = await request(`${api}/transactions/${id}/restore`, { method: 'POST' });
+    assert.equal(restored.status, 200);
+    const back = await (await request(`${api}/audit`)).json() as { archived_transactions: number[] };
+    assert.deepEqual(back.archived_transactions, [], 'and stops being offered once it is back');
+
+    // Restoring is a NEW write: the archive entry is never edited, so both actions survive in one append-only trail.
+    // entity_id is TEXT, so every entity type that happens to share the number (person 1, currency 1...) would
+    // answer too: pin the entity type or the history is a merge of unrelated rows.
+    const trail = await (await request(`${api}/audit?entity=transaction&entity_id=${id}`)).json() as { audit: { action: string }[] };
+    const actions = trail.audit.map((entry) => entry.action).sort();
+    assert.deepEqual(actions, ['archive', 'create', 'restore'], 'the whole history of the row is kept');
+    assert.equal((await request(`${api}/transactions/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'Editable again' }) })).status, 200, 'a restored row can be edited again');
+  });
+});

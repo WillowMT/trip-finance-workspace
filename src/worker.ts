@@ -382,7 +382,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
       const text = row.entity_id === null || row.entity_id === undefined ? '' : String(row.entity_id);
       return /^[0-9]+$/.test(text) ? { ...row, entity_id: Number(text) } : row;
     });
-    return secretResponse({ audit: rows, total: total?.count ?? 0, matched: matchedCount, limit, truncated: matchedCount > entries.results.length });
+    // Restoring is a NEW write (a `restore` row), so the trail stays read-only; the client only needs to know
+    // which transactions are archived right now, or the button would offer a no-op on an already-restored row.
+    const archivedRows = await env.DB.prepare('SELECT id FROM transactions WHERE workspace_id = ? AND is_deleted = 1 ORDER BY id').bind(workspace.id).all<{ id: number }>();
+    return secretResponse({ audit: rows, total: total?.count ?? 0, matched: matchedCount, limit, truncated: matchedCount > entries.results.length, archived_transactions: archivedRows.results.map((row) => row.id) });
   }
   if (tail === '' && request.method === 'PATCH') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);

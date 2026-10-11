@@ -154,6 +154,7 @@ button.icon>span{pointer-events:none}
 .rec.is-arch .r-topic{color:var(--muted)}
 .rec .r-meta{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:1px;line-height:1.3}
 .rec .r-amt{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.rec .r-act{margin-left:auto;flex:0 0 auto}
 .split-sum{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
 .split-sum:last-child{border-bottom:0}
 .split-sum .who{font-weight:600;font-size:var(--fs-base)}
@@ -699,7 +700,8 @@ function recRow(t){
   var arch=(t.is_deleted===1);
   return '<div class="rec'+(arch?' is-arch':'')+'"><span class="r-main"><span class="r-head"><span class="r-topic">'+esc(t.topic)+'</span>'+(arch?'<span class="tag-arch">archived</span>':'')+'</span>'+
     '<span class="r-meta">'+esc(t.occurred_on)+' · '+esc(t.entry_kind)+(t.category?' · '+esc(t.category):'')+' · '+esc(label)+'</span></span>'+
-    '<span class="r-amt '+cls+'">'+esc(money(Math.abs(t.amount_minor),t.currency_code))+'</span></div>';
+    '<span class="r-amt '+cls+'">'+esc(money(Math.abs(t.amount_minor),t.currency_code))+'</span>'+
+    (arch?'<span class="r-act"><button class="mini ghost" type="button" data-txrestore="'+t.id+'">↩ Restore</button></span>':'')+'</div>';
 }
 function pairLine(pr,me){
   var owesMe=pr.net_minor>0, meOwes=pr.net_minor<0;
@@ -826,6 +828,7 @@ async function loadAudit(){
   var r=await call('/audit'+auditQuery());
   if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
   var data=(r.data&&r.data)||{}, rows=data.audit||[];
+  var archivedTx=data.archived_transactions||[];
   if(summary){
     var filtered=(auditQuery()!=='');
     summary.textContent='Showing '+rows.length+' of '+((data.total||0))+' entries'+
@@ -837,7 +840,11 @@ async function loadAudit(){
   for(var i=0;i<rows.length;i++){var e=rows[i];
     var d=document.createElement('details');
     var when=String(e.occurred_at||'').slice(0,19).replace('T',' ');
+    /* The log is read-only: restoring writes a NEW 'restore' row, it never edits this one. Offer the button
+       only while the row is still archived, so it can never fire a no-op against something already restored. */
+    var canRestore=(e.entity_type==='transaction'&&archivedTx.indexOf(Number(e.entity_id))>=0);
     d.innerHTML='<summary>'+esc(auditSummaryText(e))+' · '+esc(e.entity_type)+' #'+esc(e.entity_id)+' <span class="chip">'+esc(when)+'</span></summary>'+
+      (canRestore?'<div class="btns flush mt-10"><button class="mini ghost" type="button" data-txrestore="'+String(e.entity_id)+'">↩ Restore this entry</button></div>':'')+
       '<pre>'+esc(JSON.stringify({before:e.before_json,after:e.after_json},null,1))+'</pre>';
     box.appendChild(d);
   }
@@ -1410,7 +1417,7 @@ document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('r
 document.addEventListener('click',async function(ev){
   /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
      the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
-  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg]')||src):src;
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore]')||src):src;
   if(!t||!t.getAttribute){return}
   var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
   var aOpen=t.getAttribute('data-att-open');
@@ -1420,6 +1427,18 @@ document.addEventListener('click',async function(ev){
     return
   }
   var del=t.getAttribute('data-del'); if(del){ delTx(Number(del),t); return }
+  var ure=t.getAttribute('data-txrestore'); if(ure){
+    var uid=Number(ure); if(t.disabled){return} t.disabled=true;
+    var ur=await call('/transactions/'+uid+'/restore',{method:'POST'});
+    t.disabled=false;
+    if(!ur.ok){ toast(ur.error||'Could not restore this entry',true); return }
+    toast('Entry restored');
+    await loadLedger();
+    loadBalances();
+    if(pmOpenId){ openPerson(pmOpenId) }
+    var al=$('audit-list'); if(al&&al.offsetParent){ loadAudit() }
+    return;
+  }
   var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
   var settle=t.getAttribute('data-settle'); if(settle){ var sp=settle.split(':'); startSettlePayment(Number(sp[0]),Number(sp[1]),sp[2],Number(sp[3])); return }
   var dg=t.getAttribute('data-dg'); if(dg){
