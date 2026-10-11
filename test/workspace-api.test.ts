@@ -743,12 +743,12 @@ test('a person summary reports what they fronted, what was covered for them, and
     const usd = summary.totals.find((row) => row.currency_code === 'USD')!;
     assert.deepEqual(
       { paid_for: usd.paid_for_minor, covered: usd.covered_for_them_minor, settled_out: usd.settled_out_minor, settled_in: usd.settled_in_minor, net: usd.net_minor, entries: usd.entries },
-      { paid_for: 7000, covered: 2000, settled_out: 0, settled_in: 1500, net: 5000, entries: 4 },
+      { paid_for: 7000, covered: 2000, settled_out: 0, settled_in: 1500, net: 3500, entries: 4 },
     );
     const linPair = summary.counterparties.find((row) => row.counterparty === 'Lin')!;
     assert.deepEqual(
       { paid_for: linPair.paid_for_minor, covered: linPair.covered_minor, net: linPair.net_minor, records: linPair.records },
-      { paid_for: 6000, covered: 2000, net: 4000, records: 3 },
+      { paid_for: 6000, covered: 2000, net: 2500, records: 3 },
     );
     assert.equal(summary.counterparties.find((row) => row.counterparty === 'Mia')!.net_minor, 1000);
     assert.equal(summary.suggestions.length, 1, 'only Lin has a reciprocal balance worth offsetting');
@@ -763,7 +763,7 @@ test('a person summary reports what they fronted, what was covered for them, and
     const after = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
     const afterUsd = after.totals.find((row) => row.currency_code === 'USD')!;
     assert.equal(afterUsd.covered_for_them_minor, 0, 'archived rows stop moving balances');
-    assert.equal(afterUsd.net_minor, 7000);
+    assert.equal(afterUsd.net_minor, 5500, 'net stays net after archiving: 70.00 fronted less the 15.00 repaid');
     assert.equal(after.records.archived, 1);
     assert.equal(after.counterparties.find((row) => row.counterparty === 'Lin')!.archived_records, 1, 'the pair still reports the archived record');
     assert.ok(after.recent.some((row) => row.is_deleted === 1 && row.topic === 'Taxi'), 'archived rows stay readable as history');
@@ -1042,5 +1042,249 @@ test('the receipts backlog is a hand-kept tracker: two lanes, several attachment
     assert.match(html, /data-att-idx/, 'a photo queued before saving can be taken off before the receipt exists');
     assert.match(html, /function clearPending/, 'closing the sheet discards queued photos — nothing is written');
     assert.match(html, /Nothing here writes transactions by itself/, 'the copy says the app never files receipts for you');
+  });
+});
+
+// Verification helper for the tests below: take a function's own source out of the served page and
+// run it, so the assertion covers the arithmetic the browser runs and not a copy of it.
+const lift = (html: string, name: string): string => {
+  const at = html.indexOf(`function ${name}(`);
+  assert.ok(at > 0, `${name} is shipped to the client`);
+  let depth = 0;
+  for (let k = html.indexOf('{', at); k < html.length; k++) {
+    if (html[k] === '{') depth += 1;
+    else if (html[k] === '}') { depth -= 1; if (depth === 0) return html.slice(at, k + 1); }
+  }
+  throw new Error(`unterminated ${name}`);
+};
+// PNG IHDR stores width and height as big-endian 32-bit integers.
+const ihdr = (size: number) => [0, 0, (size >> 8) & 0xff, size & 0xff, 0, 0, (size >> 8) & 0xff, size & 0xff];
+
+test('a receipt can be logged against the ledger row it became', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const created = await (await request(`${api}/transactions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Big C groceries', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 12_500, currency_code: 'USD' }),
+    })).json() as { transaction: { id: number } };
+    const card = await (await request(`${api}/receipts`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Big C groceries', note: 'Ada paid' }),
+    })).json() as { receipt: { id: number; transaction_id: number | null; is_added: number } };
+    assert.equal(card.receipt.transaction_id, null, 'a new card points at nothing');
+    assert.equal(card.receipt.is_added, 0, 'and the app has not decided it was entered');
+
+    const linked = await request(`${api}/receipts/${card.receipt.id}/link`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ transaction_id: created.transaction.id }),
+    });
+    assert.equal(linked.status, 200);
+    const linkedCard = ((await linked.json()) as { receipt: { transaction_id: number; is_added: number; added_at: string | null; attachments: unknown[] } }).receipt;
+    assert.equal(linkedCard.transaction_id, created.transaction.id, 'the card names the row it was logged as');
+    assert.equal(linkedCard.is_added, 1, 'logging a card is what moves it across to Added');
+    assert.ok(linkedCard.added_at, 'and stamps when it happened');
+
+    const board = await (await request(api)).json() as { receipts: { id: number; transaction_id: number | null }[] };
+    assert.equal(board.receipts[0].transaction_id, created.transaction.id, 'the board payload carries it, so the badge survives a reload');
+
+    const trail = await (await request(`${api}/audit?entity=receipt&entity_id=${card.receipt.id}`)).json() as { audit: { action: string; after_json: string | null }[] };
+    assert.ok(trail.audit.some((row) => row.action === 'update' && String(row.after_json).includes(`"transaction_id":${created.transaction.id}`)), 'the link is in the immutable trail with the row id inside the snapshot');
+
+    const bad = { method: 'POST', headers: { 'content-type': 'application/json' } };
+    assert.equal((await request(`${api}/receipts/${card.receipt.id}/link`, { ...bad, body: JSON.stringify({ transaction_id: 999_999 }) })).status, 404, 'a row that is not in this workspace cannot be linked');
+    assert.equal((await request(`${api}/receipts/${card.receipt.id}/link`, { ...bad, body: JSON.stringify({ transaction_id: 'ten' }) })).status, 400, 'the id must be a number');
+    assert.equal((await request(`${api}/receipts/999999/link`, { ...bad, body: JSON.stringify({ transaction_id: created.transaction.id }) })).status, 404);
+
+    const unlinked = await (await request(`${api}/receipts/${card.receipt.id}/link`, { method: 'DELETE' })).json() as { receipt: { transaction_id: number | null } };
+    assert.equal(unlinked.receipt.transaction_id, null, 'unlinking clears the card');
+    const rows = await (await request(`${api}/transactions`)).json() as { transactions: unknown[] };
+    assert.equal(rows.transactions.length, 1, 'and leaves the ledger row exactly where it was');
+
+    const html = await (await request(`/w/${secret}`)).text();
+    assert.match(html, /id="rec-log"/, 'the edit sheet carries the logging control');
+    assert.match(html, /not logged/, 'a card that is not in the ledger says so');
+    assert.match(html, /ledger #/, 'and a logged one names the row');
+    assert.match(html, /navigator\.serviceWorker/, 'the page registers the worker that makes it installable');
+  });
+});
+
+test('the audit log answers from a watermark, and the digest that reads it stays nameless', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const watermark = new Date().toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await request(`${api}/transactions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Dinner', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 1250, currency_code: 'USD' }),
+    });
+    const since = await (await request(`${api}/audit?since=${encodeURIComponent(watermark)}`)).json() as { audit: { entity_type: string }[]; matched: number };
+    assert.equal(since.matched, 1, 'only what happened after the watermark comes back');
+    assert.deepEqual(since.audit.map((row) => row.entity_type), ['transaction']);
+    assert.equal(((await (await request(`${api}/audit?since=${encodeURIComponent('2999-01-01T00:00:00.000Z')}`)).json()) as { matched: number }).matched, 0, 'a watermark in the future is empty, not an error');
+    assert.ok(((await (await request(`${api}/audit`)).json()) as { matched: number }).matched > since.matched, 'without a watermark the whole trail comes back');
+    assert.equal((await request(`${api}/audit?since=yesterday`)).status, 400, 'a typo is loud');
+    // the digest query combines with the existing filters rather than replacing them
+    const narrowed = await (await request(`${api}/audit?since=${encodeURIComponent(watermark)}&entity=person`)).json() as { matched: number };
+    assert.equal(narrowed.matched, 0, 'filters still apply on top of the watermark');
+
+    const html = await (await request(`/w/${secret}`)).text();
+    const nounsAt = html.indexOf('var DIGEST_NOUNS=');
+    const verbsAt = html.indexOf('var DIGEST_VERBS=');
+    assert.ok(nounsAt > 0 && verbsAt > nounsAt, 'the digest word lists ship with the page');
+    const source = `${html.slice(nounsAt, html.indexOf(';', verbsAt) + 1)}\n${lift(html, 'digestPhrases')};return digestPhrases`;
+    const digestPhrases = new Function(source)() as (rows: { entity_type: string; action: string }[]) => string[];
+    const lines = digestPhrases([
+      { entity_type: 'transaction', action: 'create' }, { entity_type: 'transaction', action: 'create' }, { entity_type: 'transaction', action: 'create' },
+      { entity_type: 'transaction', action: 'archive' },
+      { entity_type: 'person', action: 'update' },
+      { entity_type: 'receipt_attachment', action: 'delete' },
+      { entity_type: 'workspace_settings', action: 'update' },
+    ]);
+    assert.ok(lines.includes('3 entries were added'), `passive voice, no name attached: ${JSON.stringify(lines)}`);
+    assert.ok(lines.includes('1 entry was removed'), 'a deletion is reported as one thing being removed');
+    assert.ok(lines.includes('1 person was edited'), 'renames read the same way');
+    assert.ok(lines.includes('1 photo was removed'), 'and so does a photo');
+    assert.ok(lines.includes('the settings were changed'), 'settings changes carry no actor either');
+    // Every line is a count plus a passive verb. Do NOT assert `!line.includes(String(ada.id))`:
+    // a fresh workspace's person id is `1`, which every one-digit count line contains, so that
+    // check fails on correct output. Pin the shape instead — a bare number can only be a count.
+    assert.ok(
+      lines.every((line) => /^(the )?(\d+ )?[a-z]+( [a-z]+)? (was|were) (added|removed|edited|changed)$/.test(line)),
+      `every line reads as a count and a passive verb, never a name: ${JSON.stringify(lines)}`,
+    );
+    assert.doesNotMatch(lines.join(' | '), /Ada|Lin/, 'nor a person name — the trail records what changed, never who');
+  });
+});
+
+test('the app installs to a home screen and never serves a cached copy', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const manifest = await request(`/w/${secret}/manifest.webmanifest`);
+    assert.equal(manifest.status, 200);
+    assert.match(manifest.headers.get('content-type') ?? '', /application\/manifest\+json/);
+    const body = await manifest.json() as { name: string; short_name: string; start_url: string; scope: string; display: string; theme_color: string; icons: { src: string; sizes: string; purpose?: string }[] };
+    assert.equal(body.name, 'Mountain weekend', 'the installed app is named after the trip');
+    assert.equal(body.start_url, `/w/${secret}`, 'and it opens this workspace, not a landing page');
+    assert.equal(body.scope, `/w/${secret}/`, 'scoped to the capability path');
+    assert.equal(body.display, 'standalone');
+    assert.equal(body.theme_color, '#0b0b0d', 'the splash matches the dark theme');
+    assert.deepEqual(body.icons.map((icon) => icon.sizes), ['192x192', '512x512', '512x512']);
+    assert.ok(body.icons.some((icon) => icon.purpose === 'maskable'), 'Android crops a maskable icon to its own shape');
+
+    for (const [path, size] of [['/icon-192.png', 192], ['/icon-512.png', 512], ['/icon-maskable-512.png', 512]] as const) {
+      const icon = await request(path);
+      assert.equal(icon.status, 200, `${path} is served`);
+      assert.equal(icon.headers.get('content-type'), 'image/png');
+      const bytes = new Uint8Array(await icon.arrayBuffer());
+      assert.deepEqual(Array.from(bytes.slice(0, 8)), [137, 80, 78, 71, 13, 10, 26, 10], 'a real PNG, not a truncated base64 constant');
+      assert.deepEqual(Array.from(bytes.slice(16, 24)), ihdr(size), `${path} carries 1:1 dimensions`);
+    }
+
+    const worker = await request(`/w/${secret}/sw.js`);
+    assert.equal(worker.status, 200);
+    assert.match(worker.headers.get('content-type') ?? '', /javascript/);
+    const source = await worker.text();
+    assert.doesNotMatch(source, /caches\.open|addAll\(|CacheStorage/, 'the worker must cache nothing: a stale copy would hide every deploy');
+    assert.match(source, /addEventListener\('fetch'/, 'but it answers fetches, which is what makes the app installable');
+
+    const page = await request(`/w/${secret}`);
+    const policy = page.headers.get('content-security-policy') ?? '';
+    assert.match(policy, /manifest-src 'self'/, 'the manifest would be blocked by default-src none without its own directive');
+    assert.match(policy, /worker-src 'self'/, 'and so would the service worker');
+    const html = await page.text();
+    assert.match(html, /<link rel="manifest" href="manifest\.webmanifest">/, 'the page points at its own manifest');
+    assert.match(html, /<meta name="mobile-web-app-capable" content="yes">/);
+    assert.match(html, /register\('sw\.js'\)/, 'and registers the worker relative to the workspace');
+  });
+});
+
+test('the settle-up plan clears every balance and the day chart counts only spending', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+    const plan = new Function(`${lift(html, 'settlePlan')};return settlePlan`)() as (nets: { id: number; net_minor: number }[]) => { from_person_id: number; to_person_id: number; amount_minor: number }[];
+
+    const nets = [{ id: 1, net_minor: 30_000 }, { id: 2, net_minor: -10_000 }, { id: 3, net_minor: -12_500 }, { id: 4, net_minor: -7_500 }];
+    const lines = plan(nets);
+    const left = new Map(nets.map((net) => [net.id, net.net_minor]));
+    for (const row of lines) {
+      left.set(row.from_person_id, (left.get(row.from_person_id) ?? 0) + row.amount_minor);
+      left.set(row.to_person_id, (left.get(row.to_person_id) ?? 0) - row.amount_minor);
+    }
+    for (const value of left.values()) assert.equal(value, 0, 'applying the plan lands every balance on zero');
+    assert.ok(lines.length <= nets.length - 1, 'and needs at most one payment per person');
+    assert.equal(lines.reduce((total, row) => total + row.amount_minor, 0), 30_000, 'the plan moves exactly what is owed');
+    assert.deepEqual(plan([{ id: 1, net_minor: 0 }, { id: 2, net_minor: 0 }]), [], 'people who are square get no line');
+    assert.deepEqual(plan([{ id: 5, net_minor: -12_345 }]), [], 'a one-sided balance is not settled by a transfer to nobody');
+
+    const spend = new Function(`${lift(html, 'spendByDay')};return spendByDay`)() as (rows: Record<string, unknown>[]) => Record<string, Record<string, number>>;
+    const byDay = spend([
+      { entry_kind: 'debt', amount_minor: 1200, currency_code: 'USD', occurred_on: '2026-10-10', is_deleted: 0 },
+      { entry_kind: 'split', amount_minor: 800, currency_code: 'USD', occurred_on: '2026-10-10', is_deleted: 0 },
+      { entry_kind: 'debt', amount_minor: 2000, currency_code: 'USD', occurred_on: '2026-10-11', is_deleted: 0 },
+      { entry_kind: 'payment', amount_minor: 500, currency_code: 'USD', occurred_on: '2026-10-11', is_deleted: 0 },
+      { entry_kind: 'offset', amount_minor: -700, currency_code: 'USD', occurred_on: '2026-10-11', is_deleted: 0 },
+      { entry_kind: 'debt', amount_minor: 900, currency_code: 'USD', occurred_on: '2026-10-12', is_deleted: 1 },
+      { entry_kind: 'debt', amount_minor: 3_000_000, currency_code: 'VND', occurred_on: '2026-10-11', is_deleted: 0 },
+    ]);
+    assert.deepEqual(byDay.USD, { '2026-10-10': 2000, '2026-10-11': 2000 }, 'a repayment, an offset and an archived row are all excluded, while a split is spending');
+    assert.deepEqual(byDay.VND, { '2026-10-11': 3_000_000 }, 'currencies are never summed together');
+
+    assert.match(html, /id="spend-chart"/, 'the chart has a home on the ledger tab');
+    assert.match(html, /id="settle-list"/, 'and the plan has one on the balances tab');
+    assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
+    assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
+    assert.match(html, /function startSettlePayment\(/, 'which prefills a repayment and opens the review sheet');
+    assert.match(html, /'Settle up'/, 'the prefilled topic says what the payment is');
+    assert.doesNotMatch(html, /function settlePlan[\s\S]{0,4000}?env\.DB/, 'the plan is computed in the page, not written by the plan itself');
+  });
+});
+
+test('a repayment reduces what is owed in the summary, the plan, and every view of one row', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'netting off keeps the arithmetic below exact');
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Dinner', category: 'Food', currency_code: 'USD', ...body }) });
+    // 120.00 fronted for Lin, then 20.00 handed back. Both rows are stored positive and the repayment is
+    // marked by its kind - the shape the page itself posts - so a repayment that reads as "fronted for
+    // others" here grows the debt every time somebody pays it back.
+    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 12_000 });
+    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 2_000, entry_kind: 'payment', topic: 'Paid back' });
+
+    type Summary = { totals: { currency_code: string; paid_for_minor: number; covered_for_them_minor: number; settled_in_minor: number; settled_out_minor: number; net_minor: number }[]; counterparties: { counterparty: string; net_minor: number }[] };
+    const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
+    const usd = summary.totals.find((row) => row.currency_code === 'USD')!;
+    assert.deepEqual(
+      { paid_for: usd.paid_for_minor, covered: usd.covered_for_them_minor, settled_in: usd.settled_in_minor, net: usd.net_minor },
+      { paid_for: 12_000, covered: 0, settled_in: 2_000, net: 10_000 },
+      'the repayment is a settlement, so what is owed drops from 120.00 to 100.00',
+    );
+    assert.equal(summary.counterparties.find((row) => row.counterparty === lin.display_name)!.net_minor, 10_000, 'the pair agrees with the total');
+
+    const html = await (await request(`/w/${secret}`)).text();
+    const signed = new Function(`${lift(html, 'signedMinor')};return signedMinor`)() as (row: { entry_kind: string; amount_minor: number }) => number;
+    assert.equal(signed({ entry_kind: 'debt', amount_minor: 12_000 }), 12_000, 'a debt adds to what is owed');
+    assert.equal(signed({ entry_kind: 'payment', amount_minor: 2_000 }), -2_000, 'a repayment subtracts from it');
+    assert.equal(signed({ entry_kind: 'offset', amount_minor: -500 }), -500, 'an offset row already carries its own signed value');
+
+    const rows = [
+      { creditor_person_id: ada.id, debtor_person_id: lin.id, currency_code: 'USD', amount_minor: 12_000, entry_kind: 'debt', is_deleted: 0 },
+      { creditor_person_id: ada.id, debtor_person_id: lin.id, currency_code: 'USD', amount_minor: 2_000, entry_kind: 'payment', is_deleted: 0 },
+    ];
+    const nets = new Function(`${lift(html, 'signedMinor')};${lift(html, 'netsByCurrency')};return netsByCurrency`)() as (list: Record<string, unknown>[]) => Record<string, Record<string, number>>;
+    const usdNets = nets(rows).USD;
+    assert.deepEqual({ ada: usdNets[ada.id], lin: usdNets[lin.id] }, { ada: 10_000, lin: -10_000 }, 'the Balances view and the settle plan read the same 100.00 the summary reports');
+    assert.equal(nets([...rows, { creditor_person_id: lin.id, debtor_person_id: ada.id, currency_code: 'USD', amount_minor: 999, entry_kind: 'debt', is_deleted: 1 }]).USD[lin.id], -10_000, 'an archived row never moves a balance');
+
+    const plan = new Function(`${lift(html, 'settlePlan')};return settlePlan`)() as (list: { id: number; net_minor: number }[]) => { from_person_id: number; to_person_id: number; amount_minor: number }[];
+    const lines = plan([{ id: ada.id, net_minor: usdNets[ada.id] }, { id: lin.id, net_minor: usdNets[lin.id] }]);
+    assert.deepEqual(lines.map((row) => [row.from_person_id, row.to_person_id, row.amount_minor]), [[lin.id, ada.id, 10_000]], 'the plan asks for the repayment-adjusted 100.00, never the gross 120.00');
   });
 });

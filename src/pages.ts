@@ -270,17 +270,32 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
 #rec-view img{max-width:100%;max-height:66vh;border-radius:var(--r-lg);background:var(--hover)}
 #rec-view .btns{width:100%;max-width:420px}
 .rec-acts{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+/* ---------------- spend by day ---------------- */
+.chart{margin-top:var(--sp-5)}
+.chart-head{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-3);flex-wrap:wrap}
+.bars{display:flex;align-items:flex-end;gap:var(--sp-1);height:var(--ctl-area);margin-top:var(--sp-4);border-bottom:1px solid var(--line)}
+.bars .col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;height:100%;gap:2px}
+.bars .track{flex:1 1 auto;display:flex;align-items:flex-end;min-height:0}
+.bars .fill{width:100%;min-height:3px;background:var(--brand);border-radius:var(--r-sm) var(--r-sm) 0 0}
+.bars .day{color:var(--muted);font-size:var(--fs-2xs);text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* ---------------- since your last visit ---------------- */
+.dg-head{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+.dg-head h2{margin:0}
+.dg-list{margin:var(--sp-4) 0 0;padding-left:var(--sp-6);color:var(--muted);font-size:var(--fs-sm)}
+.dg-list li{margin-bottom:var(--sp-1);overflow-wrap:anywhere}
 @media (max-width:640px){.rec-board{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}`;
 
-const page = (title: string, head: string, body: string, script = '') => `<!doctype html>
+const page = (title: string, head: string, body: string, script = '', manifest = '') => `<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <meta name="theme-color" content="#0b0b0d">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+${manifest ? '<link rel="manifest" href="' + manifest + '">' : ''}
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
 <style>${CSS}</style>
@@ -447,7 +462,10 @@ function syncKindLabels(){
 function txRow(t){
   var el=document.createElement('div'); el.className='row';
   /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
-  var signed=(t.entry_kind==='payment')?-t.amount_minor:t.amount_minor;
+  /* One arithmetic for every surface, so no two views can disagree about the same row: a debt adds
+     to what is owed, a repayment reduces it, and an offset row already carries its own signed value
+     because netting writes both directions negative. */
+  var signed=signedMinor(t);
   var cls=signed>0?'pos':(signed<0?'neg':'zero');
   el.innerHTML='<div class="row-main"><div class="who">'+esc(t.topic)+' <span class="chip '+esc(t.entry_kind)+'">'+esc(t.entry_kind)+'</span></div><div class="meta">'+esc(t.occurred_on)+' · '+esc(name(t.creditor_person_id))+' → '+esc(name(t.debtor_person_id))+'<span class="cat"> · '+esc(t.category)+'</span></div></div>'+
     '<div class="row-side"><div class="amt '+cls+'">'+esc(signedMoney(signed,t.currency_code))+'</div><button class="mini icon danger" data-del="'+t.id+'" type="button" title="Delete transaction" aria-label="Delete transaction"><span aria-hidden="true">🗑️</span></button></div>';
@@ -460,12 +478,14 @@ async function loadLedger(){
   if(!r.ok){ list.innerHTML='<div class="err">'+esc(r.error)+'</div>'; var p0=$('tx-pager'); if(p0){p0.hidden=true} return }
   var txs=(r.data&&r.data.transactions)||[]; txCache=txs;
   var totals={};
-  for(var i=0;i<txs.length;i++){ var t=txs[i]; var signed=(t.entry_kind==='payment')?-t.amount_minor:t.amount_minor; totals[t.currency_code]=(totals[t.currency_code]||0)+signed }
+  for(var i=0;i<txs.length;i++){ var t=txs[i]; totals[t.currency_code]=(totals[t.currency_code]||0)+signedMinor(t) }
   var keys=Object.keys(totals).sort();
   var box=$('tx-totals'); box.innerHTML='';
   if(keys.length){ for(var k=0;k<keys.length;k++){ var v=totals[keys[k]], cls2=v>0?'pos':(v<0?'neg':'zero'); var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b class="'+cls2+'">'+esc(money(v,keys[k])||'')+'</b>'; box.appendChild(d) } }
   renderTxList();
+  renderSpend(txs);
 }
+function signedMinor(t){ return t.entry_kind==='payment'?-t.amount_minor:t.amount_minor }
 function renderTxList(){
   var list=$('tx-list'); if(!list){return}
   list.innerHTML='';
@@ -551,6 +571,8 @@ function openReview(build,action,btn){
 function closeReview(){
   var m=$('review-modal'); if(!m||m.hidden){return}
   m.hidden=true; reviewAction=null; reviewBusy=false;
+  /* backing out of the sheet must not leave a receipt link armed for whatever is typed next */
+  logReceiptId=null;
   if(reviewOpener&&reviewOpener.focus){ try{ reviewOpener.focus() }catch(err){} }
   reviewOpener=null;
 }
@@ -595,6 +617,8 @@ async function postRows(rows,btn,err){
   if(r.data&&r.data.netted_pairs){ doneMsg+=' · '+r.data.netted_pairs+' reciprocal balance'+(r.data.netted_pairs===1?'':'s')+' netted' }
   toast(doneMsg);
   $('t-amount').value=''; $('t-topic').value=''; $('t-category').value='Other'; $('t-notes').value='';
+  var loggedReceipt=logReceiptId; logReceiptId=null;
+  if(loggedReceipt&&r.data&&r.data.transaction){ linkReceiptTransaction(loggedReceipt,r.data.transaction.id) }
   loadLedger(); return true;
 }
 /* ---------------- balances ---------------- */
@@ -604,9 +628,10 @@ async function loadBalances(){
   if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
   var txs=(r.data&&r.data.transactions)||[];
   var credits={}, debits={}, counts={};
-  for(var i=0;i<txs.length;i++){var t=txs[i];
-    credits[t.creditor_person_id]=credits[t.creditor_person_id]||{}; credits[t.creditor_person_id][t.currency_code]=(credits[t.creditor_person_id][t.currency_code]||0)+t.amount_minor;
-    debits[t.debtor_person_id]=debits[t.debtor_person_id]||{}; debits[t.debtor_person_id][t.currency_code]=(debits[t.debtor_person_id][t.currency_code]||0)-t.amount_minor;
+  for(var i=0;i<txs.length;i++){var t=txs[i]; if(t.is_deleted){continue}
+    var sd=signedMinor(t);
+    credits[t.creditor_person_id]=credits[t.creditor_person_id]||{}; credits[t.creditor_person_id][t.currency_code]=(credits[t.creditor_person_id][t.currency_code]||0)+sd;
+    debits[t.debtor_person_id]=debits[t.debtor_person_id]||{}; debits[t.debtor_person_id][t.currency_code]=(debits[t.debtor_person_id][t.currency_code]||0)-sd;
     counts[t.creditor_person_id]=(counts[t.creditor_person_id]||0)+1; counts[t.debtor_person_id]=(counts[t.debtor_person_id]||0)+1;
   }
   box.innerHTML='';
@@ -632,6 +657,7 @@ async function loadBalances(){
       '<span class="chev" aria-hidden="true">›</span>';
     box.appendChild(el);
   }
+  renderSettle(txs);
   var ob=$('offset-list'); ob.innerHTML='<div class="empty">Loading…</div>';
   var o=await call('/offset-suggestions');
   if(!o.ok){ ob.innerHTML='<div class="err">'+esc(o.error)+'</div>'; return }
@@ -991,6 +1017,8 @@ function receiptCard(r){
   var when=r.is_added?('Added '+stamp(r.added_at||r.updated_at)):('Captured '+stamp(r.created_at));
   var count=r.attachment_count||0;
   var meta=[when,count?(count+(count===1?' photo':' photos')):''].filter(Boolean).join(' · ');
+  /* the badge is the point of the link: a card that is not in the ledger yet says so */
+  var badge=r.transaction_id?('<span class="chip">&#128279; ledger #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
   var acts='<button class="mini" type="button" data-rec-action="toggle" data-rec-id="'+r.id+'"><span aria-hidden="true">'+(r.is_added?'↩️':'✅')+'</span> '+(r.is_added?'Not added yet':'Mark added')+'</button>'
     +'<button class="mini ghost" type="button" data-rec-action="edit" data-rec-id="'+r.id+'"><span aria-hidden="true">✏️</span> Edit</button>'
     +'<button class="mini ghost" type="button" data-rec-action="delete" data-rec-id="'+r.id+'" aria-label="Delete receipt"><span aria-hidden="true">🗑️</span></button>';
@@ -998,7 +1026,7 @@ function receiptCard(r){
     +'<div class="rec-title">'+esc(r.title||'Untitled receipt')+'</div>'
     +(r.note?('<div class="rec-note">'+esc(r.note)+'</div>'):'')
     +(thumbs?('<div class="rec-atts">'+thumbs+'</div>'):'')
-    +(meta?('<div class="rec-meta">'+esc(meta)+'</div>'):'')
+    +'<div class="rec-meta">'+badge+(meta?(' &middot; '+esc(meta)):'')+'</div>'
     +'<div class="rec-acts">'+acts+'</div></div></div>';
 }
 function renderReceipts(){
@@ -1103,6 +1131,7 @@ function openReceiptForm(id){
   $('rec-note').value=r?(r.note||''):'';
   $('rec-state').checked=!!(r&&r.is_added);
   renderReceiptPhotos(id);
+  renderReceiptLog(id);
   $('rec-modal').hidden=false;
   try{ $('rec-title').focus() }catch(e){}
 }
@@ -1129,8 +1158,15 @@ async function saveReceipt(){
   } finally { busy(btn,false) }
 }
 function wireReceipts(){
-  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files'); recView=$('rec-view'); recViewImg=$('rec-view-img');
+  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files'), log=$('rec-log'); recView=$('rec-view'); recViewImg=$('rec-view-img');
   if(add){ add.addEventListener('click',function(){ openReceiptForm(null) }) }
+  /* The sheet owns the ledger link: a saved card can be logged (or unlinked) from here, and an
+     unsaved one is told to save first, because there is no card id to point a row at yet. */
+  if(log){ log.addEventListener('click',function(){
+    if(!recEditing){ toast('Save the card first — then it can be logged in the ledger',true); return }
+    if(recEditing.transaction_id){ unlinkReceipt(recEditing.id,log); return }
+    startReceiptLog(recEditing.id);
+  }) }
   if(close){ close.addEventListener('click',closeReceiptForm) }
   if(save){ save.addEventListener('click',saveReceipt) }
   /* The label opens the picker itself — a scripted click on a hidden input is refused by mobile browsers — so a
@@ -1172,12 +1208,209 @@ function wireReceipts(){
   renderReceipts();
 }
 wireReceipts();
+/* ---------------- who pays whom ---------------- */
+/* Greedy settlement: hand the biggest debt to the biggest credit until every balance is zero. That
+   takes at most one payment per person, and applying the whole plan clears everyone - the suite
+   lifts this function and asserts exactly that, because a plausible-looking plan that leaves a
+   remainder is worse than no plan at all. */
+function settlePlan(nets){
+  var debt=[], cred=[], out=[], i;
+  for(i=0;i<nets.length;i++){
+    if(nets[i].net_minor<0){ debt.push({id:nets[i].id,amt:-nets[i].net_minor}) }
+    else if(nets[i].net_minor>0){ cred.push({id:nets[i].id,amt:nets[i].net_minor}) }
+  }
+  debt.sort(function(a,b){ return b.amt-a.amt||a.id-b.id });
+  cred.sort(function(a,b){ return b.amt-a.amt||a.id-b.id });
+  var d=0, c=0;
+  while(d<debt.length&&c<cred.length){
+    var pay=Math.min(debt[d].amt,cred[c].amt);
+    if(pay>0){ out.push({from_person_id:debt[d].id,to_person_id:cred[c].id,amount_minor:pay}) }
+    debt[d].amt=debt[d].amt-pay; cred[c].amt=cred[c].amt-pay;
+    if(debt[d].amt<=0){ d=d+1 }
+    if(cred[c].amt<=0){ c=c+1 }
+  }
+  return out;
+}
+/* A row is signed from the creditor's side through signedMinor(), the same helper the ledger tile and
+   the person cards use, so all three views of one row agree by construction. Archived rows never
+   move a balance, which is why the skip sits here rather than in each caller. */
+function netsByCurrency(rows){
+  var out={}, i, t, by, sd;
+  for(i=0;i<rows.length;i++){ t=rows[i]; if(t.is_deleted){continue}
+    sd=signedMinor(t);
+    by=out[t.currency_code]||(out[t.currency_code]={});
+    by[t.creditor_person_id]=(by[t.creditor_person_id]||0)+sd;
+    by[t.debtor_person_id]=(by[t.debtor_person_id]||0)-sd;
+  }
+  return out;
+}
+function settlePlanFor(rows,code){
+  var by=netsByCurrency(rows)[code]||{}, nets=[], k;
+  for(k in by){ if(by.hasOwnProperty(k)&&by[k]!==0){ nets.push({id:Number(k),net_minor:by[k]}) } }
+  return settlePlan(nets);
+}
+function renderSettle(rows){
+  var box=$('settle-list'); if(!box){return}
+  var by=netsByCurrency(rows), codes=Object.keys(by).sort(), html='', c, i, k;
+  for(c=0;c<codes.length;c++){
+    var code=codes[c], plan=settlePlanFor(rows,code), owed=0;
+    for(k=0;k<plan.length;k++){ owed+=plan[k].amount_minor }
+    if(!plan.length){ continue }
+    html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed · clears in '+plan.length+(plan.length===1?' payment':' payments')+'</span></div>';
+    for(i=0;i<plan.length;i++){
+      var p=plan[i];
+      html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div><div class="meta">repayment · '+esc(code)+'</div></div>'+
+        '<div class="row-side"><div class="amt">'+esc(money(p.amount_minor,code))+'</div>'+
+        '<button class="mini" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div></div>';
+    }
+  }
+  box.innerHTML=html||'<div class="empty">Everyone is square — nothing to settle.</div>';
+}
+/* Recording a plan line goes through the ordinary entry form and its review sheet, so the plan
+   never writes anything itself: the payer confirms it like any other repayment. */
+function startSettlePayment(from,to,code,minor){
+  showTab('ledger');
+  if($('t-kind')){ $('t-kind').value='payment' }
+  syncKindLabels();
+  if($('t-creditor')){ $('t-creditor').value=String(to) }
+  if($('t-debtor')){ $('t-debtor').value=String(from) }
+  if($('t-currency')){ $('t-currency').value=code }
+  if($('t-amount')){ $('t-amount').value=(minor/100).toFixed(2) }
+  if($('t-topic')){ $('t-topic').value='Settle up' }
+  if($('t-category')){ $('t-category').value='Other' }
+  toast('Check it, then Add transaction — the review sheet confirms it');
+  addTx();
+}
+/* ---------------- spend by day ---------------- */
+/* Spending is money fronted for the group. A repayment gives money back, and a netting offset is a
+   contra pair that already cancels the rows it offsets, so neither one is spending. */
+function spendByDay(rows){
+  var out={}, i, t, by;
+  for(i=0;i<rows.length;i++){ t=rows[i];
+    if(t.is_deleted||t.entry_kind==='payment'||t.entry_kind==='offset'){ continue }
+    if(!(t.amount_minor>0)){ continue }
+    by=out[t.currency_code]||(out[t.currency_code]={});
+    by[t.occurred_on]=(by[t.occurred_on]||0)+t.amount_minor;
+  }
+  return out;
+}
+var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function shortDay(value){
+  var parts=String(value==null?'':value).split('-');
+  if(parts.length<3){ return String(value==null?'':value) }
+  return (MONTHS[Number(parts[1])-1]||parts[1])+' '+Number(parts[2]);
+}
+function renderSpend(rows){
+  var box=$('spend-chart'); if(!box){return}
+  var by=spendByDay(rows), codes=Object.keys(by).sort(), html='', c, i;
+  for(c=0;c<codes.length;c++){
+    var code=codes[c], days=Object.keys(by[code]).sort(), max=0, total=0, peak='';
+    for(i=0;i<days.length;i++){ var v=by[code][days[i]]; total+=v; if(v>max){ max=v; peak=days[i] } }
+    var bars='';
+    for(i=0;i<days.length;i++){
+      var amount=by[code][days[i]], pct=max?Math.round(amount*100/max):0;
+      bars+='<div class="col" title="'+esc(shortDay(days[i])+' · '+money(amount,code))+'">'+
+        '<div class="track"><div class="fill" style="height:'+(pct<4?4:pct)+'%"></div></div>'+
+        (days.length<=16?('<span class="day">'+esc(shortDay(days[i]))+'</span>'):'')+'</div>';
+    }
+    html+='<div class="chart"><div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(total,code))+' over '+days.length+(days.length===1?' day':' days')+'</span></div>'+
+      '<div class="bars">'+bars+'</div>'+
+      '<p class="hint">Biggest day: '+esc(shortDay(peak))+' · '+esc(money(max,code))+'</p></div>';
+  }
+  box.innerHTML=html||'<div class="empty">Nothing has been spent yet.</div>';
+}
+/* ---------------- since your last visit ----------------
+   One shared link means the trail records what changed and never who changed it, so every line
+   here is deliberately agentless: "3 entries were added", never "WW added 3 entries". */
+var digestSeen='', digestNewest='';
+function seenStorageKey(){ return 'tfw_seen_'+((me&&me.id)||0) }
+function readSeen(){ try{ return localStorage.getItem(seenStorageKey())||'' }catch(e){ return '' } }
+function writeSeen(value){ try{ localStorage.setItem(seenStorageKey(),value) }catch(e){} }
+function agoWords(iso){
+  var then=Date.parse(iso); if(!then){ return 'earlier' }
+  var mins=Math.floor((Date.now()-then)/60000);
+  if(mins<2){ return 'just now' }
+  if(mins<60){ return mins+' minutes ago' }
+  var hours=Math.floor(mins/60);
+  if(hours<24){ return hours===1?'an hour ago':hours+' hours ago' }
+  var days=Math.floor(hours/24);
+  return days===1?'yesterday':days+' days ago';
+}
+var DIGEST_NOUNS={transaction:['entry','entries'],person:['person','people'],currency:['currency','currencies'],receipt:['receipt card','receipt cards'],receipt_attachment:['photo','photos']};
+var DIGEST_VERBS={create:'added',update:'edited',archive:'removed',delete:'removed',restore:'restored'};
+function digestPhrases(rows){
+  var counts={}, i, key;
+  for(i=0;i<rows.length;i++){ key=rows[i].entity_type+'|'+rows[i].action; counts[key]=(counts[key]||0)+1 }
+  var out=[];
+  for(key in counts){ if(!counts.hasOwnProperty(key)){ continue }
+    var parts=key.split('|'), entity=parts[0], action=parts[1], n=counts[key];
+    if(entity==='workspace_settings'){ out.push(n===1?'the settings were changed':'the settings were changed '+n+' times'); continue }
+    if(entity==='workspace'){ out.push(n===1?'the trip details were changed':'the trip details were changed '+n+' times'); continue }
+    if(entity==='workspace_backup'){ out.push(n===1?'a backup was taken':(n+' backups were taken')); continue }
+    var noun=DIGEST_NOUNS[entity]; if(!noun){ continue }
+    var verb=DIGEST_VERBS[action]||'changed';
+    out.push(n===1?('1 '+noun[0]+' was '+verb):(n+' '+noun[1]+' were '+verb));
+  }
+  return out;
+}
+async function loadDigest(){
+  var box=$('digest'); if(!box||!me){ return }
+  var seen=readSeen();
+  /* first look on this device: start the clock instead of opening with a wall of old history */
+  if(!seen){ writeSeen(new Date().toISOString()); box.hidden=true; return }
+  var r=await call('/audit?since='+encodeURIComponent(seen)+'&limit=500');
+  if(!r.ok){ box.hidden=true; return }
+  var rows=(r.data&&r.data.audit)||[];
+  if(!rows.length){ box.hidden=true; return }
+  digestSeen=seen; digestNewest=rows[0].occurred_at||new Date().toISOString();
+  var phrases=digestPhrases(rows), items='', i;
+  for(i=0;i<phrases.length;i++){ items+='<li>'+esc(phrases[i])+'</li>' }
+  box.innerHTML='<div class="dg-head"><h2><span aria-hidden="true">🕐</span> Since your last visit</h2><span class="chip">'+esc(agoWords(seen))+'</span></div>'+
+    '<ul class="dg-list">'+items+'</ul>'+
+    '<div class="btns"><button id="dg-open" class="mini ghost" type="button" data-dg="open">Open the audit log</button><button id="dg-dismiss" class="mini ghost" type="button" data-dg="dismiss">Dismiss</button></div>';
+  box.hidden=false;
+}
+/* ---------------- logging a receipt card in the ledger ---------------- */
+var logReceiptId=null;
+function renderReceiptLog(id){
+  var state=$('rec-log-state'), btn=$('rec-log'); if(!state||!btn){ return }
+  var r=null, i;
+  if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
+  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged in the ledger.'; return }
+  btn.hidden=false;
+  if(r.transaction_id){ state.textContent='Logged as ledger row #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the ledger' }
+  else { state.textContent='Not in the ledger yet. Logging it opens the ledger form with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in the ledger' }
+}
+function startReceiptLog(id){
+  var r=null, i;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  if(!r){ toast('That receipt is no longer in the list.',true); return }
+  logReceiptId=r.id;
+  closeReceiptForm();
+  showTab('ledger');
+  if($('t-topic')){ $('t-topic').value=r.title||'' }
+  if($('t-notes')){ $('t-notes').value=r.note||'' }
+  toast('Enter the amount — the card links to this entry when it saves');
+}
+async function linkReceiptTransaction(id,transactionId){
+  var r=await call('/receipts/'+id+'/link',{method:'POST',body:{transaction_id:transactionId}});
+  if(!r.ok){ toast('Saved, but the receipt was not linked: '+r.error,true); return }
+  await refreshReceipts(); toast('Receipt linked to the ledger row');
+}
+async function unlinkReceipt(id,btn){
+  busy(btn,true);
+  try{
+    var r=await call('/receipts/'+id+'/link',{method:'DELETE'});
+    if(!r.ok){ toast(r.error,true); return }
+    await refreshReceipts(); renderReceiptLog(id); toast('Unlinked — the card can be logged again');
+  } finally { busy(btn,false) }
+}
 /* ---------------- wiring ---------------- */
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
 document.addEventListener('click',async function(ev){
   /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
      the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
-  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open]')||src):src;
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg]')||src):src;
   if(!t||!t.getAttribute){return}
   var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
   var aOpen=t.getAttribute('data-att-open');
@@ -1188,6 +1421,11 @@ document.addEventListener('click',async function(ev){
   }
   var del=t.getAttribute('data-del'); if(del){ delTx(Number(del),t); return }
   var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
+  var settle=t.getAttribute('data-settle'); if(settle){ var sp=settle.split(':'); startSettlePayment(Number(sp[0]),Number(sp[1]),sp[2],Number(sp[3])); return }
+  var dg=t.getAttribute('data-dg'); if(dg){
+    if(dg==='open'){ $('digest').hidden=true; showTab('audit'); return }
+    writeSeen(digestNewest||new Date().toISOString()); $('digest').hidden=true; return;
+  }
   var emo=t.getAttribute('data-emoji-save'); if(emo){
     var eid=Number(emo); var ebox=document.querySelector('[data-emoji-input="'+eid+'"]');
     var er=await call('/people/'+eid,{method:'PATCH',body:{emoji:ebox?ebox.value.trim():''}});
@@ -1250,7 +1488,10 @@ function init(){
   window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
   var start=(location.hash||'#ledger').slice(1); if(TABS.indexOf(start)<0){start='ledger'}
   showTab(start);
-  loadState().then(function(ok){ if(ok){ renderParty(); renderSplit() } });
+  loadState().then(function(ok){ if(ok){ renderParty(); renderSplit(); loadDigest() } });
+  /* Installed to a home screen the app opens without browser chrome. The worker caches nothing,
+     so a reload always gets the current build. */
+  if(navigator.serviceWorker){ try{ var swp=navigator.serviceWorker.register('sw.js'); if(swp&&swp.catch){ swp.catch(function(){}) } }catch(e){} }
 }
 function renderParty(){
   var cs=$('t-creditor'), ds=$('t-debtor'), cur=$('t-currency');
@@ -1371,6 +1612,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   </div>
 </header>
 <div id="banner" class="err" hidden></div>
+<div id="digest" class="card" hidden></div>
 
 <section id="ledger">
   <div class="card">
@@ -1399,6 +1641,11 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="field"><label for="t-notes">Notes (optional)</label><input id="t-notes" autocomplete="off"></div>
     <button id="t-add" type="button"><span aria-hidden="true">✅</span> Add transaction</button>
     <div id="t-err" class="err"></div>
+  </div>
+  <div class="card">
+    <h2><span aria-hidden="true">📈</span> Spend by day</h2>
+    <p class="hint">What was fronted each day — money coming back (a repayment) and netting offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
+    <div id="spend-chart"><div class="empty">Loading…</div></div>
   </div>
   <div class="card">
     <h2><span aria-hidden="true">📒</span> Transactions</h2>
@@ -1443,6 +1690,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="balances" hidden>
   <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><p class="hint">Tap a person for their full picture — what they fronted, what was covered for them, who they owe or are owed by, and every record behind it.</p><div id="bal-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">💸</span> Who pays whom</h2><p class="hint">The shortest list of payments that clears every balance, so nobody has to chase a chain of transfers. Grouped per currency, and an archived person still counts while they hold a balance.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
   <div class="card"><h2><span aria-hidden="true">🤝</span> Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>
@@ -1575,6 +1823,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       </div>
       <p class="hint">Pick from your photo library &mdash; up to six. On a receipt you have not saved yet they upload when you save. Tap a photo to see it larger, or to take it off.</p></div>
     <div class="field"><label class="check"><input type="checkbox" id="rec-state"> <span>Already added to the ledger</span></label></div>
+    <div class="field"><label>Ledger</label>
+      <div id="rec-log-state" class="hint"></div>
+      <div class="btns"><button type="button" id="rec-log" class="ghost"><span aria-hidden="true">&#129534;</span> Log this in the ledger</button></div>
+    </div>
     <div class="btns"><button type="button" id="rec-save"><span aria-hidden="true">&#128190;</span> Save receipt</button></div>
   </div>
 </div>
@@ -1591,7 +1843,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div id="pm-body"><div class="empty">Loading…</div></div>
   </div>
 </div>
-</main>`, APP_SCRIPT);
+</main>`, APP_SCRIPT, 'manifest.webmanifest');
 };
 
 export const linkRetiredHtml = () => page('Link not active', '', `
