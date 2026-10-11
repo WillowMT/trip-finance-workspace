@@ -86,6 +86,11 @@ button.ghost{background:transparent;color:var(--ink);border-color:var(--line)}
 button.ghost:hover{background:var(--hover);border-color:var(--line-strong)}
 button.danger{background:transparent;color:var(--bad);border-color:var(--line)}
 button.danger:hover{background:var(--bad);border-color:var(--bad);color:#fff}
+/* a label styled as a ghost button: taps open the file picker natively, no scripted click on a hidden input */
+label.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);border-radius:var(--r-lg);min-height:var(--ctl);padding:0 var(--sp-7);font-weight:600;cursor:pointer;width:100%;display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-2);line-height:1.2;white-space:nowrap;user-select:none;-webkit-tap-highlight-color:transparent;transition:background var(--dur) var(--ease),border-color var(--dur) var(--ease)}
+label.ghost:hover{background:var(--hover);border-color:var(--line-strong)}
+label.ghost:active{transform:translateY(1px)}
+.vh{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
 /* every compact action in the app shares this one rule */
 button.mini,button.icon,.swap button,.pager button,.emoji-edit button,.people-actions button{width:auto;flex:0 0 auto;min-height:var(--ctl-sm);padding:0 var(--sp-5);font-size:var(--fs-sm);border-radius:var(--r-md)}
 button.icon{position:relative;width:var(--ctl-sm);padding:0;font-size:var(--fs-base)}
@@ -257,11 +262,13 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
 .rec-meta{color:var(--muted);font-size:var(--fs-2xs);overflow-wrap:anywhere}
 .rec-meta a{color:var(--brand)}
 .rec-atts{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
-.att{position:relative;display:block;width:56px;height:56px;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--line);background:var(--hover)}
+.att{position:relative;display:block;width:64px;height:64px;min-width:0;padding:0;border-radius:var(--r-md);overflow:hidden;border:1px solid var(--line);background:var(--hover);cursor:zoom-in}
 .att img{width:100%;height:100%;object-fit:cover;display:block}
-.att-x{position:absolute;top:0;right:0;width:22px;height:22px;min-width:0;padding:0;border:0;border-radius:0 0 0 var(--r-md);background:rgba(0,0,0,.62);color:#fff;font-size:11px;line-height:1;display:grid;place-items:center;cursor:pointer;white-space:normal}
-.att-x::after{content:'';position:absolute;inset:-11px}
-.att-x span{pointer-events:none}
+/* Tapping a photo opens it, so a tile stays a plain image; taking it off happens in the viewer. */
+#rec-view{position:fixed;inset:0;z-index:70;background:rgba(6,6,8,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:var(--sp-5);padding:var(--sp-6)}
+#rec-view[hidden]{display:none}
+#rec-view img{max-width:100%;max-height:66vh;border-radius:var(--r-lg);background:var(--hover)}
+#rec-view .btns{width:100%;max-width:420px}
 .rec-acts{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
 @media (max-width:640px){.rec-board{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}`;
@@ -1009,18 +1016,27 @@ async function refreshReceipts(){
 }
 function renderReceiptPhotos(id){
   var box=$('rec-photos'); if(!box){return}
+  if(!id){
+    /* A receipt that has not been saved yet keeps its picked photos here, shown as previews, and uploads them
+       the moment the receipt exists. Nothing is written while the sheet is open, so backing out changes nothing. */
+    if(!pendingPhotos.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> below; a new receipt uploads them when you save.</p>'; return }
+    var po='', j;
+    for(j=0;j<pendingPhotos.length;j++){
+      var plabel=esc(pendingPhotos[j].name||'New photo');
+      po+='<button class="att" type="button" data-att-open="'+pendingUrls[j]+'" data-att-kind="pending" data-att-idx="'+j+'" aria-label="See this photo" title="'+plabel+'"><img src="'+pendingUrls[j]+'" alt="'+plabel+'"></button>';
+    }
+    box.innerHTML=po; return;
+  }
   var r=null, i, atts, out='', k;
   for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
   atts=r&&r.attachments?r.attachments:[];
-  if(!atts.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> on the card to attach them.</p>'; return }
+  if(!atts.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> below to attach them.</p>'; return }
   for(k=0;k<atts.length;k++){
     var label=esc(atts[k].label||'Receipt photo');
-    out+='<span class="att"><a href="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" target="_blank" rel="noopener noreferrer" title="'+label+'"><img src="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" alt="'+label+'" loading="lazy" decoding="async"></a>'
-      +'<button class="att-x" type="button" data-rec-action="detach" data-rec-id="'+id+'" data-att-id="'+atts[k].id+'" aria-label="Take this photo off"><span aria-hidden="true">✖</span></button></span>';
+    out+='<button class="att" type="button" data-att-open="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" data-att-kind="saved" data-rec-id="'+id+'" data-att-id="'+atts[k].id+'" aria-label="See this photo" title="'+label+'"><img src="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" alt="'+label+'" loading="lazy" decoding="async"></button>';
   }
   box.innerHTML=out;
 }
-var recAttachFor=null;
 async function uploadReceiptFiles(id,files){
   if(!id||!files||!files.length){return}
   var added=0, skipped=0, i;
@@ -1070,10 +1086,16 @@ async function receiptAction(action,id,btn){
   } finally { busy(btn,false) }
 }
 var recEditing=null;
+var pendingPhotos=[], pendingUrls=[];
+var recView=null, recViewImg=null, recViewWhat=null;
+function openRecView(src,what){ if(!recView||!recViewImg){return} recViewImg.setAttribute('src',src); recViewWhat=what; recView.hidden=false }
+function closeRecView(){ if(!recView){return} recView.hidden=true; recViewWhat=null; if(recViewImg){ recViewImg.removeAttribute('src') } }
+function clearPending(){ var i; for(i=0;i<pendingUrls.length;i++){ try{ URL.revokeObjectURL(pendingUrls[i]) }catch(e){} } pendingPhotos=[]; pendingUrls=[]; }
 function openReceiptForm(id){
   var r=null, i;
   if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
   if(id&&!r){ toast('That receipt is no longer in the list.',true); return }
+  clearPending();
   recEditing=r;
   var titled=$('rec-modal-title');
   if(titled){ titled.textContent=r?'Edit receipt':'New receipt' }
@@ -1087,6 +1109,7 @@ function openReceiptForm(id){
 function closeReceiptForm(){
   var box=$('rec-modal'); if(box){ box.hidden=true }
   recEditing=null;
+  clearPending();
 }
 async function saveReceipt(){
   var btn=$('rec-save'); if(!btn){return}
@@ -1098,19 +1121,52 @@ async function saveReceipt(){
     var saved=await call(id?('/receipts/'+id):'/receipts',{method:id?'PATCH':'POST',body:payload});
     if(!saved.ok){ toast(saved.error,true); return }
     var row=saved.data.receipt||null;
+    var queued=pendingPhotos.slice();
     await refreshReceipts();
     closeReceiptForm();
     toast(row&&row.is_added?'Receipt saved in Added':'Receipt saved in Not added');
+    if(queued.length&&row){ uploadReceiptFiles(row.id,queued) }
   } finally { busy(btn,false) }
 }
 function wireReceipts(){
-  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files');
+  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files'); recView=$('rec-view'); recViewImg=$('rec-view-img');
   if(add){ add.addEventListener('click',function(){ openReceiptForm(null) }) }
   if(close){ close.addEventListener('click',closeReceiptForm) }
   if(save){ save.addEventListener('click',saveReceipt) }
-  if(pick){ pick.addEventListener('change',function(){ var files=pick.files; var target=recAttachFor; recAttachFor=null; uploadReceiptFiles(target,files) }) }
-  var addPh=$('rec-add');
-  if(addPh){ addPh.addEventListener('click',function(){ if(!recEditing){ toast('Save the receipt first — then add its photos',true); return } recAttachFor=recEditing.id; if($('rec-files')){ $('rec-files').click() } }) }
+  /* The label opens the picker itself — a scripted click on a hidden input is refused by mobile browsers — so a
+     change event only has to resolve the receipt the sheet already has open. The value is cleared after the files
+     are snapshotted, otherwise choosing the same photo twice in a row fires no change event at all. */
+  if(pick){ pick.addEventListener('change',function(){
+    var files=[].slice.call(pick.files||[]); pick.value='';
+    if(!files.length){ return }
+    if(recEditing){ uploadReceiptFiles(recEditing.id,files); return }
+    var room=6-pendingPhotos.length, i;
+    for(i=0;i<files.length;i++){
+      if(i>=room){ toast('Up to six photos per receipt',true); break }
+      pendingPhotos.push(files[i]);
+      try{ pendingUrls.push(URL.createObjectURL(files[i])) }catch(e){ pendingUrls.push('') }
+    }
+    renderReceiptPhotos(null);
+    toast(pendingPhotos.length+(pendingPhotos.length===1?' photo ready — it uploads when you save':' photos ready — they upload when you save'));
+  }) }
+  /* A tile is just an image; tapping it opens this viewer, and the viewer is where a photo comes off. */
+  var rvClose=$('rec-view-close'); if(rvClose){ rvClose.addEventListener('click',closeRecView) }
+  if(recView){ recView.addEventListener('click',function(ev){ if(ev.target===recView){ closeRecView() } }) }
+  document.addEventListener('keydown',function(ev){
+    if(ev.key==='Escape'&&recView&&!recView.hidden){ ev.stopPropagation(); ev.preventDefault(); closeRecView() }
+  },true);
+  var rvRemove=$('rec-view-remove');
+  if(rvRemove){ rvRemove.addEventListener('click',async function(){
+    var what=recViewWhat; if(!what){ closeRecView(); return }
+    if(what.kind==='pending'){
+      if(pendingUrls[what.idx]){ try{ URL.revokeObjectURL(pendingUrls[what.idx]) }catch(e){} }
+      pendingPhotos.splice(what.idx,1); pendingUrls.splice(what.idx,1);
+      closeRecView(); renderReceiptPhotos(null); toast('Photo taken off'); return;
+    }
+    busy(rvRemove,true);
+    try{ await detachAttachment(what.receiptId,what.attId,null); closeRecView(); renderReceiptPhotos(what.receiptId) }
+    finally { busy(rvRemove,false) }
+  }) }
   var modal=$('rec-modal');
   if(modal){ modal.addEventListener('click',function(ev){ if(ev.target===modal){ closeReceiptForm() } }) }
   renderReceipts();
@@ -1121,9 +1177,15 @@ document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('r
 document.addEventListener('click',async function(ev){
   /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
      the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
-  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action]')||src):src;
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open]')||src):src;
   if(!t||!t.getAttribute){return}
   var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
+  var aOpen=t.getAttribute('data-att-open');
+  if(aOpen){
+    if(t.getAttribute('data-att-kind')==='pending'){ openRecView(aOpen,{kind:'pending',idx:Number(t.getAttribute('data-att-idx'))}) }
+    else { openRecView(aOpen,{kind:'saved',receiptId:Number(t.getAttribute('data-rec-id')),attId:Number(t.getAttribute('data-att-id'))}) }
+    return
+  }
   var del=t.getAttribute('data-del'); if(del){ delTx(Number(del),t); return }
   var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
   var emo=t.getAttribute('data-emoji-save'); if(emo){
@@ -1508,12 +1570,19 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="field"><label for="rec-note">Notes</label><textarea id="rec-note" rows="3" maxlength="2000" placeholder="Who paid, what it covered, anything to remember"></textarea></div>
     <div class="field"><label>Photos</label><div id="rec-photos" class="rec-atts"></div>
       <div class="btns">
-        <input id="rec-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,image/heic,image/heif" multiple hidden>
-        <button id="rec-add" class="ghost" type="button"><span aria-hidden="true">&#128206;</span> Add photos</button>
+        <input id="rec-files" class="vh" type="file" accept="image/*" multiple>
+        <label class="ghost" for="rec-files"><span aria-hidden="true">&#128206;</span> Add photos</label>
       </div>
-      <p class="hint">Pick up to six from your gallery. The &#10006; on a photo takes it off the receipt.</p></div>
+      <p class="hint">Pick from your photo library &mdash; up to six. On a receipt you have not saved yet they upload when you save. Tap a photo to see it larger, or to take it off.</p></div>
     <div class="field"><label class="check"><input type="checkbox" id="rec-state"> <span>Already added to the ledger</span></label></div>
     <div class="btns"><button type="button" id="rec-save"><span aria-hidden="true">&#128190;</span> Save receipt</button></div>
+  </div>
+</div>
+<div id="rec-view" hidden>
+  <img id="rec-view-img" alt="Receipt photo">
+  <div class="btns">
+    <button type="button" id="rec-view-remove" class="danger"><span aria-hidden="true">&#128465;</span> Remove photo</button>
+    <button type="button" id="rec-view-close" class="ghost">Close</button>
   </div>
 </div>
 <div id="person-modal" class="modal" hidden>
