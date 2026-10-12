@@ -1061,7 +1061,8 @@ test('the receipts backlog is a hand-kept tracker: two lanes, several attachment
 // Verification helper for the tests below: take a function's own source out of the served page and
 // run it, so the assertion covers the arithmetic the browser runs and not a copy of it.
 const lift = (html: string, name: string): string => {
-  const at = html.indexOf(`function ${name}(`);
+  const asyncAt = html.indexOf(`async function ${name}(`);
+  const at = asyncAt >= 0 ? asyncAt : html.indexOf(`function ${name}(`);
   assert.ok(at > 0, `${name} is shipped to the client`);
   let depth = 0;
   for (let k = html.indexOf('{', at); k < html.length; k++) {
@@ -1344,5 +1345,124 @@ test('an archived row is restorable from the row itself and from the audit entry
     const actions = trail.audit.map((entry) => entry.action).sort();
     assert.deepEqual(actions, ['archive', 'create', 'restore'], 'the whole history of the row is kept');
     assert.equal((await request(`${api}/transactions/${id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'Editable again' }) })).status, 200, 'a restored row can be edited again');
+  });
+});
+
+test('debtor ranking groups active negative balances by currency and opens the person card', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'manual offset fixtures must not be auto-netted first');
+    const initial = await (await request(api)).json() as { people: { id: number; display_name: string; is_archived: number }[]; currencies: { code: string; is_default: number }[] };
+    const [ada, lin] = initial.people;
+    assert.equal(initial.currencies.find((currency) => currency.code === 'USD')!.is_default, 1, 'USD is the workspace default for the initially selected ranking pill');
+    assert.equal((await request(`${api}/people/${lin.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ emoji: '🦊' }) })).status, 200, 'the fixture uses the supported person emoji patch');
+    const createPerson = async (display_name: string) => (await (await request(`${api}/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name }) })).json() as { person: { id: number; display_name: string; is_archived: number } }).person;
+    const mia = await createPerson('Mia');
+    const noah = await createPerson('Noah');
+    assert.equal((await request(`${api}/currencies`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'VND', is_default: false }) })).status, 201);
+    const post = async (body: Record<string, unknown>) => {
+      const response = await request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-12', entry_kind: 'debt', topic: 'Ranking fixture', category: 'Food', currency_code: 'USD', ...body }) });
+      assert.equal(response.status, 201);
+      return (await response.json()) as { transaction: { id: number } };
+    };
+
+    // This uses the committed two-row workflow: offset values are already negative and must not be flipped again.
+    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 12_000 });
+    await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 2_000 });
+    const preview = await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) });
+    assert.equal(preview.status, 200);
+    assert.ok(((await preview.json()) as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions.every((row) => row.entry_kind === 'offset' && row.amount_minor === -2_000));
+    const committed = await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'ranking-offset-usd' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) });
+    assert.equal(committed.status, 201);
+    assert.deepEqual(((await committed.json()) as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions.map((row) => [row.entry_kind, row.amount_minor]), [['offset', -2_000], ['offset', -2_000]], 'the committed contra entries retain their negative sign');
+    await post({ creditor_person_id: ada.id, debtor_person_id: mia.id, amount_minor: 4_000 });
+    await post({ creditor_person_id: lin.id, debtor_person_id: mia.id, amount_minor: 500_000, currency_code: 'VND' });
+    await post({ creditor_person_id: ada.id, debtor_person_id: noah.id, amount_minor: 777, topic: 'Archived person debt' });
+    assert.equal((await request(`${api}/people/${noah.id}/archive`, { method: 'POST' })).status, 200, 'the negative balance belongs to an archived person');
+    const archived = await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 90_000, topic: 'Archived transaction debt' });
+    assert.equal((await request(`${api}/transactions/${archived.transaction.id}`, { method: 'DELETE' })).status, 200, 'a separate archived transaction stays out of the ranking');
+
+    type Row = { creditor_person_id: number; debtor_person_id: number; currency_code: string; amount_minor: number; entry_kind: string; is_deleted: number };
+    const rows = query('SELECT creditor_person_id, debtor_person_id, currency_code, amount_minor, entry_kind, is_deleted FROM transactions ORDER BY id') as Row[];
+    const people = ((await (await request(api)).json()) as { people: { id: number; display_name: string; is_archived: number }[] }).people;
+    const html = await (await request(`/w/${secret}`)).text();
+    const nets = new Function(`${lift(html, 'signedMinor')};${lift(html, 'netsByCurrency')};return netsByCurrency`)() as (list: Row[]) => Record<string, Record<number, number>>;
+    const allBalances = nets(rows);
+    assert.deepEqual({ lin: allBalances.USD[lin.id], mia: allBalances.USD[mia.id], noah: allBalances.USD[noah.id], miaVnd: allBalances.VND[mia.id] }, { lin: -10_000, mia: -4_000, noah: -777, miaVnd: -500_000 }, 'the ledger has the negative balances before active-person filtering, with committed offsets consumed signed-as-is');
+    assert.equal((await request(`${api}/ranking`)).status, 404, 'ranking is client-rendered; this pins that no ranking API was added');
+
+    assert.match(html, /id="tab-ranking"[^>]*><span aria-hidden="true">🏆<\/span>\s*Ranking</, 'the Ranking tab has the required trophy label');
+    assert.match(html, /id="ranking"[^>]*\shidden/, 'the ranking panel starts hidden with the other tabs');
+    assert.match(html, /id="ranking-currencies"[^>]*role="group"[^>]*aria-label="Ranking currency"/, 'currency pills are announced as the ranking currency group');
+    const renderer = new Function(`
+      var people=${JSON.stringify(people)};
+      var currencies=${JSON.stringify([...initial.currencies, { code: 'VND', is_default: 0, is_archived: 0 }, { code: 'THB', is_default: 0, is_archived: 0 }, { code: 'EUR', is_default: 0, is_archived: 1 }])};
+      var rankingCurrency='', rankingRows=${JSON.stringify(rows)}, requests=0;
+      var elements={'ranking-currencies':{innerHTML:''},'ranking-list':{innerHTML:''}};
+      function $(id){return elements[id]||null}
+      function esc(v){return String(v==null?'':v)}
+      function money(minor,currency){return currency+' '+minor}
+      function loadRanking(){requests+=1}
+      ${lift(html, 'signedMinor')}
+      ${lift(html, 'netsByCurrency')}
+      ${lift(html, 'renderRanking')}
+      ${lift(html, 'selectRankingCurrency')}
+      return {render:function(){renderRanking(rankingRows)},select:selectRankingCurrency,html:function(){return {pills:elements['ranking-currencies'].innerHTML,list:elements['ranking-list'].innerHTML}},requests:function(){return requests}};
+    `)() as { render: () => void; select: (code: string) => void; html: () => { pills: string; list: string }; requests: () => number };
+
+    renderer.render();
+    let rendered = renderer.html();
+    assert.match(rendered.pills, /data-ranking-currency="USD" aria-pressed="true"/, 'the default USD pill is selected by the real renderer');
+    assert.ok(rendered.list.indexOf('Lin') < rendered.list.indexOf('Mia'), 'USD debtors are largest-first');
+    assert.match(rendered.list, /<span class="ranking-row-rank">#1<\/span>/, 'the first rendered debtor carries a one-based rank marker');
+    assert.match(rendered.list, /<span class="ranking-row-avatar" aria-hidden="true">🦊<\/span>/, 'the renderer shows the stored person emoji avatar');
+    assert.ok(!rendered.list.includes('Noah'), 'archived people never appear in rankings');
+    assert.ok(!rendered.pills.includes('EUR'), 'archived currencies have no pill');
+    renderer.select('VND');
+    rendered = renderer.html();
+    assert.match(rendered.pills, /data-ranking-currency="VND" aria-pressed="true"/, 'switching changes the active pill');
+    assert.match(rendered.list, /Mia/, 'switching renders the selected currency debtor');
+    assert.ok(!rendered.list.includes('Lin'), 'switching does not mix USD debtors into VND');
+    assert.equal(renderer.requests(), 0, 'switching a cached ranking currency does not issue a GET');
+    renderer.select('THB');
+    assert.match(renderer.html().list, /No one owes money in THB\./, 'the empty ranking copy retains its selected currency');
+    assert.match(rendered.list, /data-person=/, 'a ranking row itself carries the generic person action');
+    const openFromRankingRow = new Function(`
+      var opened=[];
+      function openPerson(id){opened.push(id)}
+      ${lift(html, 'openPersonFromElement')}
+      return {
+        click:function(target){return openPersonFromElement(target)},
+        opened:function(){return opened}
+      };
+    `)() as { click: (target: { closest: (selector: string) => { getAttribute: (name: string) => string } | null }) => boolean; opened: () => number[] };
+    const rankingRow = { getAttribute: (name: string) => name === 'data-person' ? String(mia.id) : '' };
+    assert.equal(openFromRankingRow.click({ closest: (selector) => selector === '[data-person]' ? rankingRow : null }), true, 'a nested ranking-row target resolves its nearest person action');
+    assert.deepEqual(openFromRankingRow.opened(), [mia.id], 'clicking a ranking row target opens that numeric person id');
+
+    const staleRankingLoads = new Function(`
+      var selectedTab='ranking', rankingRows=null, rankingRequestId=0, renders=[];
+      var elements={'ranking-list':{innerHTML:''}};
+      var replies=[];
+      function $(id){return elements[id]||null}
+      function call(){return new Promise(function(resolve){replies.push(resolve)})}
+      function esc(v){return String(v==null?'':v)}
+      function renderRanking(rows){renders.push(rows)}
+      ${lift(html, 'loadRanking')}
+      return {
+        load:loadRanking,
+        reply:function(index,data){replies[index](data)},
+        state:function(){return {rankingRows:rankingRows,renders:renders,html:elements['ranking-list'].innerHTML}}
+      };
+    `)() as { load: () => Promise<void>; reply: (index: number, data: unknown) => void; state: () => { rankingRows: unknown; renders: unknown[]; html: string } };
+    const firstLoad = staleRankingLoads.load();
+    const secondLoad = staleRankingLoads.load();
+    staleRankingLoads.reply(1, { ok: true, data: { transactions: ['newer'] } });
+    await secondLoad;
+    staleRankingLoads.reply(0, { ok: true, data: { transactions: ['stale'] } });
+    await firstLoad;
+    assert.deepEqual(staleRankingLoads.state().rankingRows, ['newer'], 'an older ranking response cannot replace the latest cached rows');
+    assert.deepEqual(staleRankingLoads.state().renders, [['newer']], 'only the latest ranking response renders');
   });
 });

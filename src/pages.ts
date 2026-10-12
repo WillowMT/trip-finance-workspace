@@ -13,6 +13,7 @@ const CSS = `/* ── tokens: every colour, size and space comes from here ─�
   --sp-1:4px; --sp-2:6px; --sp-3:8px; --sp-4:10px; --sp-5:12px; --sp-6:14px; --sp-7:16px; --sp-8:24px;
   --fs-2xs:.68rem; --fs-xs:.75rem; --fs-sm:.8rem; --fs-md:.88rem; --fs-base:.95rem; --fs-lg:1rem; --fs-xl:1.15rem; --fs-2xl:1.6rem;
   --dur:.15s; --ease:cubic-bezier(.2,.7,.2,1); --maxw:680px;
+  --rank-bar-min:6%; --rank-row-main-basis:12rem;
 }
 @media (prefers-color-scheme:dark){
   :root{
@@ -121,6 +122,24 @@ button.icon>span{pointer-events:none}
 .tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-pill);padding:0 var(--sp-5);min-height:var(--ctl-tab);font-size:var(--fs-sm)}
 .tabs button:hover{background:var(--hover);color:var(--ink)}
 .tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
+
+/* ── ranking ────────────────────────────────────────────────────────────── */
+.ranking-currencies{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) 0}
+.ranking-currencies button{width:auto;min-height:var(--ctl-sm);padding:0 var(--sp-5);border-radius:var(--r-pill);background:var(--surface);color:var(--ink);border-color:var(--line)}
+.ranking-currencies button[aria-pressed=true]{background:var(--brand);color:var(--brand-ink);border-color:var(--brand)}
+.ranking-list{display:flex;flex-direction:column;gap:var(--sp-3)}
+.ranking-row{width:100%;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-3);padding:var(--sp-5);text-align:left;white-space:normal;background:var(--card);color:var(--ink);border-color:var(--line)}
+.ranking-row:hover{background:var(--hover);border-color:var(--line-strong)}
+.ranking-row-main{flex:1 1 var(--rank-row-main-basis);min-width:0}
+.ranking-row-identity{display:flex;align-items:center;gap:var(--sp-2);min-width:0}
+.ranking-row-rank{flex:0 0 auto;color:var(--muted);font-size:var(--fs-xs);font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.ranking-row-avatar{flex:0 0 var(--ctl-sm);width:var(--ctl-sm);height:var(--ctl-sm);display:inline-flex;align-items:center;justify-content:center;background:var(--surface);border-radius:var(--r-pill);font-size:var(--fs-lg);line-height:1}
+.ranking-row-name{min-width:0}
+.ranking-row-name,.ranking-row-amount{display:block;overflow-wrap:anywhere}
+.ranking-row-name{font-weight:700}
+.ranking-row-amount{color:var(--muted);font-size:var(--fs-sm);margin-top:var(--sp-1)}
+.ranking-bar{width:100%;height:var(--sp-2);overflow:hidden;background:var(--surface);border-radius:var(--r-pill)}
+.ranking-bar-fill{height:100%;min-width:var(--rank-bar-min);background:var(--bad);border-radius:inherit}
 
 /* ── lists: ledger rows, pairs, records, split summary ──────────────────── */
 .row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-2);margin:0 calc(var(--sp-2) * -1);border-bottom:1px solid var(--line);border-radius:var(--r-sm)}
@@ -404,15 +423,19 @@ var TABS=(function(){
   var out=[], nodes=null;
   try{ nodes=document.querySelectorAll('.tabs button') }catch(e){ nodes=null }
   if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
-  return out.length?out:['ledger','balances','split','tools','audit','settings'];
+  return out.length?out:['ledger','ranking','balances','split','tools','audit','settings'];
 })();
+var stateReady=false, selectedTab='ledger';
 function showTab(tab){
+  selectedTab=tab;
+  if(!stateReady){return}
   for(var i=0;i<TABS.length;i++){
     var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
     var btn=$('tab-'+TABS[i]); if(btn){btn.setAttribute('aria-selected',String(TABS[i]===tab))}
   }
   if(location.hash!=='#'+tab){try{history.replaceState(null,'','#'+tab)}catch(e){}}
   if(tab==='ledger'){loadLedger()}
+  if(tab==='ranking'){loadRanking()}
   if(tab==='balances'){loadBalances()}
   if(tab==='split'){renderSplit()}
   if(tab==='audit'){loadAudit()}
@@ -446,6 +469,8 @@ async function loadState(){
   if(me&&me.name){document.title=me.name}
   var sig=rosterSignature(); if(sig!==rosterSig){ rosterSig=sig; renderSplitPeople() }
   await syncInstructions();
+  stateReady=true;
+  if(selectedTab){showTab(selectedTab)}
   return true;
 }
 
@@ -487,6 +512,52 @@ async function loadLedger(){
   renderSpend(txs);
 }
 function signedMinor(t){ return t.entry_kind==='payment'?-t.amount_minor:t.amount_minor }
+/* ---------------- ranking ---------------- */
+var rankingCurrency='', rankingRows=null, rankingRequestId=0;
+async function loadRanking(){
+  var box=$('ranking-list'); if(!box){return}
+  var requestId=++rankingRequestId;
+  rankingRows=null;
+  box.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(requestId!==rankingRequestId||selectedTab!=='ranking'){return}
+  if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  rankingRows=(r.data&&r.data.transactions)||[];
+  renderRanking(rankingRows);
+}
+function renderRanking(rows){
+  var pills=$('ranking-currencies'), box=$('ranking-list'); if(!pills||!box){return}
+  var active=[], i;
+  for(i=0;i<currencies.length;i++){ if(!currencies[i].is_archived){active.push(currencies[i])} }
+  if(!rankingCurrency||!active.some(function(c){return c.code===rankingCurrency})){ rankingCurrency=((active.filter(function(c){return c.is_default})[0])||active[0]||{}).code||'' }
+  var currency=rankingCurrency;
+  pills.innerHTML='';
+  for(i=0;i<active.length;i++){
+    var c=active[i], pressed=c.code===currency;
+    pills.innerHTML+='<button type="button" data-ranking-currency="'+esc(c.code)+'" aria-pressed="'+(pressed?'true':'false')+'">'+esc(c.code)+'</button>';
+  }
+  if(!currency){ box.innerHTML='<div class="empty">No active currencies.</div>'; return }
+  var balances=netsByCurrency(rows)[currency]||{}, ranked=[], id;
+  for(id in balances){ if(balances.hasOwnProperty(id)){
+    var person=null;
+    for(i=0;i<people.length;i++){ if(people[i].id===Number(id)){person=people[i];break} }
+    if(person&&!person.is_archived&&balances[id]<0){ ranked.push({person:person,balance_minor:balances[id]}) }
+  } }
+  ranked.sort(function(a,b){ return a.balance_minor-b.balance_minor||String(a.person.display_name).localeCompare(String(b.person.display_name))||Number(a.person.id)-Number(b.person.id) });
+  if(!ranked.length){
+    /* The selected currency has no debtor. */
+    box.innerHTML='<div class="empty">No one owes money in '+esc(currency)+'.</div>'; return;
+  }
+  var max=Math.abs(ranked[0].balance_minor), html='';
+  for(i=0;i<ranked.length;i++){
+    var row=ranked[i], pct=Math.max(6,Math.round(Math.abs(row.balance_minor)*100/max));
+    html+='<button class="ranking-row" type="button" data-person="'+row.person.id+'" aria-haspopup="dialog">'+
+      '<span class="ranking-row-main"><span class="ranking-row-identity"><span class="ranking-row-rank">#'+(i+1)+'</span>'+(row.person.emoji?'<span class="ranking-row-avatar" aria-hidden="true">'+esc(row.person.emoji)+'</span>':'')+'<span class="ranking-row-name">'+esc(row.person.display_name)+'</span></span><span class="ranking-row-amount">owes '+esc(money(Math.abs(row.balance_minor),currency))+'</span></span>'+
+      '<span class="ranking-bar" aria-hidden="true"><span class="ranking-bar-fill" style="width:'+pct+'%"></span></span></button>';
+  }
+  box.innerHTML=html;
+}
+function selectRankingCurrency(code){ rankingCurrency=code; if(rankingRows!==null){renderRanking(rankingRows)} }
 function renderTxList(){
   var list=$('tx-list'); if(!list){return}
   list.innerHTML='';
@@ -1427,11 +1498,18 @@ async function unlinkReceipt(id,btn){
 }
 /* ---------------- wiring ---------------- */
 document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
+function openPersonFromElement(el){
+  var pcard=el&&el.closest?el.closest('[data-person]'):null;
+  if(!pcard){return false}
+  openPerson(Number(pcard.getAttribute('data-person')));
+  return true;
+}
 document.addEventListener('click',async function(ev){
   /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
      the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
-  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore]')||src):src;
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore],[data-ranking-currency]')||src):src;
   if(!t||!t.getAttribute){return}
+  var rankingCurrencyButton=t.getAttribute('data-ranking-currency'); if(rankingCurrencyButton){ selectRankingCurrency(rankingCurrencyButton); return }
   var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
   var aOpen=t.getAttribute('data-att-open');
   if(aOpen){
@@ -1474,7 +1552,7 @@ document.addEventListener('click',async function(ev){
   if(ev.target.id==='review-modal'){ closeReview(); return }
   if(ev.target.id==='person-modal'){ closePerson(); return }
   var pclose=ev.target.closest?ev.target.closest('#pm-close'):null; if(pclose){ closePerson(); return }
-  var pcard=ev.target.closest?ev.target.closest('[data-person]'):null; if(pcard){ openPerson(Number(pcard.getAttribute('data-person'))); return }
+  if(openPersonFromElement(ev.target)){return}
   var pairHead=ev.target.closest?ev.target.closest('[data-pair]'):null; if(pairHead){ togglePair(pairHead.getAttribute('data-pair')); return }
   var carch=t.getAttribute('data-carch'); if(carch){ var cp=carch.split(':'); var cr=await call('/currencies/'+cp[0]+'/'+cp[1],{method:'POST'}); if(!cr.ok){toast(cr.error,true)}else{await loadState();renderSettings();toast('Updated')} return }
 });
@@ -1635,6 +1713,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   </div>
   <div class="tabs" role="tablist">
     <button id="tab-ledger" role="tab" aria-selected="true" type="button"><span aria-hidden="true">📒</span> Ledger</button>
+    <button id="tab-ranking" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🏆</span> Ranking</button>
     <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split</button>
     <button id="tab-balances" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚖️</span> Balances</button>
     <button id="tab-tools" role="tab" aria-selected="false" type="button"><span aria-hidden="true">📥</span> Bulk &amp; import</button>
@@ -1686,6 +1765,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div id="tx-list"><div class="empty">Loading…</div></div>
     <div id="tx-pager" class="pager" hidden><button id="tx-prev" class="ghost" type="button">‹ Prev</button><span id="tx-pager-info" class="pager-info"></span><button id="tx-next" class="ghost" type="button">Next ›</button></div>
   </div>
+</section>
+
+<section id="ranking" hidden>
+  <div class="card"><h2><span aria-hidden="true">🏆</span> Who owes most</h2><p class="hint">Outstanding balances only. Choose a currency to compare like with like; this view never changes the ledger.</p><div id="ranking-currencies" class="ranking-currencies" role="group" aria-label="Ranking currency"></div><div id="ranking-list" class="ranking-list"><div class="empty">Loading…</div></div></div>
 </section>
 
 <section id="split" hidden>
