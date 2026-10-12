@@ -753,9 +753,11 @@ function renderPerson(){
   /* full-history breakdowns, deliberately separate from Recent activity: a repayment from
      weeks ago must still show here even when it has scrolled out of the 25-row window */
   function bkSection(title,rows){
-    var h='<h3 class="mt-14">'+title+'</h3>';
-    if(!rows||!rows.length){ return h+'<div class="empty">Nothing here yet.</div>' }
-    return h+rows.map(recRow).join('');
+    var count=(rows&&rows.length)||0;
+    var label=title+' <span class="chip">'+count+' record'+(count===1?'':'s')+'</span>';
+    var content=count?rows.map(recRow).join(''):'<div class="empty">Nothing here yet.</div>';
+    /* Keep full-history detail available without making a person popup overwhelming on open. */
+    return '<details class="pm-breakdown"><summary>'+label+'</summary><div class="pm-breakdown-body">'+content+'</div></details>';
   }
   html+=bkSection('What '+esc(meName)+' paid for',bk.paid_for);
   html+=bkSection('What was paid for '+esc(meName),bk.covered_for_them);

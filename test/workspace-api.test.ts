@@ -785,6 +785,8 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /What \'\+esc\(meName\)\+\' paid for/, 'the popup names the paid-for breakdown');
     assert.match(page, /What was paid for \'\+esc\(meName\)/, 'the popup names the covered-for-person breakdown');
     assert.match(page, /Payments &amp; offsets/, 'the popup includes settlement and offset history');
+    assert.match(page, /<details class="pm-breakdown"><summary>/, 'person breakdowns use collapsed disclosures by default');
+    assert.doesNotMatch(page, /<details class="pm-breakdown" open>/, 'person breakdowns do not open by default');
 
     const other = await createWorkspace(request);
     assert.equal((await request(`/w/${other}/api/people/${ada.id}/summary`)).status, 404, 'people are workspace-scoped');
