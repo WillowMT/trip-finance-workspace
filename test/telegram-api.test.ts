@@ -180,13 +180,15 @@ async function sendUpdate(harness: Harness, update: UpdateInit, secretHeader: st
 const PRIVATE_CHAT = (id: number, name = 'Willow') => ({ id, type: 'private', first_name: name });
 const GROUP_CHAT = (id: number, title = 'Chiang Mai trip') => ({ id, type: 'group', title });
 
-/** POST /start <token> into a private chat and return the text Telegram received back. */
+/** POST /start <token> into a private chat and return the answer Telegram received back. */
 async function startInPrivate(harness: Harness, token: string, chatId: number): Promise<string> {
   const before = harness.bot.messages.length;
   const response = await sendUpdate(harness, { chat: PRIVATE_CHAT(chatId), text: `/start ${token}` });
   assert.equal(response.status, 200);
   await waitFor(() => harness.bot.messages.length > before, 'a pairing answer should come back');
-  return harness.bot.lastText();
+  // The first new message is the answer to the command; a successful connect then also sends a menu,
+  // so reading the newest message would return the grid instead of the confirmation.
+  return harness.bot.messages[before].text;
 }
 
 /** POST a pairing command from inside a group or channel, where the sender decides eligibility. */
@@ -195,7 +197,7 @@ async function startIn(harness: Harness, chat: UpdateInit['chat'], from: { id: n
   const response = await sendUpdate(harness, { chat, from, text });
   assert.equal(response.status, 200);
   await waitFor(() => harness.bot.messages.length > before, 'a pairing answer should come back');
-  return harness.bot.lastText();
+  return harness.bot.messages[before].text;
 }
 
 async function waitFor(predicate: () => boolean, message: string, timeout = 8_000): Promise<void> {
@@ -617,7 +619,11 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
 
     // A chat linked later hears what happens next, never the trip's history.
     assert.match(await link(PRIVATE_CHAT(third)), /is now connected/);
-    assert.equal(bot.messages.filter((message) => message.chat_id === String(third)).length, 1, 'linking sends the confirmation and nothing else');
+    // The confirmation and the navigation menu, and nothing at all from the trip's history.
+    const afterLink = bot.messages.filter((message) => message.chat_id === String(third));
+    assert.equal(afterLink.length, 2, 'linking sends the confirmation and the menu, nothing else');
+    assert.match(afterLink[0].text, /is now connected/);
+    assert.match(afterLink[1].text, /Tap a section/);
     assert.equal((await write('Fan out five', 5500)).status, 201);
     await waitFor(() => bot.sentMatching('Fan out five').some((message) => message.chat_id === String(third)), 'a new chat hears the next write');
     assert.equal(bot.sentMatching('Fan out one').some((message) => message.chat_id === String(third)), false, 'history is never replayed into a new chat');
@@ -667,5 +673,94 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
       Number((query('SELECT COUNT(*) AS count FROM (SELECT DISTINCT connection_id, event_key FROM telegram_notifications)') as { count: number }[])[0].count),
       'one outbox row per chat and event, however often a dispatch runs',
     );
+  });
+});
+
+test('the /start menu hands out expiring section passes, never the trip link', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Menu trip');
+    const workspaceId = Number((query(`SELECT id FROM workspaces WHERE name = 'Menu trip'`) as { id: number }[])[0].id);
+
+    // A chat that follows nothing gets the plain welcome, and no pass is minted for it.
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(770001), text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a welcome should be sent');
+    assert.ok(!bot.messages[0].text.includes('Tap a section'), 'an unlinked chat gets no menu');
+    assert.equal(Number((query('SELECT COUNT(*) AS count FROM telegram_nav_links') as { count: number }[])[0].count), 0, 'a chat that follows nothing is handed no pass');
+
+    // Connect the chat, then ask for the menu.
+    await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, 770002);
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(770002), text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a menu should be sent');
+
+    const menu = bot.messages[0];
+    const grid = (menu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard;
+    assert.match(menu.text, /Menu trip/, 'the menu names the trip');
+    assert.match(menu.text, /work for a day/);
+    assert.equal(grid.length, 5, 'four rows of sections plus the app root');
+    assert.deepEqual(grid[0].map((button) => button.text), ['📒 Ledger', '✂️ Split a bill']);
+    assert.equal(grid[4][0].url, ORIGIN, 'the last button opens the public app root');
+    assert.ok(!menu.text.includes(secret) && !menu.text.includes('/w/'), 'the menu never carries the trip link');
+    for (const row of grid) {
+      for (const button of row) {
+        assert.ok(!button.url.includes('/w/'), `a menu button must not carry a capability URL: ${button.text}`);
+        assert.ok(!button.url.includes(secret), 'no button carries the capability secret');
+        if (button.url !== ORIGIN) assert.match(button.url, new RegExp(`^${ORIGIN}/go/[A-Za-z0-9_-]{20,}/(ledger|split|balances|ranking|receipts|tools|audit|settings)$`));
+      }
+    }
+
+    const ledgerUrl = grid[0][0].url;
+    const token = ledgerUrl.match(/\/go\/([^/]+)\//)![1];
+    const stored = query('SELECT token_hash, uses FROM telegram_nav_links') as { token_hash: string; uses: number }[];
+    assert.equal(stored.length, 1, 'one pass per connected trip, not one per section');
+    assert.equal(stored[0].token_hash, sha256(token));
+    assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE token_hash = '${token}'`) as { count: number }[])[0].count), 0, 'the raw pass is never stored');
+
+    // Tapping a button counts the tap and lands on the section that was asked for.
+    const tap = await request(`/go/${token}/ranking`, { redirect: 'manual' });
+    assert.equal(tap.status, 302);
+    assert.equal(tap.headers.get('location'), `${ORIGIN}/w/${token}#ranking`);
+    assert.equal(tap.headers.get('x-robots-tag'), 'noindex');
+    // A section the app does not have is refused rather than reflected into the redirect.
+    assert.equal((await request(`/go/${token}/admin`, { redirect: 'manual' })).status, 404);
+    assert.equal(Number((query('SELECT uses FROM telegram_nav_links') as { uses: number }[])[0].uses), 1, 'only the tap that landed counts');
+
+    // The pass opens the trip itself: the page and the API both answer for this workspace.
+    assert.equal((await request(`/w/${token}`)).status, 200, 'a menu pass opens the trip page');
+    const state = await request(`/w/${token}/api`);
+    assert.equal(state.status, 200, 'a menu pass opens the trip API');
+    assert.ok(JSON.stringify(await state.json()).includes(String(workspaceId)), 'the pass resolves to the trip the chat is connected to');
+
+    // A day later the pass is dead, and asking for a fresh menu sweeps it away.
+    query(`UPDATE telegram_nav_links SET expires_at = '2000-01-01T00:00:00.000Z'`);
+    const expired = await request(`/go/${token}/ledger`, { redirect: 'manual' });
+    assert.equal(expired.status, 410);
+    assert.match(await expired.text(), /expired/);
+    assert.equal((await request(`/w/${token}/api`)).status, 404, 'an expired pass is not a way into the trip');
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(770002), text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a second menu should be sent');
+    assert.equal(Number((query('SELECT COUNT(*) AS count FROM telegram_nav_links') as { count: number }[])[0].count), 1, 'the spent pass is swept and one fresh pass remains');
+
+    // Disconnecting the chat takes its passes with it.
+    const connectionId = Number((query(`SELECT id FROM telegram_connections WHERE chat_id = '770002'`) as { id: number }[])[0].id);
+    assert.equal((await request(`/w/${secret}/api/telegram/connections/${connectionId}`, { method: 'DELETE' })).status, 200);
+    assert.equal(Number((query('SELECT COUNT(*) AS count FROM telegram_nav_links') as { count: number }[])[0].count), 0, 'a disconnected chat keeps no passes');
+    assert.equal((await request(`/go/${token}/ledger`, { redirect: 'manual' })).status, 404);
+
+    // A group gets the same grid, from the command Telegram actually delivers to a bot in a group.
+    const groupSecret = await createWorkspace(request, 'Group menu trip');
+    const groupChat = GROUP_CHAT(-770003, 'Menu group');
+    bot.statuses.set(String(groupChat.id), 'administrator');
+    const groupPair = await mintPairing(request, groupSecret);
+    await startIn({ request, query, bot }, groupChat, { id: 770010, first_name: 'Ada' }, groupPair.token, groupPair.group_command ?? `/start ${groupPair.token}`);
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: groupChat, text: `/start@${BOT_USERNAME}` })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a group menu should be sent');
+    const groupMenu = bot.messages[0];
+    assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
+    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 5, 'the group gets the same grid');
+    assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
   });
 });

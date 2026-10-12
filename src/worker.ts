@@ -3,7 +3,7 @@ import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validI
 import { autoNettingStatements } from './netting';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
 import { canonicalName, hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
-import { createPairing, dispatchWorkspaceNotifications, handleTelegramWebhook, isTelegramWebhookPath, removeConnection, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
+import { createPairing, dispatchWorkspaceNotifications, handleNavRedirect, handleTelegramWebhook, isNavPath, isTelegramWebhookPath, removeConnection, resolveNavWorkspace, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
 
 export interface Env {
   DB: D1Database;
@@ -112,7 +112,12 @@ async function resolveWorkspace(db: D1Database, secret: string): Promise<Workspa
   // Either the current secret or the one it superseded resolves: rotating a link
   // must never strand the people still holding the previous one.
   const hash = await sha256(secret);
-  return db.prepare('SELECT id, name, is_active, created_at, updated_at FROM workspaces WHERE (secret_hash = ? OR prev_secret_hash = ?) AND is_active = 1').bind(hash, hash).first<Workspace>();
+  const workspace = await db.prepare('SELECT id, name, is_active, created_at, updated_at FROM workspaces WHERE (secret_hash = ? OR prev_secret_hash = ?) AND is_active = 1').bind(hash, hash).first<Workspace>();
+  if (workspace) return workspace;
+  // Not one of the trip's own links. It may be a /start menu pass, which is a capability of its own for a
+  // day: that is how a connected chat opens the trip without the trip's real link entering the chat.
+  const viaMenu = await resolveNavWorkspace(db, secret);
+  return viaMenu ? (viaMenu as Workspace) : null;
 }
 async function requireWorkspace(db: D1Database, secret: string): Promise<Workspace | Response> {
   const workspace = await resolveWorkspace(db, secret);
@@ -227,6 +232,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
   // Telegram's own endpoint: a dedicated path, authenticated by the secret registered at setWebhook
   // time, and shut entirely until a token and secret exist on the deployment.
   if (isTelegramWebhookPath(pathname)) return handleTelegramWebhook(request, env);
+  // A /start menu button: the chat's own expiring pass, handed over to the section it names.
+  if (isNavPath(pathname)) return handleNavRedirect(request, env);
   const match = pathname.match(/^\/w\/([^/]+)(?:\/(.*))?$/);
   if (!match) return new Response('Not found', { status: 404 });
   const [, secret, rawTail = ''] = match;

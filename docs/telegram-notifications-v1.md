@@ -80,11 +80,56 @@ sentence naming an "editor" would be a lie.
 - A member archived later still resolves by name, because the rows being announced are older than the
   archive. A person id that resolves to nothing reads `Someone`, never a bare number.
 
+## The `/start` menu: a navigation grid
+
+A chat that is already connected to a trip gets a **grid of buttons instead of a single link**. The two
+columns are the app's own tabs, in the portal's order, two to a row:
+
+```
+📒 Ledger        ✂️ Split a bill
+⚖️ Balances      🏆 Ranking
+🧾 Receipts      📥 Bulk & import
+🕐 Audit         ⚙️ Setup
+🌐 All trips & a new trip
+```
+
+- A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid
+  appears only once a trip is connected, and the chat's own `/start <pairing_token>` answer now ends with it.
+- A chat that follows **several** trips gets four rows per trip, each label suffixed with the trip's name
+  (`📒 Ledger · Japan 2028`), capped at `MAX_MENU_TRIPS = 3` — the rest are reachable from the app root.
+- Groups get the same grid, from the addressed command Telegram actually delivers in a group
+  (`/start@tripfinancethingbot`). **Any member** of a connected group can open the menu — the grid is a way
+  into the trip the chat already reads, while *linking* a group stays administrator-only.
+
+### Why the buttons are `/go/…` and not the trip link
+
+The capability secret is stored only as a SHA-256 hash, so a link to the trip **cannot be rebuilt from the
+database** — and the spec forbids putting the secret or a capability URL in a Telegram message anyway. Each
+trip's buttons therefore carry a pass of their own:
+
+| | |
+|---|---|
+| Button URL | `https://<origin>/go/<token>/<section>` — the public origin, never `/w/…` |
+| Storage | `telegram_nav_links.token_hash`, SHA-256 only; the raw pass is never written anywhere |
+| Bound to | one `telegram_connections` row, so a pass only opens the trip that chat is connected to |
+| Lifetime | `NAV_TTL_MS = 24 h`, **one live pass per connected trip**: minting a fresh menu retires the previous one, so an older message's buttons stop working once a new menu is sent |
+| Request path | `/go/<token>/<section>` → `302` → `/w/<token>#<section>` |
+| How that works | `resolveWorkspace()` accepts a live pass exactly as it accepts the trip's own link, so the page, the API and post-commit notification dispatch all behave identically |
+| Dead pass | `404` (unknown or the trip is gone) / `410` (expired, or the chat was disconnected) with an HTML page that says to send `/start` again |
+| Unknown section | refused (`404`) rather than reflected into the redirect |
+| Disconnect | deletes that connection's passes with the connection |
+| Headers | `cache-control: no-store`, `referrer-policy: no-referrer`, `x-robots-tag: noindex` |
+
+`uses` counts taps, and only the tap that lands is counted — the API calls the page then makes do not each
+spend one. Nothing about the pass is announced in the chat, and no message the bot sends contains `/w/`, a
+capability secret, or a stable link to a trip.
+
 ## Migration and files
 
 | Path | Change |
 |---|---|
 | `migrations/0015_telegram_notifications.sql` | **new** — `telegram_connections`, `telegram_pairing_tokens`, `telegram_notifications` |
+| `migrations/0016_telegram_nav_links.sql` | **new** — `telegram_nav_links`: the expiring passes behind the `/start` menu buttons |
 | `src/telegram.ts` | **new** — config gating, pairing mint/consume, `/start`, webhook auth, audit→message mapping, delivery loop |
 | `src/worker.ts` | webhook route, capability-gated Telegram routes, `telegram` in the state payload, post-commit dispatch |
 | `src/pages.ts` | Setup-tab Telegram card + client wiring |
@@ -101,7 +146,10 @@ Schema notes:
   Consumption is a guarded `UPDATE … WHERE token_hash = ? AND consumed_at IS NULL`; zero rows affected means
   already used or expired. Raw tokens are never stored, and no capability secret is ever placed in one.
 - `telegram_notifications` — durable outbox with `UNIQUE(connection_id, event_key)`.
-- The three tables deliberately carry **no audit triggers**: chat management is not a ledger event and the
+- `telegram_nav_links` — `connection_id`, `token_hash` only, `uses`, `expires_at`. Nothing here is a
+  capability secret: the pass is a credential of its own that happens to fit a `/w/` path segment, and it is
+  deleted with its connection.
+- These tables deliberately carry **no audit triggers**: chat management is not a ledger event and the
   audit semantics the suite pins are unchanged.
 
 ## Required Worker config

@@ -27,6 +27,27 @@ export type TelegramEnv = {
 
 /** How long a connect link stays usable. Short enough that a leaked link is worthless soon after. */
 export const PAIRING_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * How long a /start menu keeps working. The buttons sit in a chat message that is stored on Telegram's
+ * servers and read by everyone in the chat, so they expire rather than becoming a permanent way in.
+ */
+export const NAV_TTL_MS = 24 * 60 * 60 * 1000;
+/** A chat following more trips than this gets the first few buttons here and the rest in the browser. */
+const MAX_MENU_TRIPS = 3;
+
+/** The app's own tabs, in the portal's order: one button per section, two to a row. */
+export const NAV_SECTIONS: { tab: string; label: string }[] = [
+  { tab: 'ledger', label: '📒 Ledger' },
+  { tab: 'split', label: '✂️ Split a bill' },
+  { tab: 'balances', label: '⚖️ Balances' },
+  { tab: 'ranking', label: '🏆 Ranking' },
+  { tab: 'receipts', label: '🧾 Receipts' },
+  { tab: 'tools', label: '📥 Bulk & import' },
+  { tab: 'audit', label: '🕐 Audit' },
+  { tab: 'settings', label: '⚙️ Setup' },
+];
+
 /** How long a chat keeps hearing about changes once it is linked. */
 export const WEBHOOK_PATH = '/api/telegram/webhook';
 
@@ -368,6 +389,7 @@ export async function removeConnection(env: TelegramEnv, workspaceId: number, co
   const row = await env.DB.prepare('SELECT id FROM telegram_connections WHERE id = ? AND workspace_id = ?').bind(connectionId, workspaceId).first<{ id: number }>();
   if (!row) return false;
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM telegram_nav_links WHERE connection_id = ?').bind(connectionId),
     env.DB.prepare('DELETE FROM telegram_notifications WHERE connection_id = ?').bind(connectionId),
     env.DB.prepare('DELETE FROM telegram_connections WHERE id = ? AND workspace_id = ?').bind(connectionId, workspaceId),
   ]);
@@ -442,10 +464,180 @@ async function sendWelcome(env: TelegramEnv, chatId: string, root: string): Prom
     '',
     'A shared trip-expense ledger. One private link per trip — no accounts, no sign-ups, nothing to install.',
     '',
-    'Tap the button below to create a trip or open one you already have. To get trip updates here, open that trip’s ⚙️ Setup tab and press “Connect Telegram chat”: changes are then announced in this chat anonymously, and this chat can never change a record itself.',
+    'Tap the button below to create a trip or open one you already have. To get trip updates here, open that trip’s ⚙️ Setup tab and press “Connect Telegram chat”: changes are then announced in this chat, naming who owes or paid what, and this chat can never change a record itself.',
+    '',
+    'Once a trip is connected, /start shows a menu that jumps straight into it.',
   ];
   const markup = root ? { inline_keyboard: [[{ text: 'Open Trip Finance Workspace', url: root }]] } : undefined;
   await sendMessage(env, chatId, lines.join('\n'), markup);
+}
+
+// ---------------------------------------------------------------------------- navigation menu
+
+type LinkedTrip = { connectionId: number; name: string };
+
+/** The trips this chat follows right now: connected, switched on, and still active. */
+async function linkedTrips(env: TelegramEnv, chatId: string): Promise<LinkedTrip[]> {
+  const rows = await env.DB.prepare(
+    `SELECT c.id AS connection_id, w.name
+       FROM telegram_connections c JOIN workspaces w ON w.id = c.workspace_id
+      WHERE c.chat_id = ? AND c.enabled = 1 AND w.is_active = 1
+      ORDER BY c.id`,
+  )
+    .bind(chatId)
+    .all<{ connection_id: number; name: string }>();
+  return (rows.results ?? []).map((row) => ({ connectionId: row.connection_id, name: row.name }));
+}
+
+/**
+ * Mints the expiring token behind one menu button. The trip's capability secret is stored only as a
+ * hash and cannot be rebuilt from D1, so the button carries a pass of its own: hash-only at rest,
+ * bound to one connection, swept when it expires, and deleted with the connection. Minting a fresh
+ * menu retires the previous pass, so a chat holds exactly one live way in at a time.
+ */
+async function mintNavToken(env: TelegramEnv, connectionId: number): Promise<string | null> {
+  const token = randomToken();
+  const now = nowIso();
+  try {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM telegram_nav_links WHERE connection_id = ?').bind(connectionId),
+      env.DB.prepare('INSERT INTO telegram_nav_links (connection_id, token_hash, expires_at, created_at) VALUES (?, ?, ?, ?)')
+        .bind(connectionId, await sha256Hex(token), new Date(Date.now() + NAV_TTL_MS).toISOString(), now),
+    ]);
+  } catch {
+    return null;
+  }
+  return token;
+}
+
+function shortTripName(name: string): string {
+  const trimmed = name.trim() || 'Trip';
+  return trimmed.length > 18 ? `${trimmed.slice(0, 17)}…` : trimmed;
+}
+
+/**
+ * /start in a chat that follows a trip: a grid of buttons, one per section of the portal, each opening
+ * that part of the trip in the browser. A chat with no trip yet gets the plain welcome instead.
+ */
+async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Promise<void> {
+  const trips = root ? (await linkedTrips(env, chatId)).slice(0, MAX_MENU_TRIPS) : [];
+  const passes: { trip: LinkedTrip; token: string }[] = [];
+  for (const trip of trips) {
+    const token = await mintNavToken(env, trip.connectionId);
+    if (token) passes.push({ trip, token });
+  }
+  if (!passes.length) {
+    await sendWelcome(env, chatId, root);
+    return;
+  }
+  const names = passes.map((pass) => `“${shortTripName(pass.trip.name)}”`);
+  const lines =
+    passes.length > 1
+      ? [
+          'Trip Finance Workspace',
+          '',
+          `This chat follows ${names.join(', ')}. Tap a section to open that trip in the browser.`,
+          '',
+          'The buttons work for a day — send /start again for a fresh menu.',
+        ]
+      : [
+          'Trip Finance Workspace',
+          '',
+          `Tap a section of ${names[0]} to open it in the browser.`,
+          '',
+          'The buttons work for a day — send /start again for a fresh menu.',
+        ];
+  const buttons: { text: string; url: string }[][] = [];
+  for (const pass of passes) {
+    const suffix = passes.length > 1 ? ` · ${shortTripName(pass.trip.name)}` : '';
+    const row: { text: string; url: string }[] = [];
+    for (const section of NAV_SECTIONS) {
+      row.push({ text: `${section.label}${suffix}`, url: `${root}/go/${pass.token}/${section.tab}` });
+      if (row.length === 2) buttons.push(row.splice(0, 2));
+    }
+    if (row.length) buttons.push(row);
+  }
+  buttons.push([{ text: '🌐 All trips & a new trip', url: root }]);
+  await sendMessage(env, chatId, lines.join('\n'), { inline_keyboard: buttons });
+}
+
+export function isNavPath(pathname: string): boolean {
+  return pathname === '/go' || pathname.startsWith('/go/');
+}
+
+/**
+ * The workspace behind a live menu token, or null. The token is a capability of its own while it lasts,
+ * so every read of a capability secret comes through here as well as the trip's own hashes — that is
+ * what lets a chat open the trip without the trip's real link ever entering the conversation.
+ */
+export async function resolveNavWorkspace(
+  db: D1Database,
+  secret: string,
+): Promise<{ id: number; name: string; is_active: number; created_at: string; updated_at: string } | null> {
+  const row = await db
+    .prepare(
+      `SELECT w.id, w.name, w.is_active, w.created_at, w.updated_at
+         FROM telegram_nav_links l
+         JOIN telegram_connections c ON c.id = l.connection_id
+         JOIN workspaces w ON w.id = c.workspace_id
+        WHERE l.token_hash = ? AND l.expires_at > ? AND c.enabled = 1 AND w.is_active = 1`,
+    )
+    .bind(await sha256Hex(secret), nowIso())
+    .first<{ id: number; name: string; is_active: number; created_at: string; updated_at: string }>();
+  return row ?? null;
+}
+
+function navProblem(origin: string, message: string, status: number): Response {
+  const safeOrigin = origin.replace(/[<>"']/g, '');
+  const html = `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Trip Finance Workspace</title><style>
+:root{color-scheme:light dark}body{margin:0;min-height:100vh;display:grid;place-items:center;background:#0b0b0d;color:#f2f2f5;font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:24px}
+.box{max-width:32rem;background:#141419;border:1px solid #2a2a33;border-radius:16px;padding:24px}h1{margin:0 0 8px;font-size:1.15rem}p{margin:0 0 16px;color:#a9a9b3}p:last-child{margin:0}a{color:#7cc4ff}</style></head>
+<body><div class="box"><h1>Trip Finance Workspace</h1><p>${message}</p><p><a href="${safeOrigin}">Open Trip Finance Workspace</a></p></div></body></html>`;
+  return new Response(html, {
+    status,
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'x-robots-tag': 'noindex' },
+  });
+}
+
+/**
+ * A menu button: `/go/<token>/<section>`. It validates the token and its one-day window, counts the
+ * tap, and hands the browser to that section under the token's own path. The trip's real link is never
+ * on the wire — the browser address bar carries this expiring pass, which is the whole point of it.
+ */
+export async function handleNavRedirect(request: Request, env: TelegramEnv): Promise<Response> {
+  const segments = new URL(request.url).pathname.split('/').filter(Boolean);
+  const token = (segments[1] ?? '').trim();
+  const wanted = (segments[2] ?? '').trim();
+  const origin = publicRoot(env, request);
+  const known = NAV_SECTIONS.find((section) => section.tab === wanted)?.tab;
+  const section = known ?? (wanted ? null : 'ledger');
+  if (!/^[A-Za-z0-9_-]{20,128}$/.test(token) || section === null) {
+    return navProblem(origin, 'That menu link is not a section of a trip. Send /start in Telegram for a fresh menu.', 404);
+  }
+  const row = await env.DB.prepare(
+    `SELECT l.id, l.expires_at, c.enabled, w.is_active
+       FROM telegram_nav_links l
+       JOIN telegram_connections c ON c.id = l.connection_id
+       JOIN workspaces w ON w.id = c.workspace_id
+      WHERE l.token_hash = ?`,
+  )
+    .bind(await sha256Hex(token))
+    .first<{ id: number; expires_at: string; enabled: number; is_active: number }>();
+  if (!row || !row.is_active) return navProblem(origin, 'That menu link is not valid any more. Send /start in Telegram for a fresh menu.', 404);
+  if (!row.enabled) return navProblem(origin, 'That chat was disconnected from the trip, so this link no longer opens it.', 410);
+  if (Date.parse(row.expires_at) <= Date.now()) {
+    return navProblem(origin, 'That menu has expired — a menu works for a day. Send /start in Telegram for a fresh one.', 410);
+  }
+  await env.DB.prepare('UPDATE telegram_nav_links SET uses = uses + 1 WHERE id = ?').bind(row.id).run();
+  return new Response(null, {
+    status: 302,
+    headers: {
+      location: `${origin}/w/${token}#${section}`,
+      'cache-control': 'no-store',
+      'referrer-policy': 'no-referrer',
+      'x-robots-tag': 'noindex',
+    },
+  });
 }
 
 const PAIRING_REFUSALS: Record<string, string> = {
@@ -465,7 +657,8 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
   if (!/^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/.test(text)) return;
   const payload = text.split(/\s+/).slice(1).join('').trim();
   if (!payload) {
-    await sendWelcome(env, chatId, root);
+    // A chat that follows a trip gets the navigation grid; one that follows nothing gets the welcome.
+    await sendStartMenu(env, chatId, root);
     return;
   }
   if (chatType(chat) !== 'private' && !(await eligible(env, chat, message?.from))) {
@@ -489,9 +682,10 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
     [
       `${opening} “${linked.name}”.`,
       '',
-      'Changes to that trip’s ledger are announced here with a short, anonymous message — it never says who made the change. This chat cannot change any record. Disconnect any time from the trip’s ⚙️ Setup tab.',
+      'Changes to that trip’s ledger are announced here, naming who owes or paid what. This chat cannot change any record. Disconnect any time from the trip’s ⚙️ Setup tab.',
     ].join('\n'),
   );
+  await sendStartMenu(env, chatId, root);
 }
 
 // ---------------------------------------------------------------------------- webhook
