@@ -89,21 +89,21 @@ of rows these are.
 ## The `/start` menu: a navigation grid
 
 A chat that is already connected to a trip gets a **grid of buttons instead of a single link**. The two
-columns are the app's own sections, in the app's own sidebar order, two to a row — creating first, then
-reading, then the workshop:
+columns are the app's own everyday surfaces, in the app's own sidebar order, two to a row — creating
+first, then reading. **Audit and Setup are deliberately not in the menu**: they are workshop pages the
+chat has no use for, reachable from the app's own drawer.
 
 ```
 ➕ Add expense    ↩️ Record a payment
 ✂️ Split a bill   📒 Transactions
 ⚖️ Balances       🏆 Ranking
 🧾 Receipts       📥 Bulk & import
-🕐 Audit          ⚙️ Setup
-🌐 All trips & a new trip
+🌐 All trips
 ```
 
 - A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid
   appears only once a trip is connected, and the chat's own `/start <pairing_token>` answer now ends with it.
-- A chat that follows **several** trips gets five rows per trip, each label suffixed with the trip's name
+- A chat that follows **several** trips gets four rows per trip, each label suffixed with the trip's name
   (`📒 Transactions · Japan 2028`), capped at `MAX_MENU_TRIPS = 3` — the rest are reachable from the app root.
 - Groups get the same grid, from the addressed command Telegram actually delivers in a group
   (`/start@tripfinancethingbot`). **Any member** of a connected group can open the menu — the grid is a way

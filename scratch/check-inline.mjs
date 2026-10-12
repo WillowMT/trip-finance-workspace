@@ -1,6 +1,7 @@
 // Parses the two inline template literals out of src/pages.ts the way Node would evaluate them,
-// then syntax-checks the client script. A stray backtick or a single-backslash escape shows up here
-// rather than in a browser as a dead app.
+// then syntax-checks the client script. Two things kill a deployed page silently: a stray backtick or
+// `${`, and a single backslash before a regex-significant character, which the template literal
+// consumes (`\s` ships as `s`, so `/s+/g` eats every "s" out of a label). Both are hard failures here.
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 
@@ -28,6 +29,9 @@ const css = literal('CSS');
 fs.writeFileSync('scratch/served-script.js', script.value);
 fs.writeFileSync('scratch/served-style.css', css.value);
 
+let failures = 0;
+const bad = (line) => { failures++; console.log(line); };
+
 console.log('APP_SCRIPT closed=' + script.closed + ' chars=' + script.value.length);
 console.log('CSS closed=' + css.closed + ' chars=' + css.value.length);
 
@@ -35,18 +39,33 @@ try {
   execFileSync(process.execPath, ['--check', 'scratch/served-script.js'], { stdio: 'pipe' });
   console.log('SCRIPT_SYNTAX=OK');
 } catch (e) {
-  console.log('SCRIPT_SYNTAX=BROKEN');
+  bad('SCRIPT_SYNTAX=BROKEN');
   console.log(String(e.stderr || e.message).split('\n').slice(0, 12).join('\n'));
 }
 
-// Escapes that reach the browser as a bare character are a silent behaviour change: report the ones
-// inside regex literals, where losing a backslash changes what the expression matches.
-for (const line of script.value.split('\n')) {
-  const m = line.match(/\/[^/\n]*\/[gimsuy]*/g);
-  if (!m) continue;
-  for (const lit of m) {
-    if (/^\/[A-Za-z]+\/[gimsuy]*$/.test(lit) && lit.length > 3 && !/^\/[a-z]+$/i.test(lit)) console.log('SUSPECT_REGEX=' + lit + '  <- ' + line.trim().slice(0, 90));
+// Escapes that the template literal eats before the browser ever sees them. Doubled backslashes are
+// the correct form in this file; a lone one in front of a pattern character changes what ships.
+const REAL_ESCAPES = new Set(['n', 't', 'r', 'u', 'x', '`', '$', '\\', '"', "'"]);
+let singleEscapes = 0;
+script.raw.split('\n').forEach((line, index) => {
+  for (let k = 0; k < line.length; k++) {
+    if (line[k] !== '\\') continue;
+    const next = line[k + 1];
+    if (next === '\\') { k++; continue }
+    if (!next || REAL_ESCAPES.has(next)) continue;
+    singleEscapes++;
+    bad('SINGLE_ESCAPE line ' + (index + 1) + ': ' + line.trim().slice(0, 110));
+    break;
   }
-}
-console.log('BACKTICKS_IN_SCRIPT=' + (script.value.match(/`/g) || []).length);
-console.log('DOLLAR_BRACE_IN_SCRIPT=' + (script.value.match(/\$\{/g) || []).length);
+});
+console.log('SINGLE_ESCAPES=' + singleEscapes);
+
+const backticks = (script.value.match(/`/g) || []).length;
+const dollarBrace = (script.value.match(/\$\{/g) || []).length;
+console.log('BACKTICKS_IN_SCRIPT=' + backticks);
+console.log('DOLLAR_BRACE_IN_SCRIPT=' + dollarBrace);
+if (backticks) bad('BACKTICKS_IN_SCRIPT must be 0');
+if (dollarBrace) bad('DOLLAR_BRACE_IN_SCRIPT must be 0');
+
+console.log(failures ? 'INLINE=FAIL (' + failures + ')' : 'INLINE=pass');
+process.exitCode = failures ? 1 : 0;

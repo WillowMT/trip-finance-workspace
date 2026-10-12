@@ -468,7 +468,7 @@ function closeNav(){
 function navMark(tab){
   var btn=null; try{ btn=document.getElementById('tab-'+tab) }catch(e){}
   var now=$('nav-now');
-  if(now&&btn&&btn.textContent){ now.textContent=btn.textContent.replace(/\s+/g,' ').trim() }
+  if(now&&btn&&btn.textContent){ now.textContent=btn.textContent.replace(/\\s+/g,' ').trim() }
   closeNav();
 }
 var stateReady=false, selectedTab='ledger', telegram=null;

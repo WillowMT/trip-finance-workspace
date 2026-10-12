@@ -55,6 +55,20 @@ two can never drift). It closes on a pick, on the backdrop, on ✕, and on Esc; 
 
 ## The Telegram mirror
 
-`NAV_SECTIONS` in `src/telegram.ts` is the same ten sections in the same order, two per row, so the
-`/start` grid and the sidebar cannot disagree. `/go/<pass>/<section>` validates against `NAV_SECTIONS`,
-so adding a page to the list is all it takes to make it addressable from Telegram.
+`NAV_SECTIONS` in `src/telegram.ts` is the app's ten sections in the app's order, two per row, and `/go/<pass>/<section>`
+validates against it, so adding a page to the list is all it takes to make it addressable from Telegram.
+
+**The chat menu is a subset of that list.** `MENU_SECTIONS` filters out `audit` and `settings` — Willow
+does not want Audit or Setup offered in the chat, and the grid's last button is the plain `🌐 All trips`
+root rather than "All trips & a new trip". `NAV_SECTIONS` stays complete so section passes for the two
+workshop pages still resolve for anyone who has such a link.
+
+## Follow-up: the label beside the ☰ said "Add expen e"
+
+`navMark()` collapses the tab's own label with `replace(/\s+/g,' ')`. `src/pages.ts` is one template
+literal, so the single `\s` was consumed before the browser saw it and the shipped script ran
+`/s+/g` — replacing every run of `s` with a space, on every route ("also true for other routes also").
+The fix is the doubled form (`\\s+`) that the rest of the file already used, and
+`scratch/check-inline.mjs` now extracts the shipped script, reports `SINGLE_ESCAPES=<n>`, and exits
+non-zero on any lone escape, stray backtick or `${`. `scratch/escape-live-check.mjs <page url>`
+re-checks the deployed bytes without needing a capability token.

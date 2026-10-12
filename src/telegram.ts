@@ -37,7 +37,7 @@ export const NAV_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_MENU_TRIPS = 3;
 
 /** The app's own sections, in the app's own order: creating first, then reading, then the workshop.
- *  One button per section, two to a row, so the grid mirrors the app's sidebar exactly. */
+ *  This is also the allow-list for /go/<token>/<section> passes, so it stays the full app surface. */
 export const NAV_SECTIONS: { tab: string; label: string }[] = [
   { tab: 'add', label: '➕ Add expense' },
   { tab: 'pay', label: '↩️ Record a payment' },
@@ -50,6 +50,12 @@ export const NAV_SECTIONS: { tab: string; label: string }[] = [
   { tab: 'audit', label: '🕐 Audit' },
   { tab: 'settings', label: '⚙️ Setup' },
 ];
+
+/** What the /start menu offers as buttons: the everyday surfaces only. Audit and Setup are deliberately
+ *  left out of the chat menu — they are workshop pages you reach from the app's own drawer. */
+export const MENU_SECTIONS: { tab: string; label: string }[] = NAV_SECTIONS.filter(
+  (section) => section.tab !== 'audit' && section.tab !== 'settings',
+);
 
 /** How long a chat keeps hearing about changes once it is linked. */
 export const WEBHOOK_PATH = '/api/telegram/webhook';
@@ -587,13 +593,13 @@ async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Pr
   for (const pass of passes) {
     const suffix = passes.length > 1 ? ` · ${shortTripName(pass.trip.name)}` : '';
     const row: { text: string; url: string }[] = [];
-    for (const section of NAV_SECTIONS) {
+    for (const section of MENU_SECTIONS) {
       row.push({ text: `${section.label}${suffix}`, url: `${root}/go/${pass.token}/${section.tab}` });
       if (row.length === 2) buttons.push(row.splice(0, 2));
     }
     if (row.length) buttons.push(row);
   }
-  buttons.push([{ text: '🌐 All trips & a new trip', url: root }]);
+  buttons.push([{ text: '🌐 All trips', url: root }]);
   await sendMessage(env, chatId, lines.join('\n'), { inline_keyboard: buttons });
 }
 
