@@ -289,6 +289,31 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
   return { ok: true, result: body.result as T };
 }
 
+/**
+ * The command menu Telegram shows when someone opens the chat. Keep it to commands the webhook really
+ * answers: a menu entry that does nothing is worse than no menu at all. Descriptions go to Telegram, so
+ * they stay short and free of anything private.
+ */
+export const BOT_COMMANDS: { command: string; description: string }[] = [
+  { command: 'start', description: 'Open the trip menu, or connect a trip' },
+  { command: 'disconnect', description: 'Stop trip notifications in this chat' },
+];
+
+let commandsRegistered = false;
+
+/**
+ * Publishes BOT_COMMANDS to Telegram. Idempotent — `setMyCommands` replaces the list rather than adding
+ * to it — so it is safe on every deploy and every cold start. Called once per isolate on the first
+ * authenticated update (see the webhook), and again explicitly by tools/telegram-setup.sh.
+ */
+export async function syncBotCommands(env: TelegramEnv): Promise<{ ok: boolean; registered: string[]; error?: string }> {
+  if (!telegramConfigured(env)) return { ok: false, registered: [], error: 'Telegram is not configured' };
+  const result = await callApi<boolean>(env, 'setMyCommands', { commands: BOT_COMMANDS });
+  if (!result.ok) return { ok: false, registered: [], error: result.description };
+  commandsRegistered = true;
+  return { ok: true, registered: BOT_COMMANDS.map((entry) => entry.command) };
+}
+
 /** The bot's @username, needed for a `t.me` deep link. Public information, cached per isolate. */
 export async function botUsername(env: TelegramEnv): Promise<string | null> {
   const override = (env.TELEGRAM_BOT_USERNAME ?? '').trim().replace(/^@/, '');
@@ -474,19 +499,27 @@ async function sendWelcome(env: TelegramEnv, chatId: string, root: string): Prom
 
 // ---------------------------------------------------------------------------- navigation menu
 
-type LinkedTrip = { connectionId: number; name: string };
+type LinkedTrip = { connectionId: number; workspaceId: number; enabled: boolean; name: string };
 
-/** The trips this chat follows right now: connected, switched on, and still active. */
-async function linkedTrips(env: TelegramEnv, chatId: string): Promise<LinkedTrip[]> {
+/**
+ * The trips this chat follows. The menu only counts the ones switched on and still active; /disconnect
+ * passes includeDisabled so a switched-off connection can be removed too.
+ */
+async function linkedTrips(env: TelegramEnv, chatId: string, includeDisabled = false): Promise<LinkedTrip[]> {
   const rows = await env.DB.prepare(
-    `SELECT c.id AS connection_id, w.name
+    `SELECT c.id AS connection_id, c.workspace_id, c.enabled, w.name
        FROM telegram_connections c JOIN workspaces w ON w.id = c.workspace_id
-      WHERE c.chat_id = ? AND c.enabled = 1 AND w.is_active = 1
+      WHERE c.chat_id = ?${includeDisabled ? '' : ' AND c.enabled = 1 AND w.is_active = 1'}
       ORDER BY c.id`,
   )
     .bind(chatId)
-    .all<{ connection_id: number; name: string }>();
-  return (rows.results ?? []).map((row) => ({ connectionId: row.connection_id, name: row.name }));
+    .all<{ connection_id: number; workspace_id: number; enabled: number; name: string }>();
+  return (rows.results ?? []).map((row) => ({
+    connectionId: row.connection_id,
+    workspaceId: row.workspace_id,
+    enabled: Number(row.enabled) === 1,
+    name: row.name,
+  }));
 }
 
 /**
@@ -688,6 +721,63 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
   await sendStartMenu(env, chatId, root);
 }
 
+function joinNames(names: string[]): string {
+  const quoted = names.map((name) => `“${name}”`);
+  if (quoted.length === 1) return quoted[0];
+  return `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}`;
+}
+
+/**
+ * /disconnect unlinks this chat from every trip it follows, and takes the chat's menu passes with it, so
+ * the buttons in older messages stop working at the same moment the notifications do. A group may only
+ * be disconnected by one of its administrators, exactly like connecting it — a passer-by must not be
+ * able to mute the trip for everyone. No command touches the ledger itself.
+ */
+async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
+  const message = update.message;
+  const chat = message?.chat;
+  if (!chat || chat.id === undefined || chat.id === null) return;
+  const chatId = String(chat.id);
+  const trips = await linkedTrips(env, chatId, true);
+  if (!trips.length) {
+    await sendMessage(
+      env,
+      chatId,
+      'This chat is not connected to any trip, so there is nothing to disconnect. Open a trip’s ⚙️ Setup tab to connect one.',
+    );
+    return;
+  }
+  if (chatType(chat) !== 'private' && !(await eligible(env, chat, message?.from))) {
+    await sendMessage(env, chatId, 'Only a Telegram administrator can disconnect this group. Ask an admin of this group to send /disconnect.');
+    return;
+  }
+  const removed: string[] = [];
+  for (const trip of trips) {
+    if (await removeConnection(env, trip.workspaceId, trip.connectionId)) removed.push(trip.name);
+  }
+  await sendMessage(
+    env,
+    chatId,
+    removed.length
+      ? [
+          `🔌 Disconnected ${joinNames(removed)}.`,
+          '',
+          'This chat stops hearing about those changes and the menu buttons stop working. To connect again, open the trip’s ⚙️ Setup tab and press “Connect Telegram chat”.',
+        ].join('\n')
+      : 'Nothing is connected to this chat any more.',
+  );
+}
+
+/**
+ * The commands this bot answers: /start connects a trip and opens its menu, /disconnect unlinks this
+ * chat. Anything else is left alone — no command can read, let alone write, the ledger.
+ */
+async function handleCommand(env: TelegramEnv, update: TelegramUpdate, root: string): Promise<void> {
+  const text = (update.message?.text ?? '').trim();
+  if (/^\/disconnect(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleDisconnect(env, update);
+  return handleStart(env, update, root);
+}
+
 // ---------------------------------------------------------------------------- webhook
 
 function jsonResponse(body: Json, status = 200): Response {
@@ -711,8 +801,11 @@ export async function handleTelegramWebhook(request: Request, env: TelegramEnv):
   }
   if (!update || typeof update !== 'object') return jsonResponse({ error: 'Invalid update' }, 400);
   const chatId = update.message?.chat?.id;
+  // Publishing the command menu is idempotent and per isolate, so a deploy never leaves the chat menu
+  // offering a command the code no longer answers.
+  if (!commandsRegistered) await syncBotCommands(env).catch(() => {});
   try {
-    await handleStart(env, update, publicRoot(env, request));
+    await handleCommand(env, update, publicRoot(env, request));
   } catch {
     // Our own bookkeeping must never turn into an endless Telegram retry loop, but the person on the
     // other end is still owed an answer.

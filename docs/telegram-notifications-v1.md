@@ -124,6 +124,27 @@ trip's buttons therefore carry a pass of their own:
 spend one. Nothing about the pass is announced in the chat, and no message the bot sends contains `/w/`, a
 capability secret, or a stable link to a trip.
 
+## Commands
+
+Telegram only delivers a group command when it is addressed to the bot (`/start@tripfinancethingbot`),
+so every command is matched with or without the `@username` suffix; private chats use the plain form.
+
+| Command | Who may send it | What it does |
+|---|---|---|
+| `/start` | anyone | Unconnected chat: the welcome and the public app root. Connected chat: the navigation grid below. With a pairing token: connects the chat — a group only if an administrator sends it. |
+| `/disconnect` | private chat: anyone; group: an administrator | Unlinks the chat from **every** trip it follows, and deletes those connections' menu passes in the same batch, so the buttons in older messages stop working the moment the notifications do. |
+
+Both commands answer in text only: neither can read, let alone write, the ledger, and neither is a way
+into a trip beyond the expiring menu passes described below.
+
+### Registering the commands
+
+`BOT_COMMANDS` in `src/telegram.ts` is the single source of truth for the menu Telegram shows inside a
+chat. `syncBotCommands()` publishes it with `setMyCommands` — idempotent, because that call replaces the
+list rather than adding to it — and the webhook publishes it once per isolate on the first authenticated
+update, so a deploy can never leave the menu offering a command the code no longer answers.
+`tools/telegram-setup.sh` publishes the same list explicitly and prints what `getMyCommands` reads back.
+
 ## Migration and files
 
 | Path | Change |

@@ -234,6 +234,14 @@ test('pairing tokens are single use, expire after ten minutes, and never land in
     assert.ok(!welcome.text.includes('/w/'));
     assert.equal(connectionRows(query, workspaceId).length, 0);
 
+    // The first authenticated update of a deployment also publishes the bot's command menu, so the chat
+    // offers exactly the commands the code answers — and nothing that would do nothing.
+    const published = bot.calls.find((call) => call.method === 'setMyCommands');
+    assert.ok(published, 'the command menu should be published on the first update');
+    const commands = (published.payload as unknown as { commands: { command: string; description: string }[] }).commands ?? [];
+    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'disconnect']);
+    assert.ok(commands.every((entry) => entry.description.length > 0 && entry.description.length <= 256));
+
     // A token is stored as a hash only.
     const pairing = await mintPairing(request, secret);
     assert.match(pairing.token, /^[A-Za-z0-9_-]{40,}$/);
@@ -762,5 +770,67 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
     assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 5, 'the group gets the same grid');
     assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
+  });
+});
+
+test('/disconnect unlinks this chat, takes its menu passes with it, and a group needs an administrator', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const first = await createWorkspace(request, 'Disconnect trip one');
+    const second = await createWorkspace(request, 'Disconnect trip two');
+    const firstId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect trip one'`)[0].id);
+    const secondId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect trip two'`)[0].id);
+    const chatId = 880001;
+    const passesFor = `SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id IN (SELECT id FROM telegram_connections WHERE chat_id = '${chatId}')`;
+
+    // A chat that follows nothing is told so, and nothing else happens.
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(chatId), text: '/disconnect' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'an unconnected chat should still get an answer');
+    assert.match(bot.messages[0].text, /not connected to any trip/);
+
+    // One chat can follow two trips. The addressed form is what a group sends, so it has to work here.
+    await startInPrivate({ request, query, bot }, (await mintPairing(request, first)).token, chatId);
+    await startInPrivate({ request, query, bot }, (await mintPairing(request, second)).token, chatId);
+    assert.equal(connectionRows(query, firstId).length, 1);
+    assert.equal(connectionRows(query, secondId).length, 1);
+    assert.equal(Number((query(passesFor) as { count: number }[])[0].count), 2, 'each connected trip has a live menu pass');
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(chatId), text: `/disconnect@${BOT_USERNAME}` })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a disconnect answer should come back');
+    const gone = bot.messages[0].text;
+    assert.match(gone, /Disconnected/);
+    assert.match(gone, /Disconnect trip one/);
+    assert.match(gone, /Disconnect trip two/, 'both trips are named');
+    assert.match(gone, /Setup/, 'the way back is spelled out');
+    assert.equal(connectionRows(query, firstId).length, 0, 'the first connection is gone');
+    assert.equal(connectionRows(query, secondId).length, 0, 'the second connection is gone');
+    assert.equal(Number((query(passesFor) as { count: number }[])[0].count), 0, 'the menu passes go with the connection');
+
+    // A group is only disconnected by one of its administrators, exactly like connecting it.
+    const groupSecret = await createWorkspace(request, 'Disconnect group trip');
+    const groupId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect group trip'`)[0].id);
+    const groupChat = GROUP_CHAT(-880003, 'Disconnect group');
+    const groupPasses = `SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id IN (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`;
+    bot.statuses.set(String(groupChat.id), 'administrator');
+    const pairing = await mintPairing(request, groupSecret);
+    await startIn({ request, query, bot }, groupChat, { id: 880010, first_name: 'Ada' }, pairing.token, pairing.group_command ?? `/start ${pairing.token}`);
+    assert.equal(connectionRows(query, groupId).length, 1);
+
+    bot.statuses.set(String(groupChat.id), 'member');
+    bot.messages.length = 0;
+    await sendUpdate({ request, query, bot }, { chat: groupChat, from: { id: 880011, first_name: 'Pip' }, text: '/disconnect' });
+    await waitFor(() => bot.messages.length === 1, 'a refusal should come back');
+    assert.match(bot.messages[0].text, /administrator/);
+    assert.equal(connectionRows(query, groupId).length, 1, 'a member cannot mute the group');
+    assert.equal(Number((query(groupPasses) as { count: number }[])[0].count), 1, 'and cannot take its menu away either');
+
+    bot.statuses.set(String(groupChat.id), 'administrator');
+    bot.messages.length = 0;
+    await sendUpdate({ request, query, bot }, { chat: groupChat, from: { id: 880010, first_name: 'Ada' }, text: '/disconnect' });
+    await waitFor(() => bot.messages.length === 1, 'an administrator disconnect should be answered');
+    assert.match(bot.messages[0].text, /Disconnected .*Disconnect group trip/);
+    assert.equal(connectionRows(query, groupId).length, 0, 'an administrator can disconnect the group');
+    assert.equal(Number((query(groupPasses) as { count: number }[])[0].count), 0);
   });
 });

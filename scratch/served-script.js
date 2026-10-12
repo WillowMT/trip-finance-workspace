@@ -1,0 +1,1372 @@
+
+var $=function(id){return document.getElementById(id)};
+var api=location.pathname.replace(/\/+$/,'')+'/api';
+var boot=window.__initial||{};
+var people=boot.people||[], currencies=boot.currencies||[], settings=null, me=null, rosterSig='', backups=null, receipts=boot.receipts||[];
+
+function toast(msg,bad){var t=$('toast');t.textContent=msg;t.className='toast show'+(bad?' bad':'');clearTimeout(t._t);t._t=setTimeout(function(){t.className='toast'},2800)}
+function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function name(id){for(var i=0;i<people.length;i++){if(people[i].id===id){var p=people[i];return (p.emoji?p.emoji+' ':'')+p.display_name}}return '#'+id}
+function bareName(id){for(var i=0;i<people.length;i++){if(people[i].id===id){return people[i].display_name}}return ''}
+/* Reads "205708", "205,708" and "1.234.567" as grouping, "205708,50" and "1.234,56" as comma
+   decimals (one comma with up to two digits after it). Built by string digit math, so a VND-sized
+   amount cannot drift through a float, and the result is always an integer count of minor units. */
+function toMinor(v){
+  var s=String(v==null?'':v).replace(/[\s\u00a0]/g,'');
+  if(s===''||!/^[\d.,]+$/.test(s)){return null}
+  var comma=s.lastIndexOf(','), dot=s.lastIndexOf('.'), dec=-1;
+  if(comma>=0&&dot>=0){dec=comma>dot?comma:dot}
+  else if(comma>=0){dec=(s.length-comma-1)<=2&&s.indexOf(',')===comma?comma:-1}
+  else if(dot>=0){dec=(s.length-dot-1)<=2&&s.indexOf('.')===dot?dot:-1}
+  var intp=(dec>=0?s.slice(0,dec):s).replace(/[.,]/g,'');
+  var frac=(dec>=0?s.slice(dec+1):'').replace(/[.,]/g,'');
+  if(intp===''){intp='0'}
+  if(!/^\d*$/.test(intp)||!/^\d*$/.test(frac)){return null}
+  var m=(intp+(frac+'00').slice(0,2)).replace(/^0+/,'');
+  if(m.length===0||m.length>15){return null}
+  var n=Number(m);
+  return Number.isSafeInteger(n)&&n>0?n:null;
+}
+/* Currencies whose everyday unit is the whole unit: a whole amount drops the ".00", a fractional
+   one keeps both decimals, so a sub-unit value in the data is never hidden. Grouping uses the comma
+   convention, which is also what toMinor() reads back, so display and input agree. */
+var NODEC=['BIF','CLP','DJF','GNF','HUF','ISK','JPY','KMF','KRW','PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF'];
+function money(minor,code){
+  var m=Number(minor)||0, cur=String(code||'').toUpperCase();
+  var dec=(NODEC.indexOf(cur)>=0&&m%100===0)?0:2;
+  var s=(m/100).toLocaleString('en-US',{minimumFractionDigits:dec,maximumFractionDigits:dec});
+  return (code?code+' ':'')+s;
+}
+function iso(d){return d.toISOString().slice(0,10)}
+function today(){return iso(new Date())}
+
+async function call(path,opts){
+  opts=opts||{};
+  var headers=opts.headers||{};
+  if(opts.body!==undefined&&!(opts.raw)){headers['content-type']='application/json';opts.body=JSON.stringify(opts.body)}
+  var res,data=null,text='';
+  try{ res=await fetch(api+path,{method:opts.method||'GET',headers:headers,body:opts.body}) }
+  catch(e){ return {ok:false,status:0,error:'Network error — check your connection.',data:null} }
+  try{ text=await res.text(); data=text?JSON.parse(text):null }catch(e){ data=null }
+  if(!res.ok){
+    var msg=(data&&(data.error||(data.errors&&data.errors.join('; '))))||('Request failed ('+res.status+')');
+    return {ok:false,status:res.status,error:msg,data:data};
+  }
+  return {ok:true,status:res.status,data:data};
+}
+function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria-busy','true')}else{btn.removeAttribute('aria-busy')} } }
+
+var TABS=(function(){
+  var out=[], nodes=null;
+  try{ nodes=document.querySelectorAll('.tabs button') }catch(e){ nodes=null }
+  if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
+  return out.length?out:['ledger','ranking','balances','split','tools','audit','settings'];
+})();
+var stateReady=false, selectedTab='ledger', telegram=null;
+function showTab(tab){
+  selectedTab=tab;
+  if(!stateReady){return}
+  for(var i=0;i<TABS.length;i++){
+    var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
+    var btn=$('tab-'+TABS[i]); if(btn){btn.setAttribute('aria-selected',String(TABS[i]===tab))}
+  }
+  if(location.hash!=='#'+tab){try{history.replaceState(null,'','#'+tab)}catch(e){}}
+  if(tab==='ledger'){loadLedger()}
+  if(tab==='ranking'){loadRanking()}
+  if(tab==='balances'){loadBalances()}
+  if(tab==='split'){renderSplit();loadRecentSplits()}
+  if(tab==='audit'){loadAudit()}
+  if(tab==='settings'){renderSettings()}
+  if(tab==='receipts'){refreshReceipts()}
+}
+
+function rosterSignature(){
+  return people.map(function(p){return p.id+':'+p.display_name+':'+(p.emoji||'')+':'+(p.is_archived?1:0)}).join('|')+'/'+currencies.map(function(c){return c.id+':'+c.code+':'+(c.is_archived?1:0)+':'+(c.is_default?1:0)}).join('|')+'/'+((settings&&settings.timezone)||'');
+}
+function renderSplitPeople(){
+  var box=$('sp-people'); if(!box){return}
+  var inputs=box.querySelectorAll('input[type=checkbox]'); var chosen={}; var any=false;
+  for(var i=0;i<inputs.length;i++){ if(inputs[i].checked){chosen[inputs[i].value]=1;any=true} }
+  var html='';
+  for(var k=0;k<people.length;k++){ var p=people[k]; if(p.is_archived){continue}
+    var on=any?!!chosen[String(p.id)]:true;
+    html+='<label class="check"><input type="checkbox" value="'+p.id+'"'+(on?' checked':'')+'><span>'+esc((p.emoji?p.emoji+' ':'')+p.display_name)+'</span></label>';
+  }
+  box.innerHTML=html;
+}
+async function syncInstructions(){
+  var r=await call('/instructions'); if(!r.ok||!r.data){return}
+  var el=$('ai-prompt'); if(el&&typeof r.data.text==='string'&&el.textContent!==r.data.text){ el.textContent=r.data.text }
+}
+async function loadState(){
+  var r=await call('');
+  if(!r.ok){ $('banner').textContent=r.error; $('banner').hidden=false; return false }
+  me=r.data.workspace; people=r.data.people||[]; currencies=r.data.currencies||[]; settings=r.data.settings||null; backups=r.data.backups||null; telegram=r.data.telegram||null;
+  $('banner').hidden=true;
+  if(me&&me.name){document.title=me.name}
+  var sig=rosterSignature(); if(sig!==rosterSig){ rosterSig=sig; renderSplitPeople() }
+  await syncInstructions();
+  stateReady=true;
+  if(selectedTab){showTab(selectedTab)}
+  return true;
+}
+
+/* ---------------- ledger ---------------- */
+/* the two people fields mean different things per mode, so say what they are instead of leaving "Paid by / For" to guesswork */
+function syncKindLabels(){
+  var kind=$('t-kind'); if(!kind){return}
+  var pay=kind.value==='payment';
+  var c=$('t-creditor-label'), d=$('t-debtor-label'), hint=$('t-kind-hint');
+  if(c){ c.innerHTML=pay?'<span aria-hidden="true">📥</span> Repaid to (was owed)':'<span aria-hidden="true">💳</span> Paid by (is owed)' }
+  if(d){ d.innerHTML=pay?'<span aria-hidden="true">📤</span> Repaid by (who owed it)':'<span aria-hidden="true">🧾</span> For (owes)' }
+  if(hint){ hint.textContent=pay?'Money goes from "Repaid by" ➜ "Repaid to": the person who owed it hands the money back.':'One person paid the bill for someone else, so the other person owes them.' }
+  var sw=$('t-swap'); if(sw){ sw.textContent=pay?'↔️ Swap who paid back':'↔️ Swap people' }
+}
+function txRow(t){
+  var el=document.createElement('div'); el.className='row';
+  /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
+  /* One arithmetic for every surface, so no two views can disagree about the same row: a debt adds
+     to what is owed, a repayment reduces it, and an offset row already carries its own signed value
+     because netting writes both directions negative. */
+  var signed=signedMinor(t);
+  var cls=signed>0?'pos':(signed<0?'neg':'zero');
+  el.innerHTML='<div class="row-main"><div class="who">'+esc(t.topic)+' <span class="chip '+esc(t.entry_kind)+'">'+esc(t.entry_kind)+'</span></div><div class="meta">'+esc(t.occurred_on)+' · '+esc(name(t.creditor_person_id))+' → '+esc(name(t.debtor_person_id))+'<span class="cat"> · '+esc(t.category)+'</span></div></div>'+
+    '<div class="row-side"><div class="amt '+cls+'">'+esc(signedMoney(signed,t.currency_code))+'</div><button class="mini icon danger" data-del="'+t.id+'" type="button" title="Delete transaction" aria-label="Delete transaction"><span aria-hidden="true">🗑️</span></button></div>';
+  return el;
+}
+var TXPAGE=50, txPage=1, txCache=[];
+async function loadLedger(){
+  var list=$('tx-list'); list.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(!r.ok){ list.innerHTML='<div class="err">'+esc(r.error)+'</div>'; var p0=$('tx-pager'); if(p0){p0.hidden=true} return }
+  var txs=(r.data&&r.data.transactions)||[]; txCache=txs;
+  var totals={};
+  for(var i=0;i<txs.length;i++){ var t=txs[i]; totals[t.currency_code]=(totals[t.currency_code]||0)+signedMinor(t) }
+  var keys=Object.keys(totals).sort();
+  var box=$('tx-totals'); box.innerHTML='';
+  if(keys.length){ for(var k=0;k<keys.length;k++){ var v=totals[keys[k]], cls2=v>0?'pos':(v<0?'neg':'zero'); var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b class="'+cls2+'">'+esc(money(v,keys[k])||'')+'</b>'; box.appendChild(d) } }
+  renderTxList();
+  renderSpend(txs);
+}
+function signedMinor(t){ return t.entry_kind==='payment'?-t.amount_minor:t.amount_minor }
+/* ---------------- ranking ---------------- */
+var rankingCurrency='', rankingRows=null, rankingRequestId=0;
+async function loadRanking(){
+  var box=$('ranking-list'); if(!box){return}
+  var requestId=++rankingRequestId;
+  rankingRows=null;
+  box.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(requestId!==rankingRequestId||selectedTab!=='ranking'){return}
+  if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  rankingRows=(r.data&&r.data.transactions)||[];
+  renderRanking(rankingRows);
+}
+function renderRanking(rows){
+  var pills=$('ranking-currencies'), box=$('ranking-list'); if(!pills||!box){return}
+  var active=[], i;
+  for(i=0;i<currencies.length;i++){ if(!currencies[i].is_archived){active.push(currencies[i])} }
+  if(!rankingCurrency||!active.some(function(c){return c.code===rankingCurrency})){ rankingCurrency=((active.filter(function(c){return c.is_default})[0])||active[0]||{}).code||'' }
+  var currency=rankingCurrency;
+  pills.innerHTML='';
+  for(i=0;i<active.length;i++){
+    var c=active[i], pressed=c.code===currency;
+    pills.innerHTML+='<button type="button" data-ranking-currency="'+esc(c.code)+'" aria-pressed="'+(pressed?'true':'false')+'">'+esc(c.code)+'</button>';
+  }
+  if(!currency){ box.innerHTML='<div class="empty">No active currencies.</div>'; return }
+  var balances=netsByCurrency(rows)[currency]||{}, ranked=[], id;
+  for(id in balances){ if(balances.hasOwnProperty(id)){
+    var person=null;
+    for(i=0;i<people.length;i++){ if(people[i].id===Number(id)){person=people[i];break} }
+    if(person&&!person.is_archived&&balances[id]<0){ ranked.push({person:person,balance_minor:balances[id]}) }
+  } }
+  ranked.sort(function(a,b){ return a.balance_minor-b.balance_minor||String(a.person.display_name).localeCompare(String(b.person.display_name))||Number(a.person.id)-Number(b.person.id) });
+  if(!ranked.length){
+    /* The selected currency has no debtor. */
+    box.innerHTML='<div class="empty">No one owes money in '+esc(currency)+'.</div>'; return;
+  }
+  var max=Math.abs(ranked[0].balance_minor), html='';
+  for(i=0;i<ranked.length;i++){
+    var row=ranked[i], pct=Math.max(6,Math.round(Math.abs(row.balance_minor)*100/max));
+    html+='<button class="ranking-row" type="button" data-person="'+row.person.id+'" aria-haspopup="dialog">'+
+      '<span class="ranking-row-main"><span class="ranking-row-identity"><span class="ranking-row-rank">#'+(i+1)+'</span>'+(row.person.emoji?'<span class="ranking-row-avatar" aria-hidden="true">'+esc(row.person.emoji)+'</span>':'')+'<span class="ranking-row-name">'+esc(row.person.display_name)+'</span></span><span class="ranking-row-amount">owes '+esc(money(Math.abs(row.balance_minor),currency))+'</span></span>'+
+      '<span class="ranking-bar" aria-hidden="true"><span class="ranking-bar-fill" style="width:'+pct+'%"></span></span></button>';
+  }
+  box.innerHTML=html;
+}
+function selectRankingCurrency(code){ rankingCurrency=code; if(rankingRows!==null){renderRanking(rankingRows)} }
+function renderTxList(){
+  var list=$('tx-list'); if(!list){return}
+  list.innerHTML='';
+  var txs=txCache||[], pager=$('tx-pager');
+  var pages=Math.max(1,Math.ceil(txs.length/TXPAGE));
+  if(txPage>pages){ txPage=pages } if(txPage<1){ txPage=1 }
+  if(!txs.length){ list.innerHTML='<div class="empty">🗒️ No transactions yet. Add the first one above.</div>'; if(pager){pager.hidden=true} return }
+  var from=(txPage-1)*TXPAGE, slice=txs.slice(from,from+TXPAGE);
+  for(var j=0;j<slice.length;j++){ list.appendChild(txRow(slice[j])) }
+  if(!pager){return}
+  if(pages<=1){ pager.hidden=true; return }
+  pager.hidden=false;
+  $('tx-pager-info').textContent='Page '+txPage+' of '+pages+' · showing '+(from+1)+'–'+(from+slice.length)+' of '+txs.length;
+  $('tx-prev').disabled=(txPage<=1); $('tx-next').disabled=(txPage>=pages);
+}
+function txGo(delta){
+  txPage=txPage+delta; renderTxList();
+  var l=$('tx-list'); if(l&&l.scrollIntoView){ l.scrollIntoView({block:'nearest'}) }
+}
+async function delTx(id,btn){
+  if(!confirm('Delete this transaction? It stays restorable in the audit log.')){return}
+  busy(btn,true);
+  var r=await call('/transactions/'+id,{method:'DELETE'});
+  busy(btn,false);
+  if(!r.ok){ toast(r.error,true); return }
+  toast('Transaction deleted'); loadLedger();
+}
+/* ---------------- review before writing ----------------
+   Both writes (a ledger entry and a split) pass through one review sheet. It shows the
+   least it can: who moved what to whom, the amount in the ledger's own colours, and one
+   plain sentence. Nothing reaches the API until Confirm is pressed - Back, Escape and a
+   backdrop tap all leave the form exactly as it was. */
+var reviewAction=null, reviewBusy=false, reviewOpener=null;
+function reviewRows(items){
+  var html='';
+  for(var i=0;i<items.length;i++){ if(items[i][1]){ html+='<div class="k">'+esc(items[i][0])+'</div><div class="v">'+items[i][1]+'</div>' } }
+  return html?'<div class="rf-rows">'+html+'</div>':'';
+}
+function reviewWho(id,strong){
+  var n=esc(name(id));
+  return strong?('<span class="rf-who">'+n+'</span>'):n;
+}
+function txReview(rows){
+  var one=rows[0], pay=one.entry_kind==='payment';
+  var debtor=name(one.debtor_person_id), creditor=name(one.creditor_person_id);
+  var body='<div class="rf-head">'+(pay
+      ? (reviewWho(one.debtor_person_id)+' <span class="rf-v">repaid</span> '+reviewWho(one.creditor_person_id))
+      : (reviewWho(one.creditor_person_id)+' <span class="rf-v">paid for</span> '+reviewWho(one.debtor_person_id)))+'</div>'+
+    '<div class="rf-amt '+(pay?'neg':'pos')+'">'+esc(signedMoney(pay?-one.amount_minor:one.amount_minor,one.currency_code))+'</div>'+
+    '<p class="rf-why">'+(pay
+      ? ('Money going back, so '+esc(debtor)+' owes less to '+esc(creditor)+'.')
+      : (esc(debtor)+' owes this to '+esc(creditor)+' from now on.'))+'</p>'+
+    reviewRows([['What',esc(one.topic)],['Category',esc(one.category)],['Date',esc(one.occurred_on)],['Note',one.notes?esc(one.notes):'']]);
+  return { title: pay?'Review repayment':'Review new debt', icon: pay?'📥':'💳',
+    confirm: pay?'Confirm repayment':'Confirm debt', body: body };
+}
+function splitReview(d){
+  var ids=d.participant_person_ids.slice(0).sort(function(a,b){return a-b});
+  var alloc=allocate(d.amount_minor,ids), owed=0, chips='', debts=0;
+  for(var i=0;i<alloc.length;i++){ var a=alloc[i], payer=a.person_id===d.payer_person_id;
+    if(payer){ chips+='<span class="chip payer">'+esc(name(a.person_id))+' · paid the bill</span>' }
+    else { owed+=a.amount_minor; debts++; chips+='<span class="chip">'+esc(name(a.person_id))+' · '+esc(money(a.amount_minor,d.currency_code))+'</span>' }
+  }
+  var payer=esc(name(d.payer_person_id));
+  var body='<div class="rf-head">'+reviewWho(d.payer_person_id)+' <span class="rf-v">paid</span> '+esc(money(d.amount_minor,d.currency_code))+' for '+ids.length+' people</div>'+
+    '<div class="rf-amt pos">'+esc(signedMoney(owed,d.currency_code))+'</div>'+
+    '<p class="rf-why">'+debts+(debts===1?' debt':' debts')+' will be created - each share is listed below.</p>'+
+    '<div class="rf-chips">'+chips+'</div>'+
+    reviewRows([['What',esc(d.topic)],['Category',esc(d.category)],['Date',esc(d.occurred_on)]]);
+  return { title:'Review split', icon:'✂️', confirm:'Confirm split', body: body };
+}
+function openReview(build,action,btn){
+  var m=$('review-modal');
+  if(!m){ action(); return }   /* never block a write if the sheet's markup is missing */
+  reviewAction=action; reviewBusy=false; reviewOpener=(btn&&btn.focus)?btn:(document.activeElement||null);
+  var t=$('rv-title'), c=$('rv-confirm');
+  if(t){ t.textContent=build.title }
+  $('rv-body').innerHTML=build.body;
+  if(c){ c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> '+esc(build.confirm); c.disabled=false }
+  m.hidden=false;
+  var back=$('rv-back'); if(back&&back.focus){ try{ back.focus() }catch(err){} }
+}
+function closeReview(){
+  var m=$('review-modal'); if(!m||m.hidden){return}
+  m.hidden=true; reviewAction=null; reviewBusy=false;
+  /* backing out of the sheet must not leave a receipt link armed for whatever is typed next */
+  logReceiptId=null;
+  if(reviewOpener&&reviewOpener.focus){ try{ reviewOpener.focus() }catch(err){} }
+  reviewOpener=null;
+}
+async function confirmReview(){
+  var m=$('review-modal'); if(!m||m.hidden||reviewBusy||!reviewAction){return}
+  var btn=$('rv-confirm'), act=reviewAction, label=btn?btn.innerHTML:'';
+  reviewBusy=true;
+  if(btn){ btn.disabled=true; btn.innerHTML='<span aria-hidden="true">⏳</span> Saving…' }
+  try{ await act() }catch(err){}
+  if(btn){ btn.disabled=false; btn.innerHTML=label }
+  reviewBusy=false;
+  closeReview();
+}
+async function addTx(){
+  var btn=$('t-add'); var err=$('t-err'); err.textContent='';
+  var rows=[{occurred_on:$('t-date').value,entry_kind:$('t-kind').value,topic:$('t-topic').value.trim(),
+    category:$('t-category').value.trim(),creditor_person_id:Number($('t-creditor').value),
+    debtor_person_id:Number($('t-debtor').value),amount_minor:toMinor($('t-amount').value),
+    currency_code:$('t-currency').value,notes:$('t-notes').value.trim()}];
+  var problem=validateRows(rows);
+  if(problem){ err.textContent=problem; return }
+  /* nothing is written until the review sheet is confirmed */
+  openReview(txReview(rows), function(){ return postRows(rows,btn,err) }, btn);
+}
+function validateRows(rows){
+  if(!rows.length){return 'Nothing to add.'}
+  if(rows.length===1){ var one=rows[0];
+    if(!one.topic||!one.category){return 'Topic and category are required.'}
+    if(!one.amount_minor){return 'Enter a positive amount.'}
+    if(one.creditor_person_id===one.debtor_person_id){return 'Creditor and debtor must differ.'}
+  }
+  return '';
+}
+async function postRows(rows,btn,err){
+  busy(btn,true);
+  var r=(rows.length===1)
+    ? await call('/transactions',{method:'POST',body:rows[0]})
+    : await call('/batches',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:{rows:rows}});
+  busy(btn,false);
+  if(!r.ok){ err.textContent=r.error; toast(r.error,true); return false }
+  var doneMsg=rows.length===1?'Transaction added':(rows.length+' transactions added');
+  if(r.data&&r.data.netted_pairs){ doneMsg+=' · '+r.data.netted_pairs+' reciprocal balance'+(r.data.netted_pairs===1?'':'s')+' netted' }
+  toast(doneMsg);
+  $('t-amount').value=''; $('t-topic').value=''; $('t-category').value='Other'; $('t-notes').value='';
+  var loggedReceipt=logReceiptId; logReceiptId=null;
+  if(loggedReceipt&&r.data&&r.data.transaction){ linkReceiptTransaction(loggedReceipt,r.data.transaction.id) }
+  loadLedger(); return true;
+}
+/* ---------------- balances ---------------- */
+async function loadBalances(){
+  var box=$('bal-list'); box.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  var txs=(r.data&&r.data.transactions)||[];
+  var credits={}, debits={}, counts={};
+  for(var i=0;i<txs.length;i++){var t=txs[i]; if(t.is_deleted){continue}
+    var sd=signedMinor(t);
+    credits[t.creditor_person_id]=credits[t.creditor_person_id]||{}; credits[t.creditor_person_id][t.currency_code]=(credits[t.creditor_person_id][t.currency_code]||0)+sd;
+    debits[t.debtor_person_id]=debits[t.debtor_person_id]||{}; debits[t.debtor_person_id][t.currency_code]=(debits[t.debtor_person_id][t.currency_code]||0)-sd;
+    counts[t.creditor_person_id]=(counts[t.creditor_person_id]||0)+1; counts[t.debtor_person_id]=(counts[t.debtor_person_id]||0)+1;
+  }
+  box.innerHTML='';
+  var order=people.slice().sort(function(a,b){ return (a.is_archived?1:0)-(b.is_archived?1:0) || String(a.display_name).localeCompare(String(b.display_name)) });
+  if(!order.length){ box.innerHTML='<div class="empty">No people yet — add them in Settings.</div>'; return }
+  for(var j=0;j<order.length;j++){ var p=order[j];
+    var mineC=credits[p.id]||{}, mineD=debits[p.id]||{}, seen={}, codes=[];
+    var ka=Object.keys(mineC), kb=Object.keys(mineD);
+    for(var x=0;x<ka.length;x++){ if(!seen[ka[x]]){seen[ka[x]]=1;codes.push(ka[x])} }
+    for(var y=0;y<kb.length;y++){ if(!seen[kb[y]]){seen[kb[y]]=1;codes.push(kb[y])} }
+    codes.sort();
+    var chips='';
+    for(var z=0;z<codes.length;z++){ var v=(mineC[codes[z]]||0)+(mineD[codes[z]]||0); if(v===0){continue}
+      chips+=netChip(v,codes[z],p.display_name);
+    }
+    var n=counts[p.id]||0;
+    var el=document.createElement('button'); el.type='button';
+    el.className='person-card'+(p.is_archived?' archived':''); el.setAttribute('data-person',p.id); el.setAttribute('aria-haspopup','dialog');
+    el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
+      '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
+      '<span class="meta">'+n+' record'+(n===1?'':'s')+'</span>'+
+      '<span class="p-nets">'+(chips||'<span class="meta">nothing outstanding</span>')+'</span></span>'+
+      '<span class="chev" aria-hidden="true">›</span>';
+    box.appendChild(el);
+  }
+  renderSettle(txs);
+  var ob=$('offset-list'); ob.innerHTML='<div class="empty">Loading…</div>';
+  var o=await call('/offset-suggestions');
+  if(!o.ok){ ob.innerHTML='<div class="err">'+esc(o.error)+'</div>'; return }
+  var sug=(o.data&&o.data.suggestions)||[];
+  ob.innerHTML='';
+  if(!sug.length){ ob.innerHTML='<div class="empty">No reciprocal balances to offset.</div>'; return }
+  for(var k=0;k<sug.length;k++){var s=sug[k];
+    var row=document.createElement('div'); row.className='row';
+    row.innerHTML='<div><div class="who">'+esc(name(s.first_person_id))+' ↔ '+esc(name(s.second_person_id))+'</div><div class="meta">offsettable '+esc(money(s.offset_amount_minor,s.currency_code))+'</div></div>'+
+      '<button class="mini" type="button" data-off="'+s.first_person_id+':'+s.second_person_id+':'+esc(s.currency_code)+'">Offset</button>';
+    ob.appendChild(row);
+  }
+}
+async function doOffset(a,b,c,btn){
+  busy(btn,true);
+  var r=await call('/offsets',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:{first_person_id:a,second_person_id:b,currency_code:c}});
+  busy(btn,false);
+  if(!r.ok){ toast(r.error,true); return }
+  toast('Offset recorded'); loadBalances(); if(pmOpenId){ openPerson(pmOpenId) }
+}
+/* ---------------- person popup ---------------- */
+var pmOpenId=null, pmData=null;
+function initials(n){ var parts=String(n==null?'':n).trim().split(/\s+/); if(!parts[0]){return '?'} var out=parts[0].slice(0,1); if(parts.length>1){ out=out+parts[parts.length-1].slice(0,1) } return out.toUpperCase() }
+function signedMoney(v,code){ if(!v){return '—'} return (v>0?'+':'−')+money(Math.abs(v),code) }
+function netPhrase(v,who){ return v>0?('owed to '+who):(v<0?('owed by '+who):'settled up') }
+function netChip(v,code,who){
+  /* the amount is its own span so a long one can drop to its own line; widowed words inside a
+     nowrap amount made billion-đồng chips overflow their card at phone width. */
+  var cls=v>0?'pos':(v<0?'neg':''), amt=v?((v>0?'+':'−')+money(Math.abs(v),code)):'';
+  return (amt?'<span class="amt '+cls+'">'+esc(amt)+'</span> ':'')+'<span class="say">'+esc(netPhrase(v,who))+'</span>';
+}
+function kpi(label,value,cls){
+  /* a tile holding a billion-đồng figure spans the row, so the number is never split mid-group */
+  var wide=String(value).length>16?' wide':'';
+  return '<div class="kpi'+wide+'"><div class="k-label">'+esc(label)+'</div><div class="k-value '+(cls||'')+'">'+esc(value)+'</div></div>' }
+function recRow(t){
+  var dir=t.direction, label=dir==='paid_for'?'fronted for '+t.counterparty:dir==='covered_for_them'?'covered by '+t.counterparty:dir==='settled_out'?'paid '+t.counterparty:'received from '+t.counterparty;
+  var cls=dir==='paid_for'?'pos':(dir==='covered_for_them'?'neg':'');
+  var arch=(t.is_deleted===1);
+  return '<div class="rec'+(arch?' is-arch':'')+'"><span class="r-main"><span class="r-head"><span class="r-topic">'+esc(t.topic)+'</span>'+(arch?'<span class="tag-arch">archived</span>':'')+'</span>'+
+    '<span class="r-meta">'+esc(t.occurred_on)+' · '+esc(t.entry_kind)+(t.category?' · '+esc(t.category):'')+' · '+esc(label)+'</span></span>'+
+    '<span class="r-amt '+cls+'">'+esc(money(Math.abs(t.amount_minor),t.currency_code))+'</span>'+
+    (arch?'<span class="r-act"><button class="mini ghost" type="button" data-txrestore="'+t.id+'">↩ Restore</button></span>':'')+'</div>';
+}
+function pairLine(pr,me){
+  var owesMe=pr.net_minor>0, meOwes=pr.net_minor<0;
+  var line=owesMe?(pr.counterparty+' owes '+me):(meOwes?(me+' owes '+pr.counterparty):(pr.counterparty+' — settled up'));
+  var amt=(owesMe||meOwes)?' <span class="amt '+(owesMe?'pos':'neg')+'">'+esc(money(Math.abs(pr.net_minor),pr.currency_code))+'</span>':'';
+  return '<span class="who">'+esc(line)+amt+'</span>';
+}
+function pairRecords(id){ var out=[], recs=(pmData&&pmData.recent)||[]; for(var i=0;i<recs.length;i++){ if(recs[i].counterparty_id===id){ out.push(recs[i]) } } return out }
+function togglePair(key){
+  var el=$('pm-pair-'+key); if(!el){return}
+  el.hidden=!el.hidden;
+  var head=document.querySelector('[data-pair="'+key+'"]');
+  if(head){ head.setAttribute('aria-expanded',String(!el.hidden)); var tag=head.querySelector('.p-open'); if(tag){ tag.textContent=el.hidden?'View records':'Hide records' } }
+}
+async function openPerson(id){
+  var modal=$('person-modal'); if(!modal){return}
+  pmOpenId=Number(id); pmData=null; modal.hidden=false; document.body.style.overflow='hidden';
+  var body=$('pm-body'); body.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/people/'+pmOpenId+'/summary');
+  if(!r.ok){ body.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  pmData=r.data; renderPerson();
+  var closer=$('pm-close'); if(closer){ try{closer.focus()}catch(e){} }
+}
+function closePerson(){
+  var modal=$('person-modal'); if(!modal||modal.hidden){return}
+  modal.hidden=true; document.body.style.overflow='';
+  var id=pmOpenId; pmOpenId=null; pmData=null;
+  var card=document.querySelector('[data-person="'+id+'"]'); if(card){ try{card.focus()}catch(e){} }
+}
+function renderPerson(){
+  var d=pmData||{}, p=d.person||{}, body=$('pm-body'), title=$('pm-title');
+  if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
+  var totals=d.totals||[], records=d.records||{}, html='';
+  var chips='';
+  var meName=p.display_name||'this person';
+  for(var i=0;i<totals.length;i++){ var t0=totals[i]; chips+=netChip(t0.net_minor,t0.currency_code,meName) }
+  html+='<div class="pm-nets">'+(chips||'<span class="empty">Nothing outstanding — settled up.</span>')+'</div>';
+  html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
+  for(var c=0;c<totals.length;c++){ var t=totals[c];
+    html+='<h3 class="mt-14">'+esc(t.currency_code)+'</h3><div class="kpi-grid">'+
+      kpi(meName+' fronted for others',money(t.paid_for_minor,t.currency_code))+
+      kpi('Covered for '+meName,money(t.covered_for_them_minor,t.currency_code))+
+      kpi('Net for '+meName,signedMoney(t.net_minor,t.currency_code),(t.net_minor>0?'pos':(t.net_minor<0?'neg':'')))+
+      kpi('Settled — paid / received',money(t.settled_out_minor,t.currency_code)+' / '+money(t.settled_in_minor,t.currency_code))+
+      '</div>';
+  }
+  var pairs=d.counterparties||[];
+  var bk=d.breakdown||{};
+  /* full-history breakdowns, deliberately separate from Recent activity: a repayment from
+     weeks ago must still show here even when it has scrolled out of the 25-row window */
+  function bkSection(title,rows){
+    var count=(rows&&rows.length)||0;
+    var label=title+' <span class="chip">'+count+' record'+(count===1?'':'s')+'</span>';
+    var content=count?rows.map(recRow).join(''):'<div class="empty">Nothing here yet.</div>';
+    /* Keep full-history detail available without making a person popup overwhelming on open. */
+    return '<details class="pm-breakdown"><summary>'+label+'</summary><div class="pm-breakdown-body">'+content+'</div></details>';
+  }
+  html+=bkSection('What '+esc(meName)+' paid for',bk.paid_for);
+  html+=bkSection('What was paid for '+esc(meName),bk.covered_for_them);
+  html+=bkSection('Payments &amp; offsets',bk.settlements);
+  html+='<h3 class="mt-16">Balances by person</h3><p class="hint">Each line names who owes whom. Green means the money is owed to '+esc(meName)+'; red means '+esc(meName)+' owes it.</p>';
+  if(!pairs.length){ html+='<div class="empty">No counterparties yet.</div>' }
+  for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id; var recs=pairRecords(pr.counterparty_id);
+    var settled=(pr.settled_out_minor||0)+(pr.settled_in_minor||0);
+    html+='<div class="pair"><button class="pair-head" type="button" data-pair="'+esc(key)+'" aria-expanded="false">'+
+      '<span class="p-main">'+pairLine(pr,meName)+
+      '<span class="meta">'+esc(pr.currency_code)+' · '+pr.records+' active record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+' · '+esc(meName)+' fronted '+esc(money(pr.paid_for_minor,pr.currency_code))+' · '+esc(pr.counterparty)+' covered '+esc(money(pr.covered_minor,pr.currency_code))+(settled?' · settled '+esc(money(settled,pr.currency_code)):'')+'</span></span>'+
+      '<span class="p-open">View records</span></button>'+
+      '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+(recs.length?recs.map(recRow).join(''):'<div class="empty">No records in the latest window.</div>')+'</div></div>';
+  }
+  var recs2=d.recent||[];
+  html+='<h3 class="mt-16">Recent activity</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
+  if((records.total||0)>recs2.length){ html+='<p class="hint">Showing the latest '+recs2.length+' of '+records.total+' records.</p>' }
+  var sug=d.suggestions||[];
+  if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
+    for(var s=0;s<sug.length;s++){ var g=sug[s];
+      html+='<div class="row"><div><div class="who">'+esc(g.counterparty)+' ↔ '+esc((p.emoji?p.emoji+' ':'')+(p.display_name||''))+'</div><div class="meta">offsettable '+esc(money(g.offset_amount_minor,g.currency_code))+'</div></div>'+
+        '<button class="mini" type="button" data-off="'+p.id+':'+g.counterparty_id+':'+esc(g.currency_code)+'">Offset</button></div>';
+    }
+  }
+  body.innerHTML=html;
+}
+
+/* ---------------- tools: receipt instructions + import ---------------- */
+async function previewImport(){
+  var btn=$('csv-preview'); var out=$('csv-result'); out.innerHTML='';
+  busy(btn,true);
+  var res=await fetch(api+'/imports/preview',{method:'POST',headers:{'content-type':'text/csv'},body:$('csv').value});
+  var data=await res.json().catch(function(){return null});
+  busy(btn,false);
+  if(!res.ok){ $('csv-commit').disabled=true; out.innerHTML='<div class="err">'+esc((data&&(data.errors||[data.error]))?[].concat(data.errors||data.error).join('\n'):'Import preview failed ('+res.status+')')+'</div>'; return }
+  var rows=(data&&data.rows)||[];
+  var t=document.createElement('table');
+  t.innerHTML='<tr><th>Date</th><th>Kind</th><th>Topic</th><th>Amount</th></tr>'+
+    rows.map(function(r){return '<tr><td>'+esc(r.occurred_on)+'</td><td>'+esc(r.entry_kind)+'</td><td>'+esc(r.topic)+'</td><td class="num">'+esc(money(r.amount_minor,r.currency_code))+'</td></tr>'}).join('');
+  out.innerHTML='<p class="hint">'+rows.length+' row(s) ready to import.</p>'; out.appendChild(t);
+  $('csv-commit').disabled=!rows.length;
+}
+async function commitImport(){
+  var btn=$('csv-commit'); busy(btn,true);
+  var r=await call('/imports',{method:'POST',headers:{'content-type':'text/csv','idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},raw:true,body:$('csv').value});
+  busy(btn,false);
+  if(!r.ok){ $('csv-result').innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  var n=(r.data&&r.data.transactions&&r.data.transactions.length)||0;
+  toast(n+' transaction(s) imported'); $('csv-result').innerHTML='<div class="empty">Imported '+n+' row(s).</div>'; loadLedger();
+}
+/* ---------------- audit ---------------- */
+function auditSnapshot(value){
+  if(value===null||value===undefined) return null;
+  if(typeof value==='object') return value;
+  try{ return JSON.parse(value) }catch(_){ return null }
+}
+function auditQuery(){
+  var qs=[];
+  var en=$('au-entity'), ac=$('au-action'), q=$('au-q');
+  if(en&&en.value) qs.push('entity='+encodeURIComponent(en.value));
+  if(ac&&ac.value) qs.push('action='+encodeURIComponent(ac.value));
+  if(q&&q.value.trim()) qs.push('q='+encodeURIComponent(q.value.trim()));
+  return qs.length?('?'+qs.join('&')):'';
+}
+function auditSummaryText(e){
+  var snap=auditSnapshot(e.after_json)||auditSnapshot(e.before_json)||{};
+  var bits=[];
+  if(e.entity_type==='transaction'){
+    if(snap.topic) bits.push(snap.topic);
+    if(snap.amount_minor!==null&&snap.amount_minor!==undefined) bits.push((snap.currency_code||'')+' '+(Number(snap.amount_minor)/100).toFixed(2));
+    if(snap.entry_kind) bits.push(snap.entry_kind);
+  } else if(snap.display_name) bits.push(snap.display_name);
+  else if(snap.name) bits.push(snap.name);
+  else if(snap.code) bits.push(snap.code);
+  var verb={create:'Created',update:'Updated',archive:'Archived',restore:'Restored',delete:'Deleted'}[e.action]||e.action;
+  return verb+(bits.length?(' · '+bits.join(' · ')):'');
+}
+async function loadAudit(){
+  var box=$('audit-list'); box.innerHTML='<div class="empty">Loading…</div>';
+  var summary=$('au-summary'); if(summary){ summary.textContent='' }
+  var r=await call('/audit'+auditQuery());
+  if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
+  var data=(r.data&&r.data)||{}, rows=data.audit||[];
+  var archivedTx=data.archived_transactions||[];
+  if(summary){
+    var filtered=(auditQuery()!=='');
+    summary.textContent='Showing '+rows.length+' of '+((data.total||0))+' entries'+
+      (filtered?(' · '+((data.matched||0))+' match your filters'):'')+
+      (data.truncated?' · narrow the filters to see the rest':'');
+  }
+  box.innerHTML='';
+  if(!rows.length){ box.innerHTML='<div class="empty">No audit entries match these filters.</div>'; return }
+  for(var i=0;i<rows.length;i++){var e=rows[i];
+    var d=document.createElement('details');
+    var when=String(e.occurred_at||'').slice(0,19).replace('T',' ');
+    /* The log is read-only: restoring writes a NEW 'restore' row, it never edits this one. Offer the button
+       only while the row is still archived, so it can never fire a no-op against something already restored. */
+    var canRestore=(e.entity_type==='transaction'&&archivedTx.indexOf(Number(e.entity_id))>=0);
+    d.innerHTML='<summary>'+esc(auditSummaryText(e))+' · '+esc(e.entity_type)+' #'+esc(e.entity_id)+' <span class="chip">'+esc(when)+'</span></summary>'+
+      (canRestore?'<div class="btns flush mt-10"><button class="mini ghost" type="button" data-txrestore="'+String(e.entity_id)+'">↩ Restore this entry</button></div>':'')+
+      '<pre>'+esc(JSON.stringify({before:e.before_json,after:e.after_json},null,1))+'</pre>';
+    box.appendChild(d);
+  }
+}
+/* ---------------- settings ---------------- */
+function bytesLabel(n){
+  if(!(n>=0)){return ''}
+  if(n<1024){return n+' B'}
+  if(n<1048576){return (n/1024).toFixed(1)+' KB'}
+  return (n/1048576).toFixed(1)+' MB'
+}
+function stamp(value){
+  if(!value){return 'unknown time'}
+  var date=new Date(value); if(isNaN(date.getTime())){return String(value)}
+  return date.toLocaleString(undefined,{dateStyle:'medium',timeStyle:'short'});
+}
+
+function renderBackups(){
+  var box=$('s-backup-status'); if(!box){return}
+  var status=(backups&&backups.status)||null, entries=(backups&&backups.entries)||[];
+  box.innerHTML='';
+  if(backups&&!backups.configured){ box.innerHTML='<span class="err">Backup storage is not configured on this deployment.</span>' }
+  else if(status){
+    box.innerHTML='Automatic backups run every <b>'+status.every+'</b> transactions · '+status.rows_since_backup+' written since the last one'+
+      (status.due_in>0?(' · next in '+status.due_in):' · due now')+
+      (status.rows_total?(' · '+status.rows_total+' transactions in total'):'')+
+      (status.state&&status.state.last_backup_at?('<br>Last backup: '+stamp(status.state.last_backup_at)+' ('+(status.state.last_backup_rows||0)+' transactions, '+bytesLabel(status.state.last_backup_bytes)+')'):'<br>No backup has been written yet.')+
+      (status.state&&status.state.last_error?('<br><span class="err">'+esc(status.state.last_error)+'</span>'):'');
+  }
+  if($('s-backup-every')){ $('s-backup-every').value=String((status&&status.every)||(settings&&settings.backup_every)||100) }
+  var list=$('s-backup-list'); if(!list){return}
+  list.innerHTML='';
+  if(!entries.length){ list.innerHTML='<div class="empty">No snapshots yet.</div>'; return }
+  for(var i=0;i<entries.length;i++){var e=entries[i];
+    var row=document.createElement('div'); row.className='row';
+    row.innerHTML='<div><div class="who">Backup #'+e.sequence+' · '+e.rows+' transactions <span class="chip">'+(e.trigger==='manual'?'manual':'automatic')+'</span></div>'+
+      '<div class="meta">'+stamp(e.created_at)+' · '+bytesLabel(e.bytes)+'</div></div>'+
+      '<div class="btns flush"><a class="mini ghost link-plain" href="'+api+'/backups/'+e.sequence+'" download>Download</a>'+
+      '<button class="mini ghost" type="button" data-restore="'+e.sequence+'">Restore</button></div>';
+    list.appendChild(row);
+  }
+}
+function renderSettings(){
+  var pbox=$('s-people'); pbox.innerHTML='';
+  for(var i=0;i<people.length;i++){var p=people[i];
+    var el=document.createElement('div'); el.className='row';
+    el.innerHTML='<div class="p-block"><div class="who">'+(p.emoji?esc(p.emoji)+' ':'')+esc(p.display_name)+'</div><div class="meta">'+(p.is_archived?'archived':'active')+'</div>'+
+      '<div class="emoji-edit"><input class="emoji-input" type="text" maxlength="16" value="'+esc(p.emoji||'')+'" placeholder="🦊" aria-label="Emoji for '+esc(p.display_name)+'" data-emoji-input="'+p.id+'"><button class="mini ghost" type="button" data-emoji-save="'+p.id+'">Save emoji</button></div></div>'+
+      '<div class="btns flush"><button class="mini ghost" type="button" data-ren="'+p.id+'">Rename</button>'+
+      '<button class="mini '+(p.is_archived?'':'danger')+'" type="button" data-arch="'+p.id+':'+(p.is_archived?'restore':'archive')+'">'+(p.is_archived?'Restore':'Archive')+'</button></div>';
+    pbox.appendChild(el);
+  }
+  var cbox=$('s-currencies'); cbox.innerHTML='';
+  for(var j=0;j<currencies.length;j++){var c=currencies[j];
+    var cel=document.createElement('div'); cel.className='row';
+    cel.innerHTML='<div class="row-main"><div class="who">'+esc(c.code)+(c.is_default?' <span class="chip">default</span>':'')+'</div><div class="meta">'+(c.is_archived?'archived':'active')+'</div></div>'+
+      '<div class="btns flush">'+(c.is_default?'':'<button class="mini ghost" type="button" data-def="'+c.id+'">Set default</button>')+
+      '<button class="mini '+(c.is_archived?'':'danger')+'" type="button" data-carch="'+c.id+':'+(c.is_archived?'restore':'archive')+'">'+(c.is_archived?'Restore':'Archive')+'</button></div>';
+    cbox.appendChild(cel);
+  }
+  $('s-name').value=(me&&me.name)||'';
+  if($('s-auto-offset')){ $('s-auto-offset').checked=!((settings&&settings.auto_offset)===0) }
+  renderBackups();
+  renderTelegram();
+}
+/* ---------------- telegram notifications ----------------
+   The connected-chat list is the whole state of the feature: the connect button mints a single-use
+   link, and the chat list is read straight off the workspace state. Nothing here writes a ledger row.
+   Keep this region free of backticks and of the template-literal interpolation marker. */
+var telegramLink=null;
+function telegramLinkHtml(p){
+  var command=(p&&p.command)||'', url=(p&&p.url)||'', group=(p&&p.group_command)||'';
+  return '<div class="row"><div><div class="who">Send <b>'+esc(command)+'</b> to the bot</div>'+
+    '<div class="meta">Single use, expires in ten minutes.</div>'+
+    (group?('<div class="meta">In a group: add the bot to the group first, then send <b>'+esc(group)+'</b> there — Telegram only passes on a group command that names the bot, and only a group administrator can connect it.</div>'):'')+
+    '</div>'+
+    '<div class="btns flush">'+(url?('<a class="mini ghost link-plain" href="'+esc(url)+'" target="_blank" rel="noopener">Open Telegram</a>'):'')+
+    '<button class="mini ghost" type="button" data-tg-copy="1">Copy command</button></div></div>';
+}
+function renderTelegram(){
+  var box=$('s-tg-status'); if(!box){return}
+  var on=!!(telegram&&telegram.configured), list=(telegram&&telegram.connections)||[];
+  box.innerHTML='';
+  if(!on){ box.innerHTML='<span class="err">Telegram notifications are not configured on this deployment.</span>' }
+  else if(!list.length){ box.innerHTML='<span class="meta">No chat is connected yet.</span>' }
+  var pair=$('s-tg-pair'); if(pair){ pair.disabled=!on }
+  var out=$('s-tg-out'); if(out){ out.innerHTML=telegramLink?telegramLinkHtml(telegramLink):'' }
+  var rows=$('s-tg-list'); if(!rows){return}
+  rows.innerHTML='';
+  for(var i=0;i<list.length;i++){var c=list[i];
+    var el=document.createElement('div'); el.className='row';
+    el.innerHTML='<div><div class="who">'+esc(c.chat_title||'Telegram chat')+' <span class="chip">'+esc(c.chat_type||'chat')+'</span></div>'+
+      '<div class="meta">'+(c.enabled?'Notifications on':'Notifications off')+
+      (c.last_error?(' &middot; <span class="err">'+esc(c.last_error)+'</span>'):'')+
+      ' &middot; connected '+stamp(c.created_at)+'</div></div>'+
+      '<div class="btns flush"><button class="mini ghost" type="button" data-tg-toggle="'+c.id+':'+(c.enabled?'off':'on')+'">'+(c.enabled?'Disable':'Enable')+'</button>'+
+      '<button class="mini danger" type="button" data-tg-remove="'+c.id+'">Disconnect</button></div>';
+    rows.appendChild(el);
+  }
+}
+async function telegramPair(){
+  var btn=$('s-tg-pair'); if(btn){ busy(btn,true) }
+  var r=await call('/telegram/pair',{method:'POST'});
+  if(btn){ busy(btn,false) }
+  if(!r.ok){ toast(r.error||'Could not create a connect link',true); return }
+  telegramLink=(r.data&&r.data.pairing)||null;
+  renderTelegram();
+  toast('Connect link ready — it lasts ten minutes');
+}
+async function telegramList(){
+  var r=await call('/telegram'); if(!r.ok||!r.data){return}
+  telegram=r.data; renderTelegram();
+}
+async function telegramAction(id,action){
+  var path='/telegram/connections/'+id;
+  var r=(action==='remove')?await call(path,{method:'DELETE'}):await call(path,{method:'PATCH',body:{enabled:action==='on'}});
+  if(!r.ok){ toast(r.error||'Could not update this chat',true); return }
+  await telegramList();
+  toast(action==='remove'?'Chat disconnected':(action==='on'?'Notifications on':'Notifications off'));
+}
+function telegramClick(ev){
+  var node=ev.target, t=(node&&node.closest)?node.closest('[data-tg-toggle],[data-tg-remove]'):null;
+  if(!t){return}
+  var remove=t.getAttribute('data-tg-remove');
+  if(remove){ if(confirm('Disconnect this chat? It stops receiving notifications for this workspace.')){ telegramAction(Number(remove),'remove') } return }
+  var spec=(t.getAttribute('data-tg-toggle')||'').split(':');
+  telegramAction(Number(spec[0]),spec[1]==='on'?'on':'off');
+}
+function telegramCopy(){
+  var command=(telegramLink&&telegramLink.command)||''; if(!command){return}
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(command).then(function(){toast('Command copied')},function(){toast(command)});
+    return;
+  }
+  toast(command);
+}
+/* ---------------- split an expense ---------------- */
+function splitBoxes(){
+  var el=$('sp-people'); if(!el){return []}
+  var found=[], list=null;
+  try{ list=(el.querySelectorAll?el.querySelectorAll('input[type=checkbox]'):null) }catch(e){ list=null }
+  if(list&&list.length){ for(var i=0;i<list.length;i++){ found.push(list[i]) } return found }
+  var kids=el.children||[];
+  for(var j=0;j<kids.length;j++){ var inp=(kids[j].querySelector?kids[j].querySelector('input'):null); if(inp){ found.push(inp) } }
+  return found;
+}
+function splitPicked(){
+  var out=[], bs=splitBoxes();
+  for(var i=0;i<bs.length;i++){ if(bs[i].checked){ out.push(Number(bs[i].value)) } }
+  return out;
+}
+/* Mirrors the server's allocation exactly: floor the share, then hand the leftover
+   minor units to the lowest ids one each. Anything else would let the preview lie. */
+function allocate(total,ids){
+  var sorted=ids.slice().sort(function(a,b){return a-b});
+  var base=Math.floor(total/sorted.length), rem=total%sorted.length, out=[];
+  for(var i=0;i<sorted.length;i++){ out.push({person_id:sorted[i],amount_minor:base+(i<rem?1:0)}) }
+  return out;
+}
+function splitDraft(){
+  return {
+    occurred_on:($('sp-date')||{}).value,
+    payer_person_id:Number(($('sp-payer')||{}).value),
+    participant_person_ids:splitPicked(),
+    amount_minor:toMinor($('sp-amount')?$('sp-amount').value:''),
+    topic:($('sp-topic')||{}).value.trim(),
+    category:($('sp-category')||{}).value.trim(),
+    currency_code:($('sp-currency')||{}).value,
+    notes:null
+  };
+}
+function splitProblem(d){
+  if(!d.topic){return 'Say what the expense was for.'}
+  if(!d.category){return 'Add a category.'}
+  if(!d.occurred_on){return 'Pick a date.'}
+  if(!d.participant_person_ids.length){return 'Tick who is sharing this expense.'}
+  var others=d.participant_person_ids.filter(function(id){return id!==d.payer_person_id});
+  if(!others.length){return 'Tick at least one person besides whoever paid — the payer cannot owe themselves.'}
+  if(!d.amount_minor){return 'Enter a total amount above zero.'}
+  return '';
+}
+function renderSplit(){
+  var count=$('sp-count'), box=$('sp-people');
+  if(box&&box.children){ for(var i=0;i<box.children.length;i++){
+    var row=box.children[i], inp=(row.querySelector?row.querySelector('input'):null);
+    if(inp&&row.classList&&row.classList.toggle){ row.classList.toggle('off',!inp.checked) }
+  } }
+  var d=splitDraft();
+  if(count){ count.textContent=splitPicked().length+' sharing' }
+  var out=$('sp-out'); if(!out){return}
+  if(!d.amount_minor||!d.participant_person_ids.length){ out.innerHTML='<div class="empty">Enter an amount and tick who is sharing to see each share.</div>'; return }
+  var alloc=allocate(d.amount_minor,d.participant_person_ids), owed=0, rows='';
+  for(var j=0;j<alloc.length;j++){
+    var a=alloc[j], payer=a.person_id===d.payer_person_id;
+    if(!payer){ owed+=a.amount_minor }
+    rows+='<div class="split-sum"><div><div class="who">'+esc(name(a.person_id))+'</div><div class="paid">'+(payer?'paid — owes nothing':'owes '+esc(name(d.payer_person_id)))+'</div></div>'+
+      '<div class="share">'+esc(money(a.amount_minor,d.currency_code))+'</div></div>';
+  }
+  out.innerHTML='<div class="totals mt-10"><div class="total"><span>Bill</span><b>'+esc(money(d.amount_minor,d.currency_code))+'</b></div>'+
+    '<div class="total"><span>New debts</span><b>'+esc(money(owed,d.currency_code))+'</b></div></div>'+rows;
+}
+async function previewSplit(){
+  var btn=$('sp-preview'), err=$('sp-err'), out=$('sp-out');
+  err.textContent='';
+  var d=splitDraft(), problem=splitProblem(d);
+  if(problem){ err.textContent=problem; return }
+  busy(btn,true);
+  var r=await call('/splits/preview',{method:'POST',body:d});
+  busy(btn,false);
+  if(!r.ok){ err.textContent=r.error; return }
+  var data=r.data||{}, alloc=data.participant_allocations||[], txs=data.transactions||[];
+  var rows='';
+  for(var i=0;i<alloc.length;i++){ var a=alloc[i];
+    rows+='<div class="split-sum"><div><div class="who">'+esc(name(a.person_id))+'</div><div class="paid">'+(a.person_id===d.payer_person_id?'paid — owes nothing':'owes '+esc(name(d.payer_person_id)))+'</div></div>'+
+      '<div class="share">'+esc(money(a.amount_minor,d.currency_code))+'</div></div>';
+  }
+  out.innerHTML='<div class="hint">Checked against the server: '+txs.length+' debt(s) totalling '+esc(money(data.debt_amount_minor,d.currency_code))+'.</div>'+rows;
+}
+async function commitSplit(){
+  var btn=$('sp-commit'), err=$('sp-err'); err.textContent='';
+  var d=splitDraft(), problem=splitProblem(d);
+  if(problem){ err.textContent=problem; toast(problem,true); return }
+  openReview(splitReview(d), function(){ return postSplit(d,btn,err) }, btn);
+}
+async function postSplit(d,btn,err){
+  busy(btn,true);
+  var r=await call('/splits',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:d});
+  busy(btn,false);
+  if(!r.ok){ err.textContent=r.error; toast(r.error,true); return }
+  var txs=(r.data&&r.data.transactions)||[], owed=(r.data&&r.data.debt_amount_minor)||0;
+  toast(txs.length+(txs.length===1?' debt':' debts')+' added');
+  $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='Other';
+  renderSplit();
+  var out=$('sp-out');
+  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
+    txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
+  loadLedger(); loadRecentSplits();
+}
+function renderRecentSplits(rows){
+  var box=$('recent-splits'); if(!box){return}
+  var groups={}, order=[];
+  for(var i=0;i<rows.length;i++){ var t=rows[i];
+    if(t.entry_kind!=='split'||t.is_deleted){continue}
+    var key=t.import_group_id||('split-row-'+t.id), group=groups[key];
+    if(!group){ group={topic:t.topic,category:t.category,occurred_on:t.occurred_on,currency_code:t.currency_code,payer_id:t.creditor_person_id,debtor_ids:[],amount_minor:0,latest_id:t.id}; groups[key]=group; order.push(group) }
+    group.amount_minor+=Number(t.amount_minor)||0; group.debtor_ids.push(t.debtor_person_id); group.latest_id=Math.max(group.latest_id,t.id);
+  }
+  order.sort(function(a,b){ return String(b.occurred_on).localeCompare(String(a.occurred_on))||b.latest_id-a.latest_id });
+  if(!order.length){box.innerHTML='<div class="empty">No active splits yet.</div>';return}
+  var html='', shown=order.slice(0,5);
+  for(var j=0;j<shown.length;j++){ var g=shown[j], participants=[];
+    for(var k=0;k<g.debtor_ids.length;k++){ participants.push(name(g.debtor_ids[k])) }
+    html+='<div class="recent-split"><div class="row-main"><div class="who">'+esc(g.topic)+' <span class="chip split">split</span></div><div class="meta">'+esc(g.occurred_on)+' · '+esc(name(g.payer_id))+' paid · '+esc(participants.join(', '))+' share'+(participants.length===1?'s':'')+'</div></div><div class="amt pos">'+esc(money(g.amount_minor,g.currency_code))+'</div></div>';
+  }
+  box.innerHTML=html+(order.length>shown.length?'<div class="hint">Showing the latest 5 active splits.</div>':'');
+}
+var recentSplitsRequestId=0;
+async function loadRecentSplits(){
+  var box=$('recent-splits'); if(!box){return}
+  var requestId=++recentSplitsRequestId; box.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(requestId!==recentSplitsRequestId||selectedTab!=='split'){return}
+  if(!r.ok){box.innerHTML='<div class="err">'+esc(r.error)+'</div>';return}
+  renderRecentSplits((r.data&&r.data.transactions)||[]);
+}
+/* A tracker, not an importer: the two columns are the state the user set, and nothing here
+   creates transactions. A card carries its notes and a few attachments (photos live in a
+   private R2 bucket and are fetched through the capability route). */
+function receiptCard(r){
+  var atts=r.attachments||[], i, thumbs='';
+  for(i=0;i<atts.length;i++){
+    var label=esc(atts[i].label||'Receipt photo');
+    thumbs+='<span class="att"><a href="'+api+'/receipts/'+r.id+'/attachments/'+atts[i].id+'" target="_blank" rel="noopener noreferrer" title="'+label+'"><img src="'+api+'/receipts/'+r.id+'/attachments/'+atts[i].id+'" alt="'+label+'" loading="lazy" decoding="async"></a></span>';
+  }
+  var when=r.is_added?('Added '+stamp(r.added_at||r.updated_at)):('Captured '+stamp(r.created_at));
+  var count=r.attachment_count||0;
+  var meta=[when,count?(count+(count===1?' photo':' photos')):''].filter(Boolean).join(' · ');
+  /* the badge is the point of the link: a card that is not in the ledger yet says so */
+  var badge=r.transaction_id?('<span class="chip">&#128279; ledger #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
+  var acts='<button class="mini" type="button" data-rec-action="toggle" data-rec-id="'+r.id+'"><span aria-hidden="true">'+(r.is_added?'↩️':'✅')+'</span> '+(r.is_added?'Not added yet':'Mark added')+'</button>'
+    +'<button class="mini ghost" type="button" data-rec-action="edit" data-rec-id="'+r.id+'"><span aria-hidden="true">✏️</span> Edit</button>'
+    +'<button class="mini ghost" type="button" data-rec-action="delete" data-rec-id="'+r.id+'" aria-label="Delete receipt"><span aria-hidden="true">🗑️</span></button>';
+  return '<div class="rec-card"><div class="rec-main">'
+    +'<div class="rec-title">'+esc(r.title||'Untitled receipt')+'</div>'
+    +(r.note?('<div class="rec-note">'+esc(r.note)+'</div>'):'')
+    +(thumbs?('<div class="rec-atts">'+thumbs+'</div>'):'')
+    +'<div class="rec-meta">'+badge+(meta?(' &middot; '+esc(meta)):'')+'</div>'
+    +'<div class="rec-acts">'+acts+'</div></div></div>';
+}
+function renderReceipts(){
+  var added=[], open=[], i;
+  for(i=0;i<receipts.length;i++){ (receipts[i].is_added?added:open).push(receipts[i]) }
+  var a=$('rec-added'), o=$('rec-open'); if(!a||!o){return}
+  $('rec-added-count').textContent=added.length; $('rec-open-count').textContent=open.length;
+  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in the ledger.</div>';
+  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is in the ledger 🎉</div>';
+}
+async function refreshReceipts(){
+  var state=await call('');
+  if(!state.ok){ toast(state.error,true); return }
+  receipts=state.data.receipts||[]; renderReceipts();
+}
+function renderReceiptPhotos(id){
+  var box=$('rec-photos'); if(!box){return}
+  if(!id){
+    /* A receipt that has not been saved yet keeps its picked photos here, shown as previews, and uploads them
+       the moment the receipt exists. Nothing is written while the sheet is open, so backing out changes nothing. */
+    if(!pendingPhotos.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> below; a new receipt uploads them when you save.</p>'; return }
+    var po='', j;
+    for(j=0;j<pendingPhotos.length;j++){
+      var plabel=esc(pendingPhotos[j].name||'New photo');
+      po+='<button class="att" type="button" data-att-open="'+pendingUrls[j]+'" data-att-kind="pending" data-att-idx="'+j+'" aria-label="See this photo" title="'+plabel+'"><img src="'+pendingUrls[j]+'" alt="'+plabel+'"></button>';
+    }
+    box.innerHTML=po; return;
+  }
+  var r=null, i, atts, out='', k;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  atts=r&&r.attachments?r.attachments:[];
+  if(!atts.length){ box.innerHTML='<p class="hint">No photos yet &mdash; use <b>Add photos</b> below to attach them.</p>'; return }
+  for(k=0;k<atts.length;k++){
+    var label=esc(atts[k].label||'Receipt photo');
+    out+='<button class="att" type="button" data-att-open="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" data-att-kind="saved" data-rec-id="'+id+'" data-att-id="'+atts[k].id+'" aria-label="See this photo" title="'+label+'"><img src="'+api+'/receipts/'+id+'/attachments/'+atts[k].id+'" alt="'+label+'" loading="lazy" decoding="async"></button>';
+  }
+  box.innerHTML=out;
+}
+async function uploadReceiptFiles(id,files){
+  if(!id||!files||!files.length){return}
+  var added=0, skipped=0, i;
+  for(i=0;i<files.length;i++){
+    var file=files[i];
+    if(files.length>1){ toast('Uploading '+(i+1)+' of '+files.length+'…') }
+    var up=await call('/receipts/'+id+'/attachments?label='+encodeURIComponent(String(file.name||'').slice(0,120)),
+      {method:'POST',raw:true,body:file,headers:{'content-type':file.type||'application/octet-stream'}});
+    if(up.ok){ added+=1 } else { skipped+=1; toast(up.error,true) }
+  }
+  await refreshReceipts();
+  renderReceiptPhotos(id);
+  if(added&&!skipped){ toast(added===1?'Photo attached':(added+' photos attached')) }
+  else if(added&&skipped){ toast(added+' attached · '+skipped+' skipped',true) }
+  else if(skipped&&!added){ toast('Nothing was attached',true) }
+}
+async function detachAttachment(id,attachmentId,btn){
+  if(!id||!attachmentId){return}
+  if(btn){ if(btn.disabled){return} btn.disabled=true }
+  try{
+    var gone=await call('/receipts/'+id+'/attachments/'+attachmentId,{method:'DELETE'});
+    if(!gone.ok){ toast(gone.error,true); return }
+    await refreshReceipts(); toast('Attachment removed');
+  } finally { if(btn){ btn.disabled=false } }
+}
+async function receiptAction(action,id,btn){
+  var r=null, i;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  if(action==='edit'){ openReceiptForm(id); return }
+  if(action==='detach'){ await detachAttachment(id,Number(btn&&btn.getAttribute?btn.getAttribute('data-att-id'):0),btn); renderReceiptPhotos(id); return }
+  if(!r){ toast('That receipt is no longer in the list.',true); return }
+  busy(btn,true);
+  try{
+    if(action==='toggle'){
+      var flip=await call('/receipts/'+id,{method:'PATCH',body:{is_added:!r.is_added}});
+      if(!flip.ok){ toast(flip.error,true); return }
+      await refreshReceipts();
+      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written to the ledger':'Moved back to Not added');
+      return;
+    }
+    if(action==='delete'){
+      var gone=await call('/receipts/'+id,{method:'DELETE'});
+      if(!gone.ok){ toast(gone.error,true); return }
+      await refreshReceipts(); toast('Receipt removed from the backlog');
+      return;
+    }
+  } finally { busy(btn,false) }
+}
+var recEditing=null;
+var pendingPhotos=[], pendingUrls=[];
+var recView=null, recViewImg=null, recViewWhat=null;
+function openRecView(src,what){ if(!recView||!recViewImg){return} recViewImg.setAttribute('src',src); recViewWhat=what; recView.hidden=false }
+function closeRecView(){ if(!recView){return} recView.hidden=true; recViewWhat=null; if(recViewImg){ recViewImg.removeAttribute('src') } }
+function clearPending(){ var i; for(i=0;i<pendingUrls.length;i++){ try{ URL.revokeObjectURL(pendingUrls[i]) }catch(e){} } pendingPhotos=[]; pendingUrls=[]; }
+function openReceiptForm(id){
+  var r=null, i;
+  if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
+  if(id&&!r){ toast('That receipt is no longer in the list.',true); return }
+  clearPending();
+  recEditing=r;
+  var titled=$('rec-modal-title');
+  if(titled){ titled.textContent=r?'Edit receipt':'New receipt' }
+  $('rec-title').value=r?(r.title||''):'';
+  $('rec-note').value=r?(r.note||''):'';
+  $('rec-state').checked=!!(r&&r.is_added);
+  renderReceiptPhotos(id);
+  renderReceiptLog(id);
+  $('rec-modal').hidden=false;
+  try{ $('rec-title').focus() }catch(e){}
+}
+function closeReceiptForm(){
+  var box=$('rec-modal'); if(box){ box.hidden=true }
+  recEditing=null;
+  clearPending();
+}
+async function saveReceipt(){
+  var btn=$('rec-save'); if(!btn){return}
+  var id=recEditing?recEditing.id:null;
+  var payload={title:$('rec-title').value, note:$('rec-note').value, is_added:$('rec-state').checked};
+  if(!String(payload.title||'').trim()){ toast('Give the receipt a short title so you can spot it later',true); try{$('rec-title').focus()}catch(e){} return }
+  busy(btn,true);
+  try{
+    var saved=await call(id?('/receipts/'+id):'/receipts',{method:id?'PATCH':'POST',body:payload});
+    if(!saved.ok){ toast(saved.error,true); return }
+    var row=saved.data.receipt||null;
+    var queued=pendingPhotos.slice();
+    await refreshReceipts();
+    closeReceiptForm();
+    toast(row&&row.is_added?'Receipt saved in Added':'Receipt saved in Not added');
+    if(queued.length&&row){ uploadReceiptFiles(row.id,queued) }
+  } finally { busy(btn,false) }
+}
+function wireReceipts(){
+  var add=$('rec-new'), close=$('rec-close'), save=$('rec-save'), pick=$('rec-files'), log=$('rec-log'); recView=$('rec-view'); recViewImg=$('rec-view-img');
+  if(add){ add.addEventListener('click',function(){ openReceiptForm(null) }) }
+  /* The sheet owns the ledger link: a saved card can be logged (or unlinked) from here, and an
+     unsaved one is told to save first, because there is no card id to point a row at yet. */
+  if(log){ log.addEventListener('click',function(){
+    if(!recEditing){ toast('Save the card first — then it can be logged in the ledger',true); return }
+    if(recEditing.transaction_id){ unlinkReceipt(recEditing.id,log); return }
+    startReceiptLog(recEditing.id);
+  }) }
+  if(close){ close.addEventListener('click',closeReceiptForm) }
+  if(save){ save.addEventListener('click',saveReceipt) }
+  /* The label opens the picker itself — a scripted click on a hidden input is refused by mobile browsers — so a
+     change event only has to resolve the receipt the sheet already has open. The value is cleared after the files
+     are snapshotted, otherwise choosing the same photo twice in a row fires no change event at all. */
+  if(pick){ pick.addEventListener('change',function(){
+    var files=[].slice.call(pick.files||[]); pick.value='';
+    if(!files.length){ return }
+    if(recEditing){ uploadReceiptFiles(recEditing.id,files); return }
+    var room=6-pendingPhotos.length, i;
+    for(i=0;i<files.length;i++){
+      if(i>=room){ toast('Up to six photos per receipt',true); break }
+      pendingPhotos.push(files[i]);
+      try{ pendingUrls.push(URL.createObjectURL(files[i])) }catch(e){ pendingUrls.push('') }
+    }
+    renderReceiptPhotos(null);
+    toast(pendingPhotos.length+(pendingPhotos.length===1?' photo ready — it uploads when you save':' photos ready — they upload when you save'));
+  }) }
+  /* A tile is just an image; tapping it opens this viewer, and the viewer is where a photo comes off. */
+  var rvClose=$('rec-view-close'); if(rvClose){ rvClose.addEventListener('click',closeRecView) }
+  if(recView){ recView.addEventListener('click',function(ev){ if(ev.target===recView){ closeRecView() } }) }
+  document.addEventListener('keydown',function(ev){
+    if(ev.key==='Escape'&&recView&&!recView.hidden){ ev.stopPropagation(); ev.preventDefault(); closeRecView() }
+  },true);
+  var rvRemove=$('rec-view-remove');
+  if(rvRemove){ rvRemove.addEventListener('click',async function(){
+    var what=recViewWhat; if(!what){ closeRecView(); return }
+    if(what.kind==='pending'){
+      if(pendingUrls[what.idx]){ try{ URL.revokeObjectURL(pendingUrls[what.idx]) }catch(e){} }
+      pendingPhotos.splice(what.idx,1); pendingUrls.splice(what.idx,1);
+      closeRecView(); renderReceiptPhotos(null); toast('Photo taken off'); return;
+    }
+    busy(rvRemove,true);
+    try{ await detachAttachment(what.receiptId,what.attId,null); closeRecView(); renderReceiptPhotos(what.receiptId) }
+    finally { busy(rvRemove,false) }
+  }) }
+  var modal=$('rec-modal');
+  if(modal){ modal.addEventListener('click',function(ev){ if(ev.target===modal){ closeReceiptForm() } }) }
+  renderReceipts();
+}
+wireReceipts();
+/* ---------------- who pays whom ---------------- */
+/* Greedy settlement: hand the biggest debt to the biggest credit until every balance is zero. That
+   takes at most one payment per person, and applying the whole plan clears everyone - the suite
+   lifts this function and asserts exactly that, because a plausible-looking plan that leaves a
+   remainder is worse than no plan at all. */
+function settlePlan(nets){
+  var debt=[], cred=[], out=[], i;
+  for(i=0;i<nets.length;i++){
+    if(nets[i].net_minor<0){ debt.push({id:nets[i].id,amt:-nets[i].net_minor}) }
+    else if(nets[i].net_minor>0){ cred.push({id:nets[i].id,amt:nets[i].net_minor}) }
+  }
+  debt.sort(function(a,b){ return b.amt-a.amt||a.id-b.id });
+  cred.sort(function(a,b){ return b.amt-a.amt||a.id-b.id });
+  var d=0, c=0;
+  while(d<debt.length&&c<cred.length){
+    var pay=Math.min(debt[d].amt,cred[c].amt);
+    if(pay>0){ out.push({from_person_id:debt[d].id,to_person_id:cred[c].id,amount_minor:pay}) }
+    debt[d].amt=debt[d].amt-pay; cred[c].amt=cred[c].amt-pay;
+    if(debt[d].amt<=0){ d=d+1 }
+    if(cred[c].amt<=0){ c=c+1 }
+  }
+  return out;
+}
+/* A row is signed from the creditor's side through signedMinor(), the same helper the ledger tile and
+   the person cards use, so all three views of one row agree by construction. Archived rows never
+   move a balance, which is why the skip sits here rather than in each caller. */
+function netsByCurrency(rows){
+  var out={}, i, t, by, sd;
+  for(i=0;i<rows.length;i++){ t=rows[i]; if(t.is_deleted){continue}
+    sd=signedMinor(t);
+    by=out[t.currency_code]||(out[t.currency_code]={});
+    by[t.creditor_person_id]=(by[t.creditor_person_id]||0)+sd;
+    by[t.debtor_person_id]=(by[t.debtor_person_id]||0)-sd;
+  }
+  return out;
+}
+function settlePlanFor(rows,code){
+  var by=netsByCurrency(rows)[code]||{}, nets=[], k;
+  for(k in by){ if(by.hasOwnProperty(k)&&by[k]!==0){ nets.push({id:Number(k),net_minor:by[k]}) } }
+  return settlePlan(nets);
+}
+function renderSettle(rows){
+  var box=$('settle-list'); if(!box){return}
+  var by=netsByCurrency(rows), codes=Object.keys(by).sort(), html='', c, i, k;
+  for(c=0;c<codes.length;c++){
+    var code=codes[c], plan=settlePlanFor(rows,code), owed=0;
+    for(k=0;k<plan.length;k++){ owed+=plan[k].amount_minor }
+    if(!plan.length){ continue }
+    html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed · clears in '+plan.length+(plan.length===1?' payment':' payments')+'</span></div>';
+    for(i=0;i<plan.length;i++){
+      var p=plan[i];
+      html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div><div class="meta">repayment · '+esc(code)+'</div></div>'+
+        '<div class="row-side"><div class="amt">'+esc(money(p.amount_minor,code))+'</div>'+
+        '<button class="mini" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div></div>';
+    }
+  }
+  box.innerHTML=html||'<div class="empty">Everyone is square — nothing to settle.</div>';
+}
+/* Recording a plan line goes through the ordinary entry form and its review sheet, so the plan
+   never writes anything itself: the payer confirms it like any other repayment. */
+function startSettlePayment(from,to,code,minor){
+  showTab('ledger');
+  if($('t-kind')){ $('t-kind').value='payment' }
+  syncKindLabels();
+  if($('t-creditor')){ $('t-creditor').value=String(to) }
+  if($('t-debtor')){ $('t-debtor').value=String(from) }
+  if($('t-currency')){ $('t-currency').value=code }
+  if($('t-amount')){ $('t-amount').value=(minor/100).toFixed(2) }
+  if($('t-topic')){ $('t-topic').value='Settle up' }
+  if($('t-category')){ $('t-category').value='Other' }
+  toast('Check it, then Add transaction — the review sheet confirms it');
+  addTx();
+}
+/* ---------------- spend by day ---------------- */
+/* Spending is money fronted for the group. A repayment gives money back, and a netting offset is a
+   contra pair that already cancels the rows it offsets, so neither one is spending. */
+function spendByDay(rows){
+  var out={}, i, t, by;
+  for(i=0;i<rows.length;i++){ t=rows[i];
+    if(t.is_deleted||t.entry_kind==='payment'||t.entry_kind==='offset'){ continue }
+    if(!(t.amount_minor>0)){ continue }
+    by=out[t.currency_code]||(out[t.currency_code]={});
+    by[t.occurred_on]=(by[t.occurred_on]||0)+t.amount_minor;
+  }
+  return out;
+}
+var MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function shortDay(value){
+  var parts=String(value==null?'':value).split('-');
+  if(parts.length<3){ return String(value==null?'':value) }
+  return (MONTHS[Number(parts[1])-1]||parts[1])+' '+Number(parts[2]);
+}
+function renderSpend(rows){
+  var box=$('spend-chart'); if(!box){return}
+  var by=spendByDay(rows), codes=Object.keys(by).sort(), html='', c, i;
+  for(c=0;c<codes.length;c++){
+    var code=codes[c], days=Object.keys(by[code]).sort(), max=0, total=0, peak='';
+    for(i=0;i<days.length;i++){ var v=by[code][days[i]]; total+=v; if(v>max){ max=v; peak=days[i] } }
+    var bars='';
+    for(i=0;i<days.length;i++){
+      var amount=by[code][days[i]], pct=max?Math.round(amount*100/max):0;
+      bars+='<div class="col" title="'+esc(shortDay(days[i])+' · '+money(amount,code))+'">'+
+        '<div class="track"><div class="fill" style="height:'+(pct<4?4:pct)+'%"></div></div>'+
+        (days.length<=16?('<span class="day">'+esc(shortDay(days[i]))+'</span>'):'')+'</div>';
+    }
+    html+='<div class="chart"><div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(total,code))+' over '+days.length+(days.length===1?' day':' days')+'</span></div>'+
+      '<div class="bars">'+bars+'</div>'+
+      '<p class="hint">Biggest day: '+esc(shortDay(peak))+' · '+esc(money(max,code))+'</p></div>';
+  }
+  box.innerHTML=html||'<div class="empty">Nothing has been spent yet.</div>';
+}
+/* ---------------- since your last visit ----------------
+   One shared link means the trail records what changed and never who changed it, so every line
+   here is deliberately agentless: "3 entries were added", never "WW added 3 entries". */
+var digestSeen='', digestNewest='';
+function seenStorageKey(){ return 'tfw_seen_'+((me&&me.id)||0) }
+function readSeen(){ try{ return localStorage.getItem(seenStorageKey())||'' }catch(e){ return '' } }
+function writeSeen(value){ try{ localStorage.setItem(seenStorageKey(),value) }catch(e){} }
+function agoWords(iso){
+  var then=Date.parse(iso); if(!then){ return 'earlier' }
+  var mins=Math.floor((Date.now()-then)/60000);
+  if(mins<2){ return 'just now' }
+  if(mins<60){ return mins+' minutes ago' }
+  var hours=Math.floor(mins/60);
+  if(hours<24){ return hours===1?'an hour ago':hours+' hours ago' }
+  var days=Math.floor(hours/24);
+  return days===1?'yesterday':days+' days ago';
+}
+var DIGEST_NOUNS={transaction:['entry','entries'],person:['person','people'],currency:['currency','currencies'],receipt:['receipt card','receipt cards'],receipt_attachment:['photo','photos']};
+var DIGEST_VERBS={create:'added',update:'edited',archive:'removed',delete:'removed',restore:'restored'};
+function digestPhrases(rows){
+  var counts={}, i, key;
+  for(i=0;i<rows.length;i++){ key=rows[i].entity_type+'|'+rows[i].action; counts[key]=(counts[key]||0)+1 }
+  var out=[];
+  for(key in counts){ if(!counts.hasOwnProperty(key)){ continue }
+    var parts=key.split('|'), entity=parts[0], action=parts[1], n=counts[key];
+    if(entity==='workspace_settings'){ out.push(n===1?'the settings were changed':'the settings were changed '+n+' times'); continue }
+    if(entity==='workspace'){ out.push(n===1?'the trip details were changed':'the trip details were changed '+n+' times'); continue }
+    if(entity==='workspace_backup'){ out.push(n===1?'a backup was taken':(n+' backups were taken')); continue }
+    var noun=DIGEST_NOUNS[entity]; if(!noun){ continue }
+    var verb=DIGEST_VERBS[action]||'changed';
+    out.push(n===1?('1 '+noun[0]+' was '+verb):(n+' '+noun[1]+' were '+verb));
+  }
+  return out;
+}
+async function loadDigest(){
+  var box=$('digest'); if(!box||!me){ return }
+  var seen=readSeen();
+  /* first look on this device: start the clock instead of opening with a wall of old history */
+  if(!seen){ writeSeen(new Date().toISOString()); box.hidden=true; return }
+  var r=await call('/audit?since='+encodeURIComponent(seen)+'&limit=500');
+  if(!r.ok){ box.hidden=true; return }
+  var rows=(r.data&&r.data.audit)||[];
+  if(!rows.length){ box.hidden=true; return }
+  digestSeen=seen; digestNewest=rows[0].occurred_at||new Date().toISOString();
+  var phrases=digestPhrases(rows), items='', i;
+  for(i=0;i<phrases.length;i++){ items+='<li>'+esc(phrases[i])+'</li>' }
+  box.innerHTML='<div class="dg-head"><h2><span aria-hidden="true">🕐</span> Since your last visit</h2><span class="chip">'+esc(agoWords(seen))+'</span></div>'+
+    '<ul class="dg-list">'+items+'</ul>'+
+    '<div class="btns"><button id="dg-open" class="mini ghost" type="button" data-dg="open">Open the audit log</button><button id="dg-dismiss" class="mini ghost" type="button" data-dg="dismiss">Dismiss</button></div>';
+  box.hidden=false;
+}
+/* ---------------- logging a receipt card in the ledger ---------------- */
+var logReceiptId=null;
+function renderReceiptLog(id){
+  var state=$('rec-log-state'), btn=$('rec-log'); if(!state||!btn){ return }
+  var r=null, i;
+  if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
+  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged in the ledger.'; return }
+  btn.hidden=false;
+  if(r.transaction_id){ state.textContent='Logged as ledger row #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the ledger' }
+  else { state.textContent='Not in the ledger yet. Logging it opens the ledger form with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in the ledger' }
+}
+function startReceiptLog(id){
+  var r=null, i;
+  for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } }
+  if(!r){ toast('That receipt is no longer in the list.',true); return }
+  logReceiptId=r.id;
+  closeReceiptForm();
+  showTab('ledger');
+  if($('t-topic')){ $('t-topic').value=r.title||'' }
+  if($('t-notes')){ $('t-notes').value=r.note||'' }
+  toast('Enter the amount — the card links to this entry when it saves');
+}
+async function linkReceiptTransaction(id,transactionId){
+  var r=await call('/receipts/'+id+'/link',{method:'POST',body:{transaction_id:transactionId}});
+  if(!r.ok){ toast('Saved, but the receipt was not linked: '+r.error,true); return }
+  await refreshReceipts(); toast('Receipt linked to the ledger row');
+}
+async function unlinkReceipt(id,btn){
+  busy(btn,true);
+  try{
+    var r=await call('/receipts/'+id+'/link',{method:'DELETE'});
+    if(!r.ok){ toast(r.error,true); return }
+    await refreshReceipts(); renderReceiptLog(id); toast('Unlinked — the card can be logged again');
+  } finally { busy(btn,false) }
+}
+/* ---------------- wiring ---------------- */
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
+function openPersonFromElement(el){
+  var pcard=el&&el.closest?el.closest('[data-person]'):null;
+  if(!pcard){return false}
+  openPerson(Number(pcard.getAttribute('data-person')));
+  return true;
+}
+document.addEventListener('click',async function(ev){
+  /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
+     the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore],[data-ranking-currency]')||src):src;
+  if(!t||!t.getAttribute){return}
+  var rankingCurrencyButton=t.getAttribute('data-ranking-currency'); if(rankingCurrencyButton){ selectRankingCurrency(rankingCurrencyButton); return }
+  var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
+  var aOpen=t.getAttribute('data-att-open');
+  if(aOpen){
+    if(t.getAttribute('data-att-kind')==='pending'){ openRecView(aOpen,{kind:'pending',idx:Number(t.getAttribute('data-att-idx'))}) }
+    else { openRecView(aOpen,{kind:'saved',receiptId:Number(t.getAttribute('data-rec-id')),attId:Number(t.getAttribute('data-att-id'))}) }
+    return
+  }
+  var del=t.getAttribute('data-del'); if(del){ delTx(Number(del),t); return }
+  var ure=t.getAttribute('data-txrestore'); if(ure){
+    var uid=Number(ure); if(t.disabled){return} t.disabled=true;
+    var ur=await call('/transactions/'+uid+'/restore',{method:'POST'});
+    t.disabled=false;
+    if(!ur.ok){ toast(ur.error||'Could not restore this entry',true); return }
+    toast('Entry restored');
+    await loadLedger();
+    loadBalances();
+    if(pmOpenId){ openPerson(pmOpenId) }
+    var al=$('audit-list'); if(al&&al.offsetParent){ loadAudit() }
+    return;
+  }
+  var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
+  var settle=t.getAttribute('data-settle'); if(settle){ var sp=settle.split(':'); startSettlePayment(Number(sp[0]),Number(sp[1]),sp[2],Number(sp[3])); return }
+  var dg=t.getAttribute('data-dg'); if(dg){
+    if(dg==='open'){ $('digest').hidden=true; showTab('audit'); return }
+    writeSeen(digestNewest||new Date().toISOString()); $('digest').hidden=true; return;
+  }
+  var emo=t.getAttribute('data-emoji-save'); if(emo){
+    var eid=Number(emo); var ebox=document.querySelector('[data-emoji-input="'+eid+'"]');
+    var er=await call('/people/'+eid,{method:'PATCH',body:{emoji:ebox?ebox.value.trim():''}});
+    if(!er.ok){toast(er.error,true)}else{await loadState(); renderSettings(); renderParty(); renderSplit(); toast(ebox&&ebox.value.trim()?'Emoji saved':'Emoji cleared')}
+    return;
+  }
+  var ren=t.getAttribute('data-ren'); if(ren){
+    var id=Number(ren); var current=bareName(id); var next=prompt('Rename person',current);
+    if(next&&next.trim()&&next.trim()!==current){ var r=await call('/people/'+id,{method:'PATCH',body:{display_name:next.trim()}}); if(!r.ok){toast(r.error,true)}else{await loadState(); renderSettings(); renderParty(); renderSplit(); toast('Renamed')} }
+    return;
+  }
+  var arch=t.getAttribute('data-arch'); if(arch){ var ap=arch.split(':'); var ar=await call('/people/'+ap[0]+'/'+ap[1],{method:'POST'}); if(!ar.ok){toast(ar.error,true)}else{await loadState();renderSettings();renderParty();renderSplit();toast('Updated')} return }
+  var def=t.getAttribute('data-def'); if(def){ var dr=await call('/currencies/'+def,{method:'PATCH',body:{is_default:true}}); if(!dr.ok){toast(dr.error,true)}else{await loadState();renderSettings();toast('Default currency updated')} return }
+  if(ev.target.id==='review-modal'){ closeReview(); return }
+  if(ev.target.id==='person-modal'){ closePerson(); return }
+  var pclose=ev.target.closest?ev.target.closest('#pm-close'):null; if(pclose){ closePerson(); return }
+  if(openPersonFromElement(ev.target)){return}
+  var pairHead=ev.target.closest?ev.target.closest('[data-pair]'):null; if(pairHead){ togglePair(pairHead.getAttribute('data-pair')); return }
+  var carch=t.getAttribute('data-carch'); if(carch){ var cp=carch.split(':'); var cr=await call('/currencies/'+cp[0]+'/'+cp[1],{method:'POST'}); if(!cr.ok){toast(cr.error,true)}else{await loadState();renderSettings();toast('Updated')} return }
+});
+function init(){
+  window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
+  window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
+  TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
+  if($('t-add')){ $('t-add').onclick=addTx }
+  if($('t-kind')){ $('t-kind').onchange=syncKindLabels }
+  syncKindLabels();
+  if($('tx-prev')){ $('tx-prev').onclick=function(){ txGo(-1) } }
+  if($('tx-next')){ $('tx-next').onclick=function(){ txGo(1) } }
+  if($('au-apply')){ $('au-apply').onclick=function(){ loadAudit() } }
+  if($('au-clear')){ $('au-clear').onclick=function(){ if($('au-entity')){$('au-entity').value=''} if($('au-action')){$('au-action').value=''} if($('au-q')){$('au-q').value=''} loadAudit() } }
+  if($('au-entity')){ $('au-entity').onchange=function(){ loadAudit() } }
+  if($('au-action')){ $('au-action').onchange=function(){ loadAudit() } }
+  if($('au-q')){ $('au-q').onkeydown=function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); loadAudit() } } }
+  if($('s-save-auto-offset')){ $('s-save-auto-offset').onclick=async function(){ var on=$('s-auto-offset')?!!$('s-auto-offset').checked:true; var r=await call('',{method:'PATCH',body:{settings:{auto_offset:on}}}); if(!r.ok){ toast(r.error||'Could not save netting',true); return } toast('Automatic netting '+(on?'on':'off')); location.reload() } }
+  if($('s-save-tz')){ $('s-save-tz').onclick=async function(){ var e=$('s-tz-err'); if(e){e.textContent=''}; var v=$('s-tz')?$('s-tz').value:''; if(!v){ if(e){e.textContent='Pick a zone.'} return } var r=await call('',{method:'PATCH',body:{settings:{timezone:v}}}); if(!r.ok){ var m=r.error||'Could not save the time zone.'; if(e){e.textContent=m} toast(m,true); return } toast('Time zone saved'); location.reload() } }
+  if($('sp-people')){ $('sp-people').addEventListener('change',function(){ renderSplit() }) }
+  if($('sp-all')){ $('sp-all').onclick=function(){ var bs=splitBoxes(); for(var i=0;i<bs.length;i++){bs[i].checked=true} renderSplit() } }
+  if($('sp-none')){ $('sp-none').onclick=function(){ var bs=splitBoxes(); for(var i=0;i<bs.length;i++){bs[i].checked=false} renderSplit() } }
+  if($('sp-payer')){ $('sp-payer').onchange=function(){ var pid=Number(this.value), bs=splitBoxes(); for(var i=0;i<bs.length;i++){ if(Number(bs[i].value)===pid){bs[i].checked=true} } renderSplit() } }
+  if($('sp-amount')){ $('sp-amount').oninput=renderSplit }
+  if($('sp-topic')){ $('sp-topic').oninput=renderSplit }
+  if($('sp-currency')){ $('sp-currency').onchange=renderSplit }
+  if($('sp-preview')){ $('sp-preview').onclick=previewSplit }
+  if($('sp-commit')){ $('sp-commit').onclick=commitSplit }
+  if($('rv-back')){ $('rv-back').onclick=function(){ closeReview() } }
+  if($('rv-close')){ $('rv-close').onclick=function(){ closeReview() } }
+  if($('rv-confirm')){ $('rv-confirm').onclick=confirmReview }
+  if($('t-swap')){ $('t-swap').onclick=function(){ var a=$('t-creditor'),b=$('t-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
+  if($('ai-copy')){ $('ai-copy').onclick=async function(){ var txt=$('ai-prompt').textContent; try{ await navigator.clipboard.writeText(txt); toast('Instructions copied') }catch(e){ try{ var range=document.createRange(); range.selectNodeContents($('ai-prompt')); var sel=window.getSelection(); sel.removeAllRanges(); sel.addRange(range); toast('Press Ctrl/Cmd+C to copy') }catch(e2){ toast('Copy failed - select the instructions and copy them',true) } } } }
+  if($('csv-preview')){ $('csv-preview').onclick=previewImport }
+  if($('csv-commit')){ $('csv-commit').onclick=commitImport; $('csv-commit').disabled=true }
+  if($('csv-template')){ $('csv-template').onclick=function(){ var head='occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes\n'; var sample=today()+',debt,Dinner,Food,'+(people[0]?people[0].display_name:'Ada')+','+(people[1]?people[1].display_name:'Lin')+',12.50,'+((currencies[0]&&currencies[0].code)||'USD')+',\n'; var url='data:text/csv;charset=utf-8,'+encodeURIComponent(head+sample); var a=document.createElement('a'); a.href=url; a.download='transactions-template.csv'; a.click() } }
+  if($('s-save-backup-every')){ $('s-save-backup-every').onclick=async function(){ var every=Number($('s-backup-every').value); if(!isFinite(every)||Math.round(every)!==every||every<5||every>10000){ toast('Back up every 5 to 10000 transactions',true); return } var r=await call('',{method:'PATCH',body:{settings:{backup_every:every}}}); if(!r.ok){ toast(r.error||'Could not save the backup interval',true); return } await loadState(); renderSettings(); toast('Backups will run every '+every+' transactions') } }
+  if($('s-backup-now')){ $('s-backup-now').onclick=async function(){ var btn=$('s-backup-now'); btn.disabled=true; var r=await call('/backups',{method:'POST'}); btn.disabled=false; if(!r.ok){ toast(r.error||'Could not write a backup',true); return } await loadState(); renderSettings(); toast('Backup #'+r.data.backup.sequence+' written ('+r.data.backup.rows+' transactions)') } }
+  if($('s-backup-list')){ $('s-backup-list').onclick=async function(ev){ var t=ev.target; var seq=t&&t.getAttribute?t.getAttribute('data-restore'):null; if(!seq){return} if(!confirm('Restore backup #'+seq+' into a new workspace? This workspace is left untouched.')){return} t.disabled=true; var r=await call('/backups/'+seq+'/restore',{method:'POST'}); t.disabled=false; var out=$('s-restore-out'); if(!r.ok){ toast(r.error||'Could not restore this backup',true); return } var link=location.origin+r.data.workspace_url; out.innerHTML='Restored into a new workspace: <b>'+r.data.restored.transactions+'</b> transactions, '+r.data.restored.people+' people'+(r.data.restored.skipped_transactions?(' · '+r.data.restored.skipped_transactions+' rows skipped'):'')+'.<br>Open or share: <a href="'+r.data.workspace_url+'">'+esc(link)+'</a>'; toast('Restored into a new workspace') } }
+  if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var emoji=''; var parts=v.split(/\s+/); if(parts.length>1){ var last=parts[parts.length-1]; if(last.length<=16&&!/[\p{L}\p{N}]/u.test(last)){ emoji=last; v=parts.slice(0,-1).join(' ') } } var r=await call('/people',{method:'POST',body:{display_name:v,emoji:emoji}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast(emoji?('Person added with '+emoji):'Person added') } }
+  if($('s-tg-pair')){ $('s-tg-pair').onclick=function(){ telegramPair() } }
+  if($('s-tg-list')){ $('s-tg-list').addEventListener('click',telegramClick) }
+  if($('s-tg-out')){ $('s-tg-out').addEventListener('click',function(ev){ var t=ev.target&&ev.target.closest?ev.target.closest('[data-tg-copy]'):null; if(t){ telegramCopy() } }) }
+  if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
+  if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
+  window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
+  var start=(location.hash||'#ledger').slice(1); if(TABS.indexOf(start)<0){start='ledger'}
+  showTab(start);
+  loadState().then(function(ok){ if(ok){ renderParty(); renderSplit(); loadDigest() } });
+  /* Installed to a home screen the app opens without browser chrome. The worker caches nothing,
+     so a reload always gets the current build. */
+  if(navigator.serviceWorker){ try{ var swp=navigator.serviceWorker.register('sw.js'); if(swp&&swp.catch){ swp.catch(function(){}) } }catch(e){} }
+}
+function renderParty(){
+  var cs=$('t-creditor'), ds=$('t-debtor'), cur=$('t-currency');
+  if(!cs||!ds||!cur){return}
+  var keepC=cs.value, keepD=ds.value;
+  var ps=$('sp-payer'), keepP=ps?ps.value:'';
+  cs.innerHTML=''; ds.innerHTML='';
+  for(var i=0;i<people.length;i++){ if(people[i].is_archived){continue}
+    var shown=(people[i].emoji?people[i].emoji+' ':'')+people[i].display_name;
+    var o1=document.createElement('option'); o1.value=people[i].id; o1.textContent=shown; cs.appendChild(o1);
+    var o2=document.createElement('option'); o2.value=people[i].id; o2.textContent=shown; ds.appendChild(o2);
+  }
+  if(keepC){cs.value=keepC} if(keepD){ds.value=keepD}
+  if(cs.options.length>1&&cs.value===ds.value){ ds.value=cs.options[1].value }
+  if(ps){
+    ps.innerHTML='';
+    for(var k=0;k<people.length;k++){ if(people[k].is_archived){continue}
+      var op=document.createElement('option'); op.value=people[k].id;
+      op.textContent=(people[k].emoji?people[k].emoji+' ':'')+people[k].display_name; ps.appendChild(op);
+    }
+    if(keepP){ ps.value=keepP }
+    if(!ps.value&&ps.options.length){ ps.value=ps.options[0].value }
+  }
+  cur.innerHTML='';
+  for(var j=0;j<currencies.length;j++){ if(currencies[j].is_archived){continue}
+    var o=document.createElement('option'); o.value=currencies[j].code; o.textContent=currencies[j].code; if(currencies[j].is_default){o.selected=true} cur.appendChild(o);
+  }
+}
+if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded',init) } else { init() }
+

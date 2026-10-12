@@ -78,6 +78,11 @@ if [ "$DRY_RUN" = "1" ]; then
   say "     -H 'content-type: application/json' \\"
   say "     -d '{\"url\":\"${ORIGIN}${WEBHOOK_PATH}\",\"secret_token\":\"<WEBHOOK_SECRET>\",\"allowed_updates\":[\"message\"],\"drop_pending_updates\":true}'"
   say "6. curl -sS 'https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo'   # expect no last_error_message"
+  say "7. curl -sS -X POST 'https://api.telegram.org/bot<BOT_TOKEN>/setMyCommands' \\\\"
+  say "     -H 'content-type: application/json' \\\\"
+  say "     -d '{\\\"commands\\\":[{\\\"command\\\":\\\"start\\\",\\\"description\\\":\\\"Open the trip menu, or connect a trip\\\"},{\\\"command\\\":\\\"disconnect\\\",\\\"description\\\":\\\"Stop trip notifications in this chat\\\"}]}'"
+  say "   the Worker publishes the same list itself on the first update after a deploy, so this step is"
+  say "   only needed when the bot is set up without ever receiving an update"
   exit 0
 fi
 
@@ -141,6 +146,30 @@ import json, sys
 sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)
 PY
 say "✓ webhook registered"
+
+say ""
+say "Registering the bot command menu"
+COMMANDS="$(python3 - <<'PY'
+import json
+print(json.dumps({"commands": [
+    {"command": "start", "description": "Open the trip menu, or connect a trip"},
+    {"command": "disconnect", "description": "Stop trip notifications in this chat"},
+]}, ensure_ascii=False))
+PY
+)"
+RESULT="$(curl -sS -X POST "https://api.telegram.org/bot${TOKEN}/setMyCommands" \
+  -H 'content-type: application/json' \
+  --data-binary "$COMMANDS")"
+python3 - "$RESULT" <<'PY' || fail "setMyCommands rejected the menu: $(printf '%s' "$RESULT" | head -c 200)"
+import json, sys
+sys.exit(0 if json.loads(sys.argv[1]).get("ok") else 1)
+PY
+LIST="$(curl -sS "https://api.telegram.org/bot${TOKEN}/getMyCommands")"
+python3 - "$LIST" <<'PY'
+import json, sys
+commands = json.loads(sys.argv[1]).get("result", [])
+print("  registered     : %s" % ", ".join("/" + c.get("command", "") for c in commands))
+PY
 
 ME="$(curl -sS "https://api.telegram.org/bot${TOKEN}/getMe")"
 INFO="$(curl -sS "https://api.telegram.org/bot${TOKEN}/getWebhookInfo")"
