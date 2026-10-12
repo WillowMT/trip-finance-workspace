@@ -74,7 +74,8 @@ Schema notes:
 
 Set as Worker secrets — never committed, never echoed. `tools/telegram-setup.sh` does all of it in one go:
 it prompts for the bot token, generates the webhook secret itself, pipes both values straight into
-Cloudflare, then registers and verifies the webhook — printing names and fingerprints, never values.
+Cloudflare, asks before running the deploy, then registers and verifies the webhook — printing names and
+fingerprints, never values.
 `DRY_RUN=1 bash tools/telegram-setup.sh` shows exactly what it would run. The manual equivalent:
 
 ```sh
@@ -101,9 +102,13 @@ app depends on Telegram, so the feature can stay dark indefinitely without affec
 **Order matters: secrets → `npx wrangler deploy` → webhook registration.** A webhook pointed at a Worker
 that doesn't yet carry the secrets answers `401` on every delivery, and Telegram backs off.
 
-Steps 1–4 below are BotFather housekeeping; steps 5–6 (both secret writes plus webhook registration and
-verification) are automated by `bash tools/telegram-setup.sh`. The manual sequence is spelled out too, for
-when you'd rather do it by hand.
+`bash tools/telegram-setup.sh` does the whole ordered sequence in one command: it prompts for the bot token
+(hidden), generates the webhook secret, pipes both into Cloudflare, asks before running
+`npx wrangler deploy`, checks the route is live (`401`, not `404`), registers the webhook with that same
+secret, and verifies it via `getWebhookInfo` — printing fingerprints and names, never values.
+`--secrets-only` stops after the secrets, `--dry-run` prints the commands without running them, `--yes`
+skips the confirmation. Steps 1–4 below are BotFather housekeeping; the manual sequence is spelled out too,
+for when you'd rather do it by hand.
 
 1. **Create the bot** — in BotFather: `/newbot`, pick a name and a username ending in `bot`. Copy the token
    into `TELEGRAM_BOT_TOKEN` (above) and never into a file in the repo.
