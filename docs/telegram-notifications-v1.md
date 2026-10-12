@@ -205,13 +205,47 @@ knowing about because it is a way a Telegram test can lie:
 
 ## Deployment status
 
-**Schema applied; code not deployed.** `migrations/0015_telegram_notifications.sql` was applied to the
-remote D1 (`npx wrangler d1 execute DB --remote --file …`, exit 0) and recorded in `d1_migrations`. It is
-additive and fully `IF NOT EXISTS`, and the change was checked to touch nothing else: `transactions` 356,
-`audit_log` 747, `workspaces` 44 (3 active) before and after, and the live app answered `200` throughout.
-Remote DDL now shows `telegram_connections.chat_id TEXT` and `telegram_pairing_tokens.token_hash TEXT NOT
-NULL UNIQUE` — hashes only, as designed. Applying it first is deliberate: the deployed code reads these
-tables, so the schema has to exist before a deploy lands.
+**Live.** Deployed 2026-10-13 as version `25b27774-25ae-4c40-a05b-b23141a968e1` (Cloudflare stamps it
+`2026-10-12T19:09:55Z`, i.e. 02:09 Bangkok — the listings are UTC, which is why the date appears to differ);
+`wrangler deployments list` shows it as the current 100% version, directly after the two secret-change
+versions. The app root answers `200` and the bot is **@tripfinancethingbot**.
+
+- Migration `0015` applied to the remote D1 first (`npx wrangler d1 execute DB --remote --file …`, exit 0)
+  and recorded in `d1_migrations`. It is additive and fully `IF NOT EXISTS`, and the change was checked to
+  touch nothing else: `transactions` 356, `audit_log` 747, `workspaces` 44 (3 active) before and after, and
+  the live app answered `200` throughout. Remote DDL shows `telegram_connections.chat_id TEXT` and
+  `telegram_pairing_tokens.token_hash TEXT NOT NULL UNIQUE` — hashes only, as designed. Applying it before
+  the deploy is deliberate: the code reads these tables, so the schema has to exist first.
+- Worker secrets `TELEGRAM_BOT_TOKEN` and `TELEGRAM_WEBHOOK_SECRET` are set. Only the names are recorded
+  anywhere; no value is written to this repo, printed by the setup script, or stored in D1.
+- Webhook registered at `…/api/telegram/webhook` with `secret_token` and `allowed_updates: ["message"]`.
+  `getWebhookInfo` reports the URL set, `pending_update_count` 0 and no `last_error`, and the route answers
+  `401` to both an unsigned and a wrongly-signed POST.
+- **The Worker's secret and the registered secret are provably the same value.** A registered webhook whose
+  secret the Worker doesn't hold fails **silently** — every delivery is answered `401`, Telegram backs off and
+  the only symptom is notifications that never arrive — so the two were minted in one shell and the equality
+  was then demonstrated: a POST signed with that value returns `200 {"ok":true}` (an update with no `message`,
+  so nothing is sent), the same POST with a wrong value returns `401`, and `setWebhook` for that value
+  reported `ok=True`. Re-check this the same way after any secret rotation.
+- Bot facts from `getMe`: **@tripfinancethingbot** (`TripFinance`, id 8797469683), `can_join_groups: true`,
+  `can_read_all_group_messages: false` — i.e. BotFather's privacy mode is on, which is the right default
+  here: the bot only needs `/start`, and commands reach it in groups regardless of privacy mode, so it never
+  sees unrelated group chatter.
+- Live checks on throwaway workspaces (created, probed, purged in the same run): the Settings-card endpoint
+  returned `configured: true` with the bot's username and an empty connection list, leaking no capability
+  secret; a connect link was minted (`201`, `https://t.me/tripfinancethingbot?start=<43 chars>`, TTL 600 s,
+  command `/start <token>`); D1 held exactly one row whose `token_hash` equals `sha256(token)`, unconsumed and
+  expiring ~10 minutes out; neither the raw token nor the capability secret appeared in the link or in D1;
+  deleting a foreign connection id returned `404`. Every probe was purged — no Telegram rows remain, three
+  workspaces are active, Demo `3` untouched.
+- **Not exercised end to end:** anything needing a real Telegram account — a `/start` from a private chat or
+  a group, and so the delivery of a live notification. That is the human step: a workspace's Settings →
+  *Connect Telegram Chat* → send the prefilled `/start`.
+
+**Rotating the bot token later:** `bash tools/telegram-setup.sh` re-sets both secrets (it generates a fresh
+webhook secret), deploys, and re-registers the webhook, in the one order that works. Don't split it across
+runs: the generated secret is stored nowhere, so a secrets-only run leaves the webhook unregisterable with
+the same value.
 
 **Bookkeeping gap to know about:** `d1_migrations` lists `0001`–`0011` and `0015`, but `0012`, `0013` and
 `0014` are missing even though their objects are live (`receipts`, `receipt_attachments`,
@@ -220,7 +254,4 @@ try to replay from `0001` and abort — apply migrations by hand with `d1 execut
 name, which is how `0015` was applied. The three unrecorded receipts migrations were left exactly as found
 rather than back-filled on inference.
 
-**Code still not deployed.** Per the spec, deployment waits for the Telegram secrets to be available and for
-explicit authorization; no secret is set (`wrangler secret list` → `[]`), no webhook is registered, and the
-route is still `404` in production. `tools/telegram-setup.sh` performs secrets → deploy → webhook in the one
-order that works, so the remaining work is a single command run by whoever holds the bot token.
+
