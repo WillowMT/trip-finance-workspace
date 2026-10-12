@@ -491,7 +491,7 @@ async function sendWelcome(env: TelegramEnv, chatId: string, root: string): Prom
     '',
     'Tap the button below to create a trip or open one you already have. To get trip updates here, open that trip’s ⚙️ Setup tab and press “Connect Telegram chat”: changes are then announced in this chat, naming who owes or paid what, and this chat can never change a record itself.',
     '',
-    'Once a trip is connected, /start shows a menu that jumps straight into it.',
+    'Once a trip is connected, /start shows a menu that jumps straight into it, and /disconnect stops the messages in this chat.',
   ];
   const markup = root ? { inline_keyboard: [[{ text: 'Open Trip Finance Workspace', url: root }]] } : undefined;
   await sendMessage(env, chatId, lines.join('\n'), markup);
@@ -686,7 +686,8 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
   if (!chat || chat.id === undefined || chat.id === null) return;
   const chatId = String(chat.id);
   const text = (message?.text ?? '').trim();
-  // V1 answers /start and nothing else: no command can read, let alone write, the ledger.
+  // handleStart answers /start only; /disconnect is routed before it. No command can read, let alone
+  // write, the ledger.
   if (!/^\/start(?:@[A-Za-z0-9_]+)?(?:\s|$)/.test(text)) return;
   const payload = text.split(/\s+/).slice(1).join('').trim();
   if (!payload) {

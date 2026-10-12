@@ -2045,6 +2045,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div id="s-tg-out" class="mt-12"></div>
     <div id="s-tg-list" class="mt-12"></div>
     <p class="hint mt-10">For a group: add the bot to the group first, then press Connect and send the command from the group as an administrator.</p>
+    <p class="hint mt-10">To stop the messages later, send /disconnect in that chat (in a group, an administrator has to send it) — or press Disconnect on the connection in the list above.</p>
   </div>
   <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><div id="s-people"></div>
     <div class="inline"><div class="field flush"><label>Add person</label><input id="s-person" autocomplete="off"></div><button id="s-add-person" type="button">Add</button></div>
