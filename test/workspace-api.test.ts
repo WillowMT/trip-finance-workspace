@@ -386,6 +386,10 @@ test('the workspace page ships a usable split form: people pre-rendered, archive
     assert.equal((payer![1].match(/<option/g) ?? []).length, 2);
     assert.ok(/<select id="sp-currency">[\s\S]*?value="USD" selected/.test(html), 'the split form defaults to the workspace currency');
     assert.ok(html.includes('Split an expense'), 'the panel explains what a split records');
+    assert.match(html, /id="recent-splits"/, 'the split route reserves a live region directly below the form for split history');
+    assert.match(html, /function renderRecentSplits\(rows\)/, 'recent split groups are derived from existing transaction history');
+    assert.match(html, /entry_kind!=='split'\|\|t\.is_deleted/, 'archived and non-split records do not appear in recent splits');
+    assert.match(html, /import_group_id/, 'records are grouped by their existing split commit identifier');
   });
 });
 

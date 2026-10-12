@@ -179,6 +179,10 @@ button.icon>span{pointer-events:none}
 .split-sum .who{font-weight:600;font-size:var(--fs-base)}
 .split-sum .paid{color:var(--muted);font-size:var(--fs-xs);margin-top:1px}
 .split-sum .share{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.recent-split{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-2);margin:0 calc(var(--sp-2) * -1);border-bottom:1px solid var(--line)}
+.recent-split:last-child{border-bottom:0}
+.recent-split .who{font-weight:600;font-size:var(--fs-base)}
+.recent-split .meta{color:var(--muted);font-size:var(--fs-xs);margin-top:1px;overflow-wrap:anywhere}
 .empty{color:var(--muted);font-size:var(--fs-md);padding:var(--sp-2) 0}
 .err{color:var(--bad);font-size:var(--fs-sm);margin-top:var(--sp-3);white-space:pre-wrap}
 .hint{color:var(--muted);font-size:var(--fs-xs);margin-top:var(--sp-2)}
@@ -437,7 +441,7 @@ function showTab(tab){
   if(tab==='ledger'){loadLedger()}
   if(tab==='ranking'){loadRanking()}
   if(tab==='balances'){loadBalances()}
-  if(tab==='split'){renderSplit()}
+  if(tab==='split'){renderSplit();loadRecentSplits()}
   if(tab==='audit'){loadAudit()}
   if(tab==='settings'){renderSettings()}
   if(tab==='receipts'){refreshReceipts()}
@@ -1093,9 +1097,35 @@ async function postSplit(d,btn,err){
   var out=$('sp-out');
   if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
     txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
-  loadLedger();
+  loadLedger(); loadRecentSplits();
 }
-/* ---------------- receipt backlog ---------------- */
+function renderRecentSplits(rows){
+  var box=$('recent-splits'); if(!box){return}
+  var groups={}, order=[];
+  for(var i=0;i<rows.length;i++){ var t=rows[i];
+    if(t.entry_kind!=='split'||t.is_deleted){continue}
+    var key=t.import_group_id||('split-row-'+t.id), group=groups[key];
+    if(!group){ group={topic:t.topic,category:t.category,occurred_on:t.occurred_on,currency_code:t.currency_code,payer_id:t.creditor_person_id,debtor_ids:[],amount_minor:0,latest_id:t.id}; groups[key]=group; order.push(group) }
+    group.amount_minor+=Number(t.amount_minor)||0; group.debtor_ids.push(t.debtor_person_id); group.latest_id=Math.max(group.latest_id,t.id);
+  }
+  order.sort(function(a,b){ return String(b.occurred_on).localeCompare(String(a.occurred_on))||b.latest_id-a.latest_id });
+  if(!order.length){box.innerHTML='<div class="empty">No active splits yet.</div>';return}
+  var html='', shown=order.slice(0,5);
+  for(var j=0;j<shown.length;j++){ var g=shown[j], participants=[];
+    for(var k=0;k<g.debtor_ids.length;k++){ participants.push(name(g.debtor_ids[k])) }
+    html+='<div class="recent-split"><div class="row-main"><div class="who">'+esc(g.topic)+' <span class="chip split">split</span></div><div class="meta">'+esc(g.occurred_on)+' · '+esc(name(g.payer_id))+' paid · '+esc(participants.join(', '))+' share'+(participants.length===1?'s':'')+'</div></div><div class="amt pos">'+esc(money(g.amount_minor,g.currency_code))+'</div></div>';
+  }
+  box.innerHTML=html+(order.length>shown.length?'<div class="hint">Showing the latest 5 active splits.</div>':'');
+}
+var recentSplitsRequestId=0;
+async function loadRecentSplits(){
+  var box=$('recent-splits'); if(!box){return}
+  var requestId=++recentSplitsRequestId; box.innerHTML='<div class="empty">Loading…</div>';
+  var r=await call('/transactions');
+  if(requestId!==recentSplitsRequestId||selectedTab!=='split'){return}
+  if(!r.ok){box.innerHTML='<div class="err">'+esc(r.error)+'</div>';return}
+  renderRecentSplits((r.data&&r.data.transactions)||[]);
+}
 /* A tracker, not an importer: the two columns are the state the user set, and nothing here
    creates transactions. A card carries its notes and a few attachments (photos live in a
    private R2 bucket and are fetched through the capability route). */
@@ -1800,6 +1830,11 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     </div>
     <div id="sp-err" class="err"></div>
     <div id="sp-out"></div>
+  </div>
+  <div class="card">
+    <h2><span aria-hidden="true">🕘</span> Recent splits</h2>
+    <p class="hint">Latest active split records. The amount is the debt created for the payer; deleted split records stay out of this list.</p>
+    <div id="recent-splits" aria-live="polite"><div class="empty">Loading…</div></div>
   </div>
 </section>
 
