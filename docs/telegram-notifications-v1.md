@@ -284,7 +284,9 @@ single workspace, breaks one chat on purpose, and drives the dispatch by hand.
 - **Twelve chances, then it is dropped.** A retryable failure (`5xx`, timeout, `429`) keeps the message
   queued across `MAX_ATTEMPTS = 12` dispatch chances; past that the row is marked `failed` and abandoned,
   with `Undelivered message: …` written to the *connection* so the Setup tab shows it. Nothing revives an
-  abandoned message automatically.
+  abandoned message automatically. Note that a `429` spends one of those chances like any other failure — a
+  large backlog draining into a rate-limited group chat can burn a few — so treat 12 as the tolerance for a
+  long outage, not as an infinite queue.
 - **Nothing retries while the workspace is idle.** V1 has no scheduled sweep, so a message parked during an
   outage waits for the next write in that workspace or the next incoming update. Not lost — just not prompt.
 - **A crash between the Bot API send and the outbox update can duplicate.** Sending and marking `sent` are not
