@@ -401,21 +401,32 @@ test('committed writes are announced, previews and refused writes are not, and a
     const announcement = bot.sentMatching('Night market')[0];
     assert.equal(announcement.chat_id, String(chatId));
     assert.match(announcement.text, /Trip Finance — Quiet trip/);
-    assert.match(announcement.text, /A transaction was recorded/);
-    assert.match(announcement.text, /USD 42\.50/);
-    assert.equal(/Willow|Ada|Lin/.test(announcement.text), false, 'a notification never names anyone');
+    // Active voice with both entities named: the debtor owes the creditor, and the amount follows.
+    assert.match(announcement.text, /Lin owes Ada USD 42\.50/);
+    assert.match(announcement.text, /Night market/);
+    assert.equal(
+      /was recorded|was created|was split|were recorded|Entries were added/.test(announcement.text),
+      false,
+      'a notification never falls back to entity-free passive wording',
+    );
     assert.equal((query("SELECT COUNT(*) AS count FROM telegram_notifications WHERE status = 'sent'") as { count: number }[])[0].count, 1);
     assert.equal((query('SELECT last_audit_id FROM telegram_connections') as { last_audit_id: number }[])[0].last_audit_id > 0, true);
 
     // Editing, archiving and restoring the row are each announced in the same chat.
     assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'Night market snacks', amount_minor: 5000 }) })).status, 200);
     await waitFor(() => bot.sentMatching('Night market snacks').length === 1, 'an edit should be announced');
+    assert.match(bot.sentMatching('Night market snacks')[0].text, /✏️ Edited — Lin owes Ada USD 50\.00/, 'an edit still names both entities and the amount');
     assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}`, { method: 'DELETE' })).status, 200);
-    await waitFor(() => bot.sentMatching('A row was archived').length === 1, 'an archive should be announced');
+    await waitFor(() => bot.sentMatching('🗄️ Removed — Lin owes Ada USD 50.00').length === 1, 'an archive should be announced');
     assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}/restore`, { method: 'POST' })).status, 200);
-    await waitFor(() => bot.sentMatching('A row was restored').length === 1, 'a restore should be announced');
+    await waitFor(() => bot.sentMatching('♻️ Restored — Lin owes Ada USD 50.00').length === 1, 'a restore should be announced');
     assert.equal((await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
     await waitFor(() => bot.sentMatching('setup was changed').length === 1, 'a settings change should be announced');
+
+    // A repayment reads the other way round: the debtor is the one who handed the money over.
+    assert.equal((await write({ ...transaction, entry_kind: 'payment', topic: 'Settling up', amount_minor: 2500 })).status, 201);
+    await waitFor(() => bot.sentMatching('Settling up').length === 1, 'a repayment should be announced');
+    assert.match(bot.sentMatching('Settling up')[0].text, /💸 Lin paid Ada USD 25\.00/, 'a repayment says who paid whom');
 
     // Delivery is deduplicated at the database, not by luck: rewind the watermark and replay.
     // A retry re-reads the same audit window, so capture the watermark, let a write be announced, then
@@ -565,7 +576,7 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
       }
     };
 
-    // One committed write reaches every chat, once each, with identical anonymous wording.
+    // One committed write reaches every chat, once each, with wording that names the entities.
     assert.equal((await write('Fan out one', 1100)).status, 201);
     await waitFor(() => bot.sentMatching('Fan out one').length === 3, 'every linked chat should hear about one write');
     const firstRound = bot.sentMatching('Fan out one');

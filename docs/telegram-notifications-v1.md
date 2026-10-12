@@ -37,14 +37,48 @@ processing, AI features, transaction commands and user authentication are out of
   batch and CSV-import commits; person and currency changes; workspace settings changes; the workspace's
   own name change; backup restore actions. Preview-only requests, refused writes and failed writes announce
   nothing — that is structural, not a special case.
-- Wording is anonymous and passive: no actor, no attribution. "⚙️ The trip's setup was changed" with one
-  sentence per change (`Trip members: Ada was added`), never a key/value dump.
+- **Wording names the entities, in the active voice** (see *Wording: who did what to whom* below):
+  "Lin owes Ada USD 42.50 · Night market", never "A transaction was recorded". (This supersedes the original
+  V1 line that asked for anonymous, passive wording.)
+- One sentence per change for settings (`⚙️ The trip's setup was changed`, `Ada joined the trip`), never a
+  key/value dump.
 - **Backup and receipt housekeeping stay silent** rather than inventing a line for housekeeping events.
 - Delivery dedupe lives in the database: `UNIQUE(connection_id, event_key)` plus `INSERT OR IGNORE`, and the
   watermark is advanced in the same D1 batch, so a replayed window cannot repeat or lose an event. A chat
   Telegram reports as blocked/unreachable is disabled instead of being retried forever.
 - Money is grouped per currency and never summed across currencies; the message never contains an
   exchange rate or a cross-currency total.
+
+## Wording: who did what to whom
+
+Every line is built out of the audited row itself — the debtor, the creditor and the amount that row already
+carries — resolved against the trip's member list for the name and avatar the trip shows them under. Nothing
+is inferred and no actor is invented: `audit_log.actor_label` is `shared workspace editor` for everyone, so a
+sentence naming an "editor" would be a lie.
+
+| What happened | What the chat reads |
+|---|---|
+| a debt was recorded | `Lin owes Ada USD 42.50 · Night market` |
+| a repayment was recorded | `💸 Lin paid Ada USD 25.00 · Settling up` |
+| a row was edited | `✏️ Edited — Lin owes Ada USD 50.00 · Night market snacks` |
+| archived or deleted | `🗄️ Removed — Lin owes Ada USD 50.00 · Night market snacks` |
+| restored | `♻️ Restored — Lin owes Ada USD 50.00 · Night market snacks` |
+| a bill was split | `🧾 Ada split a bill · Dinner`, then one `owes` line per participant |
+| spreadsheet import | `📥 4 entries imported from a spreadsheet`, then the `owes` lines |
+| a batch commit | `🧾 3 entries added in one batch · Hotel`, then the `owes` lines |
+| two people settled up | `🔁 Lin and Ada settled up · 2 rows` |
+| reciprocal balances netted | `🔁 Lin and Ada netted their reciprocal balances · 2 rows` |
+| a member joined / left | `🦊 Ada joined the trip` / `Ada left the trip` |
+| the trip was renamed | `Trip renamed to “Tet lunch”` |
+
+- Grouped messages list up to `MAX_PAIR_LINES = 6` entity pairs, then `+N more entries` and the per-currency
+  totals of the debts (payments are excluded from that total — they move the other way).
+- A split credits one person on every row, so the payer is read off the rows' creditor and named once in the
+  headline instead of repeated on every line.
+- Netting is the one case with no pair lines: its rows carry signed amounts nobody typed, so the headline
+  names the two people and the amount is left out rather than dressed up as arithmetic.
+- A member archived later still resolves by name, because the rows being announced are older than the
+  archive. A person id that resolves to nothing reads `Someone`, never a bare number.
 
 ## Migration and files
 
@@ -263,8 +297,7 @@ single workspace, breaks one chat on purpose, and drives the dispatch by hand.
 **Guaranteed**
 
 - **Fan-out.** A workspace holds one row per `(workspace_id, chat_id)` and can hold any number of them. One
-  committed write produces exactly one outbox row per *enabled* chat, and every chat receives the same
-  anonymous words.
+  committed write produces exactly one outbox row per *enabled* chat, and every chat receives the same words.
 - **Exactly once.** `UNIQUE(connection_id, event_key)` makes each (chat, event) pair unique in the database,
   so a replayed or concurrent dispatch can neither queue nor send it twice — asserted for a whole run, where
   no chat received the same message twice.

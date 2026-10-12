@@ -566,14 +566,62 @@ function clusterByTime(rows: AuditRow[]): AuditRow[][] {
   return clusters;
 }
 
-function createHeadline(rows: AuditRow[]): string {
+/** Person ids resolve to the name and avatar the trip already shows them under. */
+type PersonLabels = Map<number, string>;
+
+export type MessageContext = { name: string; timeZone: string; people: PersonLabels };
+
+/**
+ * Notifications name the entities. "A transaction was recorded" leaves the reader with nothing to act
+ * on, so every line is built out of the row itself: who owes whom, who paid whom, and how much.
+ */
+function labelOf(people: PersonLabels, value: unknown): string {
+  const id = Number(value);
+  const label = Number.isFinite(id) ? people.get(id) : undefined;
+  return label && label.trim() ? label.trim() : 'Someone';
+}
+
+function topicOf(after: Json): string {
+  return String(after['topic'] ?? '').trim().slice(0, 60);
+}
+
+function pairLine(after: Json, people: PersonLabels): string {
+  const debtor = labelOf(people, after['debtor_person_id']);
+  const creditor = labelOf(people, after['creditor_person_id']);
+  const amount = money(after['amount_minor'], after['currency_code']);
+  const tail = amount ? ` ${amount}` : '';
+  // A repayment moves money the other way: the debtor is the one who paid.
+  return String(after['entry_kind'] ?? 'debt') === 'payment' ? `💸 ${debtor} paid ${creditor}${tail}` : `${debtor} owes ${creditor}${tail}`;
+}
+
+/** A topic only earns its place on a grouped message when every row in it agrees. */
+function sharedTopic(rows: AuditRow[]): string {
+  const topics = new Set(rows.map((row) => topicOf(parseJson(row.after_json))));
+  return topics.size === 1 ? [...topics][0] : '';
+}
+
+const MAX_PAIR_LINES = 6;
+
+function pairLines(rows: AuditRow[], people: PersonLabels): string[] {
+  const lines = rows.slice(0, MAX_PAIR_LINES).map((row) => pairLine(parseJson(row.after_json), people));
+  if (rows.length > MAX_PAIR_LINES) lines.push(`+${rows.length - MAX_PAIR_LINES} more entries`);
+  return lines;
+}
+
+function groupHeadline(rows: AuditRow[], people: PersonLabels): string {
   const prefixes = new Set(rows.map((row) => (groupIdOf(row) ?? '').split(':')[0]));
-  if (prefixes.has('import')) return '📥 An import from a spreadsheet was committed';
-  if (prefixes.has('split')) return '🧾 A bill was split';
-  if (prefixes.has('batch')) return '🧾 A batch of entries was committed';
-  if (prefixes.has('offset')) return '🔁 A settlement was recorded';
-  if (prefixes.has('auto-offset')) return '🔁 Reciprocal balances were netted';
-  return '📝 Entries were added';
+  const parsed = rows.map((row) => parseJson(row.after_json));
+  const count = parsed.length;
+  if (prefixes.has('import')) return `📥 ${count} ${count === 1 ? 'entry' : 'entries'} imported from a spreadsheet`;
+  // In a split every row credits the same person: whoever laid the money out.
+  if (prefixes.has('split')) return `🧾 ${labelOf(people, parsed[0]['creditor_person_id'])} split a bill`;
+  if (prefixes.has('batch')) return `🧾 ${count} ${count === 1 ? 'entry' : 'entries'} added in one batch`;
+  if (prefixes.has('offset') || prefixes.has('auto-offset')) {
+    const named = [...new Set(parsed.flatMap((after) => [labelOf(people, after['debtor_person_id']), labelOf(people, after['creditor_person_id'])]))];
+    const verb = prefixes.has('auto-offset') ? 'netted their reciprocal balances' : 'settled up';
+    return `🔁 ${named.slice(0, 2).join(' and ')} ${verb} · ${count} ${count === 1 ? 'row' : 'rows'}`;
+  }
+  return `📝 ${count} ${count === 1 ? 'entry' : 'entries'} added`;
 }
 
 function perCurrencyTotals(rows: AuditRow[]): string {
@@ -591,56 +639,59 @@ function perCurrencyTotals(rows: AuditRow[]): string {
   return `${lines.slice(0, 3).join(' · ')} +${lines.length - 3} more currencies`;
 }
 
-function createMessage(rows: AuditRow[], name: string, timeZone: string): { key: string; body: string } {
+function createMessage(rows: AuditRow[], context: MessageContext): { key: string; body: string } {
+  const { name, timeZone, people } = context;
   const key = keyFor(rows);
-  const first = parseJson(rows[0].after_json);
-  if (rows.length === 1 && !groupIdOf(rows[0])) {
-    const payment = String(first['entry_kind'] ?? 'debt') === 'payment';
-    const lines = [header(name), '', payment ? '💸 A repayment was recorded' : '🟢 A transaction was recorded'];
-    const detail = [String(first['topic'] ?? '').trim(), money(first['amount_minor'], first['currency_code'])].filter(Boolean).join(' · ');
-    if (detail) lines.push(detail);
-    const stamp = formatStamp(rows[0].occurred_at, timeZone);
-    if (stamp) lines.push(stamp);
-    return { key, body: lines.join('\n') };
+  const lines = [header(name), ''];
+  const grouped = rows.length > 1 || Boolean(groupIdOf(rows[0]));
+  if (!grouped) {
+    const after = parseJson(rows[0].after_json);
+    lines.push([pairLine(after, people), topicOf(after)].filter(Boolean).join(' · '));
+  } else {
+    lines.push([groupHeadline(rows, people), sharedTopic(rows)].filter(Boolean).join(' · '));
+    const offsets = rows.filter(isOffsetRow);
+    const linear = rows.filter((row) => !isOffsetRow(row));
+    // Netting writes its own signed rows, so a pair line for one would read as arithmetic nobody
+    // performed: the headline already says which two people it was between.
+    if (!offsets.length) {
+      lines.push(...pairLines(rows, people));
+      if (rows.length > MAX_PAIR_LINES) {
+        const totals = perCurrencyTotals(rows.filter((row) => String(parseJson(row.after_json)['entry_kind'] ?? 'debt') !== 'payment'));
+        if (totals) lines.push(totals);
+      }
+    } else if (linear.length) {
+      lines.push(...pairLines(linear, people));
+    }
   }
-  const parsed = rows.map((row) => parseJson(row.after_json));
-  const offsets = rows.filter(isOffsetRow);
-  const payments = rows.filter((row) => !isOffsetRow(row) && String(parseJson(row.after_json)['entry_kind'] ?? 'debt') === 'payment');
-  const debts = rows.filter((row) => !isOffsetRow(row) && String(parseJson(row.after_json)['entry_kind'] ?? 'debt') !== 'payment');
-  const lines = [header(name), '', createHeadline(rows)];
-  const added = debts.length + payments.length;
-  if (added) lines.push(`${added} ${added === 1 ? 'entry was' : 'entries were'} added`);
-  const topics = [...new Set(debts.map((row) => String(parseJson(row.after_json)['topic'] ?? '').trim()).filter(Boolean))];
-  if (topics.length) lines.push(topics.slice(0, 3).join(', ') + (topics.length > 3 ? ` +${topics.length - 3} more` : ''));
-  const totals = perCurrencyTotals(debts);
-  if (totals) lines.push(totals);
-  if (payments.length) lines.push(`💸 ${payments.length} ${payments.length === 1 ? 'repayment was' : 'repayments were'} recorded`);
-  if (offsets.length) lines.push(`🔁 ${offsets.length} netting ${offsets.length === 1 ? 'row was' : 'rows were'} written`);
   const stamp = formatStamp(rows[rows.length - 1].occurred_at, timeZone);
   if (stamp) lines.push(stamp);
-  void parsed;
   return { key, body: lines.join('\n') };
 }
 
-const ACTION_LABELS: Record<string, string> = {
-  update: '✏️ A row was edited',
-  archive: '🗄️ A row was archived',
-  restore: '♻️ A row was restored',
-  delete: '❌ A row was removed',
+const ACTION_LEAD: Record<string, string> = {
+  update: '✏️ Edited',
+  archive: '🗄️ Removed',
+  restore: '♻️ Restored',
+  delete: '❌ Deleted',
 };
 
-function transactionActionMessage(rows: AuditRow[], name: string, timeZone: string): { key: string; body: string } {
+function transactionActionMessage(rows: AuditRow[], context: MessageContext): { key: string; body: string } {
+  const { name, timeZone, people } = context;
   const lines = [header(name), ''];
   for (const action of ['update', 'archive', 'restore', 'delete']) {
     const matching = rows.filter((row) => row.action === action);
     if (!matching.length) continue;
-    const label = ACTION_LABELS[action] ?? '✏️ A row was changed';
-    lines.push(matching.length === 1 ? label : `${label.replace(/^(\S+ )An? /, '$1')}${matching.length} rows were ${label.split(' ').slice(2).join(' ')}`);
+    const lead = ACTION_LEAD[action] ?? '✏️ Changed';
     if (matching.length === 1) {
       const after = parseJson(matching[0].after_json);
       const before = parseJson(matching[0].before_json);
-      const detail = [String(after['topic'] ?? before['topic'] ?? '').trim(), money(after['amount_minor'] ?? before['amount_minor'], after['currency_code'] ?? before['currency_code'])].filter(Boolean).join(' · ');
-      if (detail) lines.push(detail);
+      // Whichever snapshot carries the row describes it; an edit can arrive with either side filled in.
+      const source = Object.keys(after).length ? after : before;
+      const topic = topicOf(source) || topicOf(before);
+      lines.push(`${lead} — ${pairLine(source, people)}${topic ? ` · ${topic}` : ''}`);
+    } else {
+      lines.push(`${lead} — ${matching.length} entries`);
+      lines.push(...pairLines(matching, people));
     }
   }
   const stamp = formatStamp(rows[rows.length - 1].occurred_at, timeZone);
@@ -681,16 +732,24 @@ function settingLines(rows: AuditRow[]): string[] {
       continue;
     }
     if (row.entity_type === 'workspace') {
-      if (changed(before, after, 'name')) note(`Trip name is now “${String(after['name'] ?? '')}”`);
+      if (changed(before, after, 'name')) note(`Trip renamed to “${String(after['name'] ?? '')}”`);
       continue;
     }
     if (row.entity_type === 'person') {
-      note(`Trip members: ${`${String(after['emoji'] ?? '')} ${String(after['display_name'] ?? before['display_name'] ?? '')}`.trim()} was ${row.action}d`);
+      const who = (source: Json): string => `${String(source['emoji'] ?? '')} ${String(source['display_name'] ?? '')}`.trim();
+      const label = who(Object.keys(after).length ? after : before);
+      const was = who(before);
+      if (row.action === 'create') note(`${label} joined the trip`);
+      else if (row.action === 'update') note(was && was !== label ? `${was} is now ${label}` : `${label} updated their details`);
+      else if (row.action === 'restore') note(`${label} rejoined the trip`);
+      else note(`${label} left the trip`);
       continue;
     }
     if (row.entity_type === 'currency') {
-      if (row.action === 'update' && Number(after['is_default']) === 1) push('Default currency', String(after['code'] ?? ''));
-      else note(`Currency ${String(after['code'] ?? before['code'] ?? '')} was ${row.action}d`);
+      const code = String(after['code'] ?? before['code'] ?? '');
+      if (row.action === 'update' && Number(after['is_default']) === 1) push('Default currency', code);
+      else if (row.action === 'create') note(`Currency ${code} is available in this trip`);
+      else note(`Currency ${code} was ${row.action === 'delete' ? 'removed' : 'changed'}`);
       continue;
     }
     // Anything else stays quiet on purpose: backup bookkeeping and receipt housekeeping are not
@@ -708,14 +767,14 @@ function settingsMessage(rows: AuditRow[], name: string, timeZone: string): { ke
 }
 
 /** Turns a window of audit rows into the fewest messages that still say exactly what happened. */
-export function buildMessages(rows: AuditRow[], context: { name: string; timeZone: string }): { key: string; body: string }[] {
+export function buildMessages(rows: AuditRow[], context: MessageContext): { key: string; body: string }[] {
   const messages: { key: string; body: string }[] = [];
   for (const cluster of clusterByTime(rows)) {
     const creates = cluster.filter((row) => row.entity_type === 'transaction' && row.action === 'create');
     const touched = cluster.filter((row) => row.entity_type === 'transaction' && row.action !== 'create');
     const settings = cluster.filter((row) => row.entity_type !== 'transaction');
-    if (creates.length) messages.push(createMessage(creates, context.name, context.timeZone));
-    if (touched.length) messages.push(transactionActionMessage(touched, context.name, context.timeZone));
+    if (creates.length) messages.push(createMessage(creates, context));
+    if (touched.length) messages.push(transactionActionMessage(touched, context));
     const settingsBody = settings.length ? settingsMessage(settings, context.name, context.timeZone) : null;
     if (settingsBody) messages.push(settingsBody);
   }
@@ -800,6 +859,11 @@ export async function dispatchWorkspaceNotifications(env: TelegramEnv, workspace
   const connections = await env.DB.prepare('SELECT id, last_audit_id FROM telegram_connections WHERE workspace_id = ? AND enabled = 1 ORDER BY id')
     .bind(workspaceId)
     .all<{ id: number; last_audit_id: number }>();
+  // Names are resolved once per dispatch, archived members included: their rows are still in the log.
+  const roster = await env.DB.prepare('SELECT id, display_name, emoji FROM workspace_people WHERE workspace_id = ?')
+    .bind(workspaceId)
+    .all<{ id: number; display_name: string; emoji: string | null }>();
+  const people: PersonLabels = new Map(roster.results.map((person) => [person.id, person.emoji ? `${person.emoji} ${person.display_name}` : person.display_name]));
   for (const connection of connections.results) {
     const rows = await env.DB.prepare(
       'SELECT id, entity_type, entity_id, action, before_json, after_json, occurred_at FROM audit_log WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?',
@@ -807,7 +871,7 @@ export async function dispatchWorkspaceNotifications(env: TelegramEnv, workspace
       .bind(workspaceId, connection.last_audit_id, AUDIT_WINDOW_LIMIT)
       .all<AuditRow>();
     if (!rows.results.length) continue;
-    const statements: D1PreparedStatement[] = buildMessages(rows.results, { name: workspace.name, timeZone }).map((message) =>
+    const statements: D1PreparedStatement[] = buildMessages(rows.results, { name: workspace.name, timeZone, people }).map((message) =>
       // Dedupe lives in the database: the unique (connection, event) key makes a replayed dispatch a no-op.
       env.DB.prepare('INSERT OR IGNORE INTO telegram_notifications (workspace_id, connection_id, event_key, body) VALUES (?, ?, ?, ?)').bind(workspaceId, connection.id, message.key, message.body),
     );
