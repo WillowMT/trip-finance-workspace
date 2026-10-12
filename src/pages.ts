@@ -749,6 +749,17 @@ function renderPerson(){
       '</div>';
   }
   var pairs=d.counterparties||[];
+  var bk=d.breakdown||{};
+  /* full-history breakdowns, deliberately separate from Recent activity: a repayment from
+     weeks ago must still show here even when it has scrolled out of the 25-row window */
+  function bkSection(title,rows){
+    var h='<h3 class="mt-14">'+title+'</h3>';
+    if(!rows||!rows.length){ return h+'<div class="empty">Nothing here yet.</div>' }
+    return h+rows.map(recRow).join('');
+  }
+  html+=bkSection('What '+esc(meName)+' paid for',bk.paid_for);
+  html+=bkSection('What was paid for '+esc(meName),bk.covered_for_them);
+  html+=bkSection('Payments &amp; offsets',bk.settlements);
   html+='<h3 class="mt-16">Balances by person</h3><p class="hint">Each line names who owes whom. Green means the money is owed to '+esc(meName)+'; red means '+esc(meName)+' owes it.</p>';
   if(!pairs.length){ html+='<div class="empty">No counterparties yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id; var recs=pairRecords(pr.counterparty_id);

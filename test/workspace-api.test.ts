@@ -736,6 +736,11 @@ test('a person summary reports what they fronted, what was covered for them, and
       counterparties: Pair[];
       suggestions: { counterparty: string; offset_amount_minor: number }[];
       recent: { id: number; topic: string; is_deleted: number; direction: string; counterparty: string }[];
+      breakdown: {
+        paid_for: { topic: string; direction: string }[];
+        covered_for_them: { topic: string; direction: string }[];
+        settlements: { topic: string; direction: string; entry_kind: string }[];
+      };
       records: { active: number; archived: number; total: number };
     };
     const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
@@ -757,6 +762,9 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.equal(summary.recent.length, 4);
     assert.equal(summary.recent[0].topic, 'Transfer', 'newest record first');
     assert.deepEqual({ direction: summary.recent[0].direction, amount_label: summary.recent[0].counterparty }, { direction: 'settled_in', amount_label: 'Lin' });
+    assert.deepEqual(summary.breakdown.paid_for.map((row) => row.topic), ['Snacks', 'Dinner'], 'what Ada paid for lists debts they fronted');
+    assert.deepEqual(summary.breakdown.covered_for_them.map((row) => row.topic), ['Taxi'], 'what was paid for Ada lists debts another person fronted');
+    assert.deepEqual(summary.breakdown.settlements.map((row) => ({ topic: row.topic, direction: row.direction, kind: row.entry_kind })), [{ topic: 'Transfer', direction: 'settled_in', kind: 'payment' }], 'payments and offsets use the settlement list');
 
     const removed = await request(`${api}/transactions/${taxi.transaction.id}`, { method: 'DELETE' });
     assert.ok(removed.status < 300, `archiving should succeed (${removed.status})`);
@@ -774,6 +782,9 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /setAttribute\('aria-haspopup','dialog'\)/, 'the served card only marks itself as a dialog opener in script');
     assert.match(page, /person-card/);
     assert.match(page, /people\/'\+pmOpenId\+'\/summary/, 'the popup reads the per-person summary endpoint');
+    assert.match(page, /What \'\+esc\(meName\)\+\' paid for/, 'the popup names the paid-for breakdown');
+    assert.match(page, /What was paid for \'\+esc\(meName\)/, 'the popup names the covered-for-person breakdown');
+    assert.match(page, /Payments &amp; offsets/, 'the popup includes settlement and offset history');
 
     const other = await createWorkspace(request);
     assert.equal((await request(`/w/${other}/api/people/${ada.id}/summary`)).status, 404, 'people are workspace-scoped');
