@@ -1395,6 +1395,7 @@ test('debtor ranking groups active negative balances by currency and opens the p
     assert.match(html, /id="tab-ranking"[^>]*><span aria-hidden="true">🏆<\/span>\s*Ranking</, 'the Ranking tab has the required trophy label');
     assert.match(html, /id="ranking"[^>]*\shidden/, 'the ranking panel starts hidden with the other tabs');
     assert.match(html, /id="ranking-currencies"[^>]*role="group"[^>]*aria-label="Ranking currency"/, 'currency pills are announced as the ranking currency group');
+    assert.match(html, /\.ranking-bar-fill\{display:block;height:100%;/, 'ranking fill is block-level so its computed width and debt colour are visible');
     const renderer = new Function(`
       var people=${JSON.stringify(people)};
       var currencies=${JSON.stringify([...initial.currencies, { code: 'VND', is_default: 0, is_archived: 0 }, { code: 'THB', is_default: 0, is_archived: 0 }, { code: 'EUR', is_default: 0, is_archived: 1 }])};

@@ -139,7 +139,7 @@ button.icon>span{pointer-events:none}
 .ranking-row-name{font-weight:700}
 .ranking-row-amount{color:var(--muted);font-size:var(--fs-sm);margin-top:var(--sp-1)}
 .ranking-bar{width:100%;height:var(--sp-2);overflow:hidden;background:var(--surface);border-radius:var(--r-pill)}
-.ranking-bar-fill{height:100%;min-width:var(--rank-bar-min);background:var(--bad);border-radius:inherit}
+.ranking-bar-fill{display:block;height:100%;min-width:var(--rank-bar-min);background:var(--bad);border-radius:inherit}
 
 /* ── lists: ledger rows, pairs, records, split summary ──────────────────── */
 .row{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-2);margin:0 calc(var(--sp-2) * -1);border-bottom:1px solid var(--line);border-radius:var(--r-sm)}
