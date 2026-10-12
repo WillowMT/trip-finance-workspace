@@ -355,6 +355,12 @@ test('the bulk tab ships copy-ready receipt instructions instead of the quick-en
     assert.ok(codes.every((code) => html.includes(code)), 'every enabled currency is offered');
     assert.match(html, /never the same person as the creditor/);
     assert.match(html, /One row per person who owes/);
+    assert.match(html, /STAGE 1 — review only/, 'the first response is a markdown review, not import-ready CSV');
+    assert.match(html, /Do not output CSV in Stage 1/, 'CSV is withheld until the allocation is checked');
+    assert.match(html, /STAGE 2 — only after explicit confirmation/, 'the final CSV requires an explicit approval');
+    assert.match(html, /Receipt grand total/, 'the review must surface the actual receipt total');
+    assert.match(html, /Unallocated adjustment/, 'service, tax, tips, and other omissions are reconciled explicitly');
+    assert.match(html, /must equal the receipt grand total exactly/, 'the instruction forbids losing receipt charges');
     // the import box it feeds is still there
     assert.match(html, /id="csv"/);
     assert.match(html, /id="csv-commit"/);

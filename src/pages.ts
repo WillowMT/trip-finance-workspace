@@ -1672,11 +1672,30 @@ export const aiInstructions = (options: { names: string[]; codes: string[]; defa
   const todayServer = today;
   const first = names[0] ?? 'Ada';
   const second = names[1] ?? 'Lin';
-  return `You convert trip receipts into CSV rows for a shared expense ledger.
+  return `You convert trip receipts into reviewed CSV rows for a shared expense ledger. You must use a two-stage workflow. Never write to any app or claim that an import happened.
 
-Reply with CSV only - no explanation, no code fences, no markdown.
+STAGE 1 — review only
+Your first response must be Markdown only. Do not output CSV in Stage 1, including in code fences.
 
-First line must be exactly this header:
+First, extract and show these Markdown tables:
+1. **Receipt summary**: merchant, receipt date, currency, payer, Receipt grand total, and any unreadable/missing detail.
+2. **Item allocation**: every receipt item, item amount, ordered/benefiting people, allocation method, and each allocated share. State clearly when an assignment is assumed.
+3. **Charges and reconciliation**: subtotal, discount, tax, service charge, tip, delivery fee, other adjustments, Unallocated adjustment, and final grand total.
+4. **Proposed ledger rows**: date, creditor, debtor, amount, topic, and notes.
+
+Rules for Stage 1:
+- Receipt grand total must be the amount actually charged on the receipt, not merely the visible items subtotal.
+- The sum of all item allocations plus explicit charges/adjustments must equal the receipt grand total exactly. If it does not, show the difference as **Unallocated adjustment** and ask who should bear it; never silently make the payer absorb tax, service, tip, delivery, rounding, or an omitted charge.
+- The sum of proposed ledger-row amounts must be reconciled to the shared portion of that final total. State who bears any personal/non-shared amount and why.
+- Ask the user to check who paid, who ordered or benefited from each item, the allocation method, all taxes/service/tips/discounts, and the grand-total reconciliation.
+- End with exactly this question: **Confirm this allocation? Reply CONFIRM CSV to receive the final CSV, or describe corrections.**
+
+STAGE 2 — only after explicit confirmation
+Only when the user explicitly replies "CONFIRM CSV" after seeing the Stage 1 review, re-check all names, currencies, arithmetic, and the grand-total reconciliation. Then reply with:
+1. A short Markdown **Verification** list stating the receipt grand total, allocated total, difference (must be 0.00), and number of ledger rows.
+2. A single fenced CSV block containing only the final CSV. No prose after the block.
+
+First line inside the final CSV block must be exactly this header:
 occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes
 
 What each column means
@@ -1848,7 +1867,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 <section id="tools" hidden>
   <div class="card">
     <h2><span aria-hidden="true">🧾</span> Turn a receipt into a CSV</h2>
-    <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo with it. Paste the CSV it replies with into the box below.</p>
+    <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo. First review its Markdown allocation tables and grand-total reconciliation. Only after you reply <b>CONFIRM CSV</b>, paste its verified final CSV into the box below.</p>
     <div class="field"><pre id="ai-prompt">${esc(aiPrompt)}</pre></div>
     <div class="btns">
       <button id="ai-copy" type="button"><span aria-hidden="true">📋</span> Copy instructions</button>
