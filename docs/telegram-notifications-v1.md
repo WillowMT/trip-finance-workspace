@@ -205,6 +205,22 @@ knowing about because it is a way a Telegram test can lie:
 
 ## Deployment status
 
-**Not deployed.** Per the spec, deployment waits for the Telegram secrets to be available and for explicit
-authorization; no secret has been set, no webhook has been registered and no `wrangler deploy` has been run
-for this feature. The code is inert in production until both secrets exist.
+**Schema applied; code not deployed.** `migrations/0015_telegram_notifications.sql` was applied to the
+remote D1 (`npx wrangler d1 execute DB --remote --file …`, exit 0) and recorded in `d1_migrations`. It is
+additive and fully `IF NOT EXISTS`, and the change was checked to touch nothing else: `transactions` 356,
+`audit_log` 747, `workspaces` 44 (3 active) before and after, and the live app answered `200` throughout.
+Remote DDL now shows `telegram_connections.chat_id TEXT` and `telegram_pairing_tokens.token_hash TEXT NOT
+NULL UNIQUE` — hashes only, as designed. Applying it first is deliberate: the deployed code reads these
+tables, so the schema has to exist before a deploy lands.
+
+**Bookkeeping gap to know about:** `d1_migrations` lists `0001`–`0011` and `0015`, but `0012`, `0013` and
+`0014` are missing even though their objects are live (`receipts`, `receipt_attachments`,
+`receipts.transaction_id` all exist). Because of that, `npx wrangler d1 migrations apply --remote` would
+try to replay from `0001` and abort — apply migrations by hand with `d1 execute --remote` and record the
+name, which is how `0015` was applied. The three unrecorded receipts migrations were left exactly as found
+rather than back-filled on inference.
+
+**Code still not deployed.** Per the spec, deployment waits for the Telegram secrets to be available and for
+explicit authorization; no secret is set (`wrangler secret list` → `[]`), no webhook is registered, and the
+route is still `404` in production. `tools/telegram-setup.sh` performs secrets → deploy → webhook in the one
+order that works, so the remaining work is a single command run by whoever holds the bot token.
