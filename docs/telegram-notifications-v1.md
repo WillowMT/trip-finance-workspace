@@ -254,4 +254,45 @@ try to replay from `0001` and abort — apply migrations by hand with `d1 execut
 name, which is how `0015` was applied. The three unrecorded receipts migrations were left exactly as found
 rather than back-filled on inference.
 
+## Delivery: what is guaranteed, and where the edges are
+
+Proven by the last block of `test/telegram-api.test.ts` ("one workspace fans out to every linked chat, and
+one unreachable chat never costs the others a message"), which links two private chats and one group to a
+single workspace, breaks one chat on purpose, and drives the dispatch by hand.
+
+**Guaranteed**
+
+- **Fan-out.** A workspace holds one row per `(workspace_id, chat_id)` and can hold any number of them. One
+  committed write produces exactly one outbox row per *enabled* chat, and every chat receives the same
+  anonymous words.
+- **Exactly once.** `UNIQUE(connection_id, event_key)` makes each (chat, event) pair unique in the database,
+  so a replayed or concurrent dispatch can neither queue nor send it twice — asserted for a whole run, where
+  no chat received the same message twice.
+- **Isolation.** A failing chat never affects another: the flush walks the queue, and only a `429` stops it
+  (deliberately, to respect the rate limit — those rows flush on the next chance). A chat answering `5xx`
+  stays enabled with its message parked as `pending` while the healthy chats are still served.
+- **Order.** The queue drains oldest-first per chat, so a recovering chat receives what it missed in the
+  order it was recorded, before the newer event that triggered the flush.
+- **Retry chances.** Every committed audited write *and* every incoming Telegram update is a chance to drain
+  the queue (the dispatcher runs in `ctx.waitUntil` after the response, so the ledger never waits on
+  Telegram).
+- **No history dump.** Linking a chat sets its watermark to `MAX(audit_log.id)` in the same `INSERT`, so a
+  newly linked chat hears only what happens next.
+
+**Not guaranteed — the edges worth knowing**
+
+- **Twelve chances, then it is dropped.** A retryable failure (`5xx`, timeout, `429`) keeps the message
+  queued across `MAX_ATTEMPTS = 12` dispatch chances; past that the row is marked `failed` and abandoned,
+  with `Undelivered message: …` written to the *connection* so the Setup tab shows it. Nothing revives an
+  abandoned message automatically.
+- **Nothing retries while the workspace is idle.** V1 has no scheduled sweep, so a message parked during an
+  outage waits for the next write in that workspace or the next incoming update. Not lost — just not prompt.
+- **A crash between the Bot API send and the outbox update can duplicate.** Sending and marking `sent` are not
+  atomic with Telegram, so a Worker failure inside that window re-sends on the next dispatch. Rare, and it
+  errs towards delivering.
+- **A blocked bot is switched off after one attempt** (`403`/`400`/`404`): messages queued for that chat are
+  marked failed, and the chat hears nothing until it is unblocked and reconnected.
+- **A chat reconnected after a long silence may receive a catch-up** of what it missed while it was off,
+  bounded to the last `AUDIT_WINDOW_LIMIT = 200` audited rows and clustered into messages by two-second gaps.
+
 

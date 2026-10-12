@@ -27,6 +27,8 @@ class FakeBot {
   readonly messages: { chat_id: string; text: string; reply_markup?: unknown }[] = [];
   readonly statuses = new Map<string, string>();
   mode: { error_code: number; description: string } | null = null;
+  /** Failures aimed at one chat only, so a test can break a single connection while the rest stay healthy. */
+  readonly failFor = new Map<string, { error_code: number; description: string }>();
   private server?: Server;
   port = 0;
 
@@ -60,8 +62,9 @@ class FakeBot {
           return;
         }
         if (method === 'sendMessage') {
-          if (this.mode) {
-            const mode = this.mode;
+          const aimed = this.failFor.get(String(payload.chat_id ?? ''));
+          const mode = aimed ?? this.mode;
+          if (mode) {
             reply({ ok: false, error_code: mode.error_code, description: mode.description });
             return;
           }
@@ -504,5 +507,150 @@ test('no Telegram surface leaks a capability secret and the audit trail is untou
     assert.ok(entities.includes('transaction'), 'ledger writes are still audited');
     const known = ['currency', 'person', 'receipt', 'receipt_attachment', 'transaction', 'workspace', 'workspace_backup', 'workspace_settings'];
     assert.deepEqual(entities.filter((entity) => !known.includes(entity)), [], 'chat management invents no audited entity');
+  });
+});
+
+test('one workspace fans out to every linked chat, and one unreachable chat never costs the others a message', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Fan-out trip');
+    const workspaceId = Number(query('SELECT id FROM workspaces')[0].id);
+
+    // Three chats on one workspace: two private chats and a group an administrator links.
+    const first = 880101;
+    const second = 880102;
+    const third = 880103;
+    const group = { id: -100777000333, type: 'group', title: 'Fan-out group' };
+    bot.statuses.set(String(group.id), 'administrator');
+    const link = async (chat: UpdateInit['chat'], from?: { id: number; first_name?: string }) => {
+      const pairing = await mintPairing(request, secret);
+      return from
+        ? startIn({ request, query, bot }, chat, from, pairing.token)
+        : startInPrivate({ request, query, bot }, pairing.token, chat.id);
+    };
+    assert.match(await link(PRIVATE_CHAT(first)), /is now connected/);
+    assert.match(await link(PRIVATE_CHAT(second)), /is now connected/);
+    assert.match(await link(group, { id: 5150, first_name: 'Willow' }), /is now connected/);
+    assert.deepEqual(
+      connectionRows(query, workspaceId).map((row) => row.chat_id),
+      [String(first), String(second), String(group.id)],
+      'one workspace holds one row per chat, however many are linked',
+    );
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const write = (topic: string, amount: number) => request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-12', entry_kind: 'debt', topic, category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: amount, currency_code: 'USD' }),
+    });
+    const preview = () => request(`/w/${secret}/api/splits/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-12', topic: 'Preview only', category: 'Food', payer_person_id: ada.id, participant_person_ids: [ada.id, lin.id], amount_minor: 500, currency_code: 'USD', notes: '' }),
+    });
+    const queued = (topic: string) => query(
+      `SELECT n.status, n.attempts, n.last_error FROM telegram_notifications n JOIN telegram_connections c ON c.id = n.connection_id WHERE c.chat_id = '${second}' AND n.body LIKE '%${topic}%'`,
+    ) as { status: string; attempts: number; last_error: string | null }[];
+    // A split preview commits nothing but still reaches the dispatcher, so it is a pure retry chance:
+    // the same chance a later write would give the queue, with no new event to confuse the counting.
+    const retryChance = async (topic: string, rounds: number) => {
+      for (let round = 0; round < rounds; round += 1) {
+        const before = queued(topic)[0]?.attempts ?? 0;
+        assert.equal((await preview()).status, 200);
+        await waitFor(() => (queued(topic)[0]?.attempts ?? 0) > before, `retry chance ${round + 1} should be recorded`, 6_000);
+      }
+    };
+
+    // One committed write reaches every chat, once each, with identical anonymous wording.
+    assert.equal((await write('Fan out one', 1100)).status, 201);
+    await waitFor(() => bot.sentMatching('Fan out one').length === 3, 'every linked chat should hear about one write');
+    const firstRound = bot.sentMatching('Fan out one');
+    assert.deepEqual(firstRound.map((message) => message.chat_id).sort(), [String(first), String(second), String(group.id)].sort());
+    assert.equal(new Set(firstRound.map((message) => message.text)).size, 1, 'every chat hears the same words');
+    assert.equal((query("SELECT COUNT(*) AS count FROM telegram_notifications WHERE status = 'sent'") as { count: number }[])[0].count, 3, 'one outbox row per chat');
+
+    // A transient failure aimed at the middle chat only.
+    bot.failFor.set(String(second), { error_code: 500, description: 'Internal Server Error' });
+    assert.equal((await write('Fan out two', 2200)).status, 201);
+    await waitFor(() => bot.sentMatching('Fan out two').length === 2, 'the chats that can be reached are served regardless');
+    assert.deepEqual(bot.sentMatching('Fan out two').map((message) => message.chat_id).sort(), [String(first), String(group.id)].sort());
+    assert.deepEqual(queued('Fan out two').map((row) => row.status), ['pending'], 'a 500 is retryable, so the message waits instead of disappearing');
+    assert.equal(queued('Fan out two')[0].attempts, 1);
+    assert.match(String(queued('Fan out two')[0].last_error), /Internal Server Error/);
+    assert.equal(connectionRows(query, workspaceId).length, 3, 'a transient failure must not drop another chat');
+    assert.equal(connectionRows(query, workspaceId).find((row) => row.chat_id === String(second))!.enabled, 1, 'and must not switch the chat off');
+
+    // The next write is also a retry chance: the missed message goes out, once, in the order it was queued.
+    bot.failFor.delete(String(second));
+    assert.equal((await write('Fan out three', 3300)).status, 201);
+    await waitFor(() => bot.sentMatching('Fan out two').length === 3, 'the queued message should catch up on the next dispatch');
+    await waitFor(() => bot.sentMatching('Fan out three').length === 3, 'and the new one should reach the recovered chat too');
+    assert.deepEqual(
+      bot.messages.filter((message) => message.chat_id === String(second) && /Fan out (two|three)/.test(message.text))
+        .map((message) => (message.text.includes('Fan out two') ? 'two' : 'three')),
+      ['two', 'three'],
+      'the queue drains oldest first',
+    );
+
+    // A sustained outage must not quietly cost the message: six chances in a row, still queued.
+    bot.failFor.set(String(second), { error_code: 502, description: 'Bad Gateway' });
+    assert.equal((await write('Fan out four', 4400)).status, 201);
+    await waitFor(() => queued('Fan out four')[0]?.attempts === 1, 'the first attempt should be recorded');
+    await retryChance('Fan out four', 5);
+    assert.equal(queued('Fan out four')[0].attempts, 6);
+    assert.equal(queued('Fan out four')[0].status, 'pending', 'an outage that outlasts a few chances must not drop the message');
+
+    // A chat linked later hears what happens next, never the trip's history.
+    assert.match(await link(PRIVATE_CHAT(third)), /is now connected/);
+    assert.equal(bot.messages.filter((message) => message.chat_id === String(third)).length, 1, 'linking sends the confirmation and nothing else');
+    assert.equal((await write('Fan out five', 5500)).status, 201);
+    await waitFor(() => bot.sentMatching('Fan out five').some((message) => message.chat_id === String(third)), 'a new chat hears the next write');
+    assert.equal(bot.sentMatching('Fan out one').some((message) => message.chat_id === String(third)), false, 'history is never replayed into a new chat');
+
+    // The outage ends: the backlog drains, oldest first, and never twice.
+    bot.failFor.delete(String(second));
+    assert.equal((await write('Fan out six', 6600)).status, 201);
+    await waitFor(
+      () => ['Fan out four', 'Fan out five', 'Fan out six'].every((topic) => bot.sentMatching(topic).some((message) => message.chat_id === String(second))),
+      'the backlog should drain once the chat answers again',
+    );
+    assert.deepEqual(
+      bot.messages.filter((message) => message.chat_id === String(second))
+        .map((message) => /Fan out (one|two|three|four|five|six)/.exec(message.text)?.[1])
+        .filter((topic) => topic !== undefined),
+      ['one', 'two', 'three', 'four', 'five', 'six'],
+      'a chat receives events in the order they were recorded, with nothing repeated and nothing skipped',
+    );
+
+    // The one way a message can still go missing: twelve chances is the limit. It is then abandoned and
+    // the reason is left on the connection, where the Setup tab shows it.
+    bot.failFor.set(String(second), { error_code: 503, description: 'Service Unavailable' });
+    assert.equal((await write('Fan out seven', 7700)).status, 201);
+    await waitFor(() => queued('Fan out seven')[0]?.attempts === 1, 'the first attempt should be recorded');
+    await retryChance('Fan out seven', 11);
+    assert.equal(queued('Fan out seven')[0].attempts, 12);
+    assert.equal(queued('Fan out seven')[0].status, 'failed', 'past twelve chances the message is given up on');
+    assert.match(String((query(`SELECT last_error FROM telegram_connections WHERE chat_id = '${second}'`) as { last_error: string | null }[])[0].last_error), /Undelivered message/);
+    assert.equal(connectionRows(query, workspaceId).find((row) => row.chat_id === String(second))!.enabled, 1, 'an outage never switches a chat off');
+
+    // And a later dispatch does not revive it: only reconnecting the chat clears the queue.
+    bot.failFor.delete(String(second));
+    const sendsBefore = bot.messages.length;
+    assert.equal((await preview()).status, 200);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(bot.messages.length, sendsBefore, 'an abandoned message is not revived by a later dispatch');
+
+    // Nothing anywhere in the run was delivered twice, and the outbox holds one row per chat and event.
+    const seen = new Map<string, number>();
+    for (const message of bot.messages) {
+      const key = `${message.chat_id}|${message.text}`;
+      seen.set(key, (seen.get(key) ?? 0) + 1);
+    }
+    assert.deepEqual([...seen.entries()].filter(([, count]) => count > 1), [], 'no chat ever receives the same message twice');
+    assert.equal(
+      Number((query('SELECT COUNT(*) AS count FROM telegram_notifications') as { count: number }[])[0].count),
+      Number((query('SELECT COUNT(*) AS count FROM (SELECT DISTINCT connection_id, event_key FROM telegram_notifications)') as { count: number }[])[0].count),
+      'one outbox row per chat and event, however often a dispatch runs',
+    );
   });
 });

@@ -32,7 +32,15 @@ export const WEBHOOK_PATH = '/api/telegram/webhook';
 
 const DEFAULT_API_BASE = 'https://api.telegram.org';
 const DEFAULT_TIME_ZONE = 'UTC';
-const MAX_ATTEMPTS = 4;
+/**
+ * How many dispatch chances a *retryable* failure gets (rate limits, outages, timeouts) before the message
+ * is given up on. Every committed write and every incoming update is a chance, so this is a long window in
+ * a workspace anyone is using — but it is not infinite: a chat that stays unreachable for this many
+ * opportunities loses its queued messages, and the reason is recorded on the connection where the Setup tab
+ * shows it. Failures that can never succeed (blocked bot, deleted chat) skip this entirely and switch the
+ * chat off on the first attempt.
+ */
+const MAX_ATTEMPTS = 12;
 const SEND_BATCH_LIMIT = 20;
 const MAX_OPEN_TOKENS = 5;
 const AUDIT_WINDOW_LIMIT = 200;
@@ -742,9 +750,20 @@ async function flushConnection(env: TelegramEnv, workspaceId: number): Promise<v
       ]);
       continue;
     }
-    await env.DB.prepare('UPDATE telegram_notifications SET status = ?, attempts = ?, last_error = ? WHERE id = ?')
-      .bind(attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', attempts, sent.description, row.id)
-      .run();
+    const exhausted = attempts >= MAX_ATTEMPTS;
+    const updates = [
+      env.DB.prepare('UPDATE telegram_notifications SET status = ?, attempts = ?, last_error = ? WHERE id = ?')
+        .bind(exhausted ? 'failed' : 'pending', attempts, sent.description, row.id),
+    ];
+    // Giving up is worth seeing: this chat stays switched on, so the reason is recorded on the connection
+    // too — where the Setup tab already renders it — instead of the message going missing quietly.
+    if (exhausted) {
+      updates.push(
+        env.DB.prepare('UPDATE telegram_connections SET last_error = ?, updated_at = ? WHERE id = ?')
+          .bind(`Undelivered message: ${sent.description}`, nowIso(), row.connection_id),
+      );
+    }
+    await env.DB.batch(updates);
     // Rate limited: the rest of the queue waits for the next dispatch instead of hammering the API.
     if (sent.error_code === 429) break;
   }
