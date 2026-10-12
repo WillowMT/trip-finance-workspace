@@ -1004,9 +1004,11 @@ function renderSettings(){
    Keep this region free of backticks and of the template-literal interpolation marker. */
 var telegramLink=null;
 function telegramLinkHtml(p){
-  var command=(p&&p.command)||'', url=(p&&p.url)||'';
+  var command=(p&&p.command)||'', url=(p&&p.url)||'', group=(p&&p.group_command)||'';
   return '<div class="row"><div><div class="who">Send <b>'+esc(command)+'</b> to the bot</div>'+
-    '<div class="meta">Single use, expires in ten minutes. In a group, send it from an administrator.</div></div>'+
+    '<div class="meta">Single use, expires in ten minutes.</div>'+
+    (group?('<div class="meta">In a group: add the bot to the group first, then send <b>'+esc(group)+'</b> there — Telegram only passes on a group command that names the bot, and only a group administrator can connect it.</div>'):'')+
+    '</div>'+
     '<div class="btns flush">'+(url?('<a class="mini ghost link-plain" href="'+esc(url)+'" target="_blank" rel="noopener">Open Telegram</a>'):'')+
     '<button class="mini ghost" type="button" data-tg-copy="1">Copy command</button></div></div>';
 }

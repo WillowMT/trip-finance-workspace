@@ -78,6 +78,9 @@ export type TelegramStatus = {
 export type PairingLink = {
   token: string;
   command: string;
+  /** The same command addressed to the bot by name — the form a group needs, since Telegram only passes
+   *  on a group command that names the bot. Null until the bot username is known. */
+  group_command: string | null;
   url: string | null;
   expires_at: string;
   expires_in_seconds: number;
@@ -335,6 +338,7 @@ export async function createPairing(env: TelegramEnv, workspaceId: number): Prom
   return {
     token,
     command: `/start ${token}`,
+    group_command: username ? `/start@${username} ${token}` : null,
     url: username ? `https://t.me/${username}?start=${token}` : null,
     expires_at: expiresAt,
     expires_in_seconds: Math.round(PAIRING_TTL_MS / 1000),

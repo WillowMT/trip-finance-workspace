@@ -155,12 +155,13 @@ async function createWorkspace(request: Harness['request'], name: string): Promi
   return created.workspace_url.slice(3);
 }
 
-async function mintPairing(request: Harness['request'], secret: string): Promise<{ token: string; command: string; url: string | null }> {
+async function mintPairing(request: Harness['request'], secret: string): Promise<{ token: string; command: string; group_command: string | null; url: string | null }> {
   const response = await request(`/w/${secret}/api/telegram/pair`, { method: 'POST' });
   assert.equal(response.status, 201);
-  const body = await response.json() as { pairing: { token: string; command: string; url: string | null; expires_in_seconds: number } };
+  const body = await response.json() as { pairing: { token: string; command: string; group_command: string | null; url: string | null; expires_in_seconds: number } };
   assert.equal(body.pairing.expires_in_seconds, 600);
   assert.equal(body.pairing.command, `/start ${body.pairing.token}`);
+  assert.equal(body.pairing.group_command, `/start@${BOT_USERNAME} ${body.pairing.token}`, 'a group needs the command to name the bot');
   return body.pairing;
 }
 
@@ -188,10 +189,10 @@ async function startInPrivate(harness: Harness, token: string, chatId: number): 
   return harness.bot.lastText();
 }
 
-/** POST /start <token> from inside a group or channel, where the sender decides eligibility. */
-async function startIn(harness: Harness, chat: UpdateInit['chat'], from: { id: number; first_name?: string }, token: string): Promise<string> {
+/** POST a pairing command from inside a group or channel, where the sender decides eligibility. */
+async function startIn(harness: Harness, chat: UpdateInit['chat'], from: { id: number; first_name?: string }, token: string, text = `/start ${token}`): Promise<string> {
   const before = harness.bot.messages.length;
-  const response = await sendUpdate(harness, { chat, from, text: `/start ${token}` });
+  const response = await sendUpdate(harness, { chat, from, text });
   assert.equal(response.status, 200);
   await waitFor(() => harness.bot.messages.length > before, 'a pairing answer should come back');
   return harness.bot.lastText();
@@ -523,8 +524,10 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
     bot.statuses.set(String(group.id), 'administrator');
     const link = async (chat: UpdateInit['chat'], from?: { id: number; first_name?: string }) => {
       const pairing = await mintPairing(request, secret);
+      // The group is linked exactly the way the Setup card tells an administrator to do it: by a command
+      // that names the bot, because Telegram does not pass a bare group command on to it.
       return from
-        ? startIn({ request, query, bot }, chat, from, pairing.token)
+        ? startIn({ request, query, bot }, chat, from, pairing.token, String(pairing.group_command))
         : startInPrivate({ request, query, bot }, pairing.token, chat.id);
     };
     assert.match(await link(PRIVATE_CHAT(first)), /is now connected/);
@@ -535,6 +538,7 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
       [String(first), String(second), String(group.id)],
       'one workspace holds one row per chat, however many are linked',
     );
+    assert.equal(connectionRows(query, workspaceId)[2].chat_type, 'group', 'a group is stored as a group, with its own row and watermark');
 
     const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
     const [ada, lin] = state.people;
