@@ -364,6 +364,7 @@ test('the bulk tab ships copy-ready receipt instructions instead of the quick-en
     // the import box it feeds is still there
     assert.match(html, /id="csv"/);
     assert.match(html, /id="csv-commit"/);
+    assert.ok(html.lastIndexOf('id="csv"') < html.lastIndexOf('id="ai-prompt"'), 'CSV import appears before the system instructions');
   });
 });
 

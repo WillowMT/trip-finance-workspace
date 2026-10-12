@@ -1866,14 +1866,6 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="tools" hidden>
   <div class="card">
-    <h2><span aria-hidden="true">🧾</span> Turn a receipt into a CSV</h2>
-    <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo. First review its Markdown allocation tables and grand-total reconciliation. Only after you reply <b>CONFIRM CSV</b>, paste its verified final CSV into the box below.</p>
-    <div class="field"><pre id="ai-prompt">${esc(aiPrompt)}</pre></div>
-    <div class="btns">
-      <button id="ai-copy" type="button"><span aria-hidden="true">📋</span> Copy instructions</button>
-    </div>
-  </div>
-  <div class="card">
     <h2><span aria-hidden="true">📥</span> Import CSV</h2>
     <p class="hint">Header must be: occurred_on, entry_kind, topic, category, creditor, debtor, amount, currency, notes</p>
     <div class="field"><textarea id="csv" class="mono" placeholder="occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes"></textarea></div>
@@ -1883,6 +1875,14 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <button id="csv-commit" type="button"><span aria-hidden="true">✅</span> Import</button>
     </div>
     <div id="csv-result"></div>
+  </div>
+  <div class="card">
+    <h2><span aria-hidden="true">🧾</span> Turn a receipt into a CSV</h2>
+    <p class="hint">Copy these instructions into ChatGPT, Claude or Gemini as the system message, then send the receipt text or photo. First review its Markdown allocation tables and grand-total reconciliation. Only after you reply <b>CONFIRM CSV</b>, paste its verified final CSV into the box above.</p>
+    <div class="field"><pre id="ai-prompt">${esc(aiPrompt)}</pre></div>
+    <div class="btns">
+      <button id="ai-copy" type="button"><span aria-hidden="true">📋</span> Copy instructions</button>
+    </div>
   </div>
 </section>
 
