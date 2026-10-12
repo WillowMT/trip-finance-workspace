@@ -31,6 +31,7 @@ test('migrations apply to a blank local D1 database', () => {
     // assert every table that must exist rather than pinning the exact list, so the next table cannot fail this test
     const expected = [
       'audit_log', 'backup_log', 'backup_state', 'receipt_attachments', 'receipts', 'split_commits',
+      'telegram_connections', 'telegram_notifications', 'telegram_pairing_tokens',
       'transactions', 'workflow_commits', 'workspace_currencies', 'workspace_people', 'workspace_settings', 'workspaces',
     ];
     assert.deepEqual(expected.filter((name) => !present.includes(name)), [], 'every expected table exists');

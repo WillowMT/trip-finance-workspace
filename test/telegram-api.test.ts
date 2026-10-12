@@ -1,0 +1,508 @@
+import assert from 'node:assert/strict';
+import { execFileSync, spawn } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createHash } from 'node:crypto';
+import test from 'node:test';
+
+const root = new URL('..', import.meta.url).pathname;
+// Read the directory instead of pinning names: a hardcoded list has silently skipped migrations twice.
+const migrations = readdirSync(join(root, 'migrations')).filter((file) => file.endsWith('.sql')).sort();
+
+const PORT = 8987;
+const ORIGIN = `http://127.0.0.1:${PORT}`;
+// A token carries a colon, like BotFather's, so the local harness and the URL builder are exercised
+// with the real shape rather than a convenient slug.
+const BOT_TOKEN = '7000000001:AAHfake-token-for-the-test-double';
+const WEBHOOK_SECRET = 'fake-webhook-secret-0123456789abcdef';
+const BOT_USERNAME = 'trip_finance_test_bot';
+
+type BotCall = { method: string; token: string; payload: Record<string, unknown> };
+
+/** A minimal Bot API double: records every call and lets a test choose how the next send behaves. */
+class FakeBot {
+  readonly calls: BotCall[] = [];
+  readonly messages: { chat_id: string; text: string; reply_markup?: unknown }[] = [];
+  readonly statuses = new Map<string, string>();
+  mode: { error_code: number; description: string } | null = null;
+  private server?: Server;
+  port = 0;
+
+  async start(): Promise<void> {
+    this.server = createServer((incoming, outgoing) => {
+      let body = '';
+      incoming.on('data', (chunk) => { body += chunk; });
+      incoming.on('end', () => {
+        const path = incoming.url ?? '';
+        const match = path.match(/^\/bot([^/]+)\/([A-Za-z]+)$/);
+        if (!match) {
+          outgoing.writeHead(404, { 'content-type': 'application/json' });
+          outgoing.end(JSON.stringify({ ok: false, error_code: 404, description: 'Not Found' }));
+          return;
+        }
+        const [, token, method] = match;
+        let payload: Record<string, unknown> = {};
+        try { payload = JSON.parse(body || '{}') as Record<string, unknown>; } catch { payload = {}; }
+        this.calls.push({ method, token, payload });
+        const reply = (data: unknown, status = 200) => {
+          outgoing.writeHead(status, { 'content-type': 'application/json' });
+          outgoing.end(JSON.stringify(data));
+        };
+        if (method === 'getMe') {
+          reply({ ok: true, result: { id: 7000000001, is_bot: true, first_name: 'Trip Finance', username: BOT_USERNAME } });
+          return;
+        }
+        if (method === 'getChatMember') {
+          const chatId = String(payload.chat_id ?? '');
+          reply({ ok: true, result: { status: this.statuses.get(chatId) ?? 'member' } });
+          return;
+        }
+        if (method === 'sendMessage') {
+          if (this.mode) {
+            const mode = this.mode;
+            reply({ ok: false, error_code: mode.error_code, description: mode.description });
+            return;
+          }
+          this.messages.push({
+            chat_id: String(payload.chat_id ?? ''),
+            text: String(payload.text ?? ''),
+            reply_markup: payload.reply_markup,
+          });
+          reply({ ok: true, result: { message_id: this.messages.length } });
+          return;
+        }
+        reply({ ok: false, error_code: 404, description: 'Not Found' });
+      });
+    });
+    await new Promise<void>((resolve) => {
+      this.server!.listen(0, '127.0.0.1', () => resolve());
+    });
+    const address = this.server.address();
+    this.port = typeof address === 'object' && address ? address.port : 0;
+  }
+
+  async stop(): Promise<void> {
+    if (!this.server) return;
+    await new Promise<void>((resolve) => this.server!.close(() => resolve()));
+  }
+
+  sentMatching(needle: string): { chat_id: string; text: string }[] {
+    return this.messages.filter((message) => message.text.includes(needle));
+  }
+
+  lastText(): string {
+    return this.messages.length ? this.messages[this.messages.length - 1].text : '';
+  }
+}
+
+type Harness = {
+  request: (path: string, init?: RequestInit) => Promise<Response>;
+  query: (sql: string) => Record<string, unknown>[];
+  bot: FakeBot;
+};
+
+async function withTelegramApi(run: (harness: Harness) => Promise<void>): Promise<void> {
+  const persistTo = mkdtempSync(join(tmpdir(), 'trip-finance-telegram-'));
+  const args = (extra: string[]) => ['wrangler', 'd1', 'execute', 'DB', '--local', '--persist-to', persistTo, '--json', ...extra];
+  const execute = (extra: string[]) => JSON.parse(execFileSync('npx', args(extra), { cwd: root, encoding: 'utf8' }));
+  const query = (sql: string) => execute(['--command', sql])[0].results as Record<string, unknown>[];
+  const bot = new FakeBot();
+  let server: ReturnType<typeof spawn> | undefined;
+  try {
+    await bot.start();
+    for (const migration of migrations) execute(['--file', `migrations/${migration}`]);
+    server = spawn('npx', [
+      'wrangler', 'dev', '--local', '--port', String(PORT), '--persist-to', persistTo,
+      '--var', `TELEGRAM_BOT_TOKEN:${BOT_TOKEN}`,
+      '--var', `TELEGRAM_WEBHOOK_SECRET:${WEBHOOK_SECRET}`,
+      '--var', `TELEGRAM_BOT_USERNAME:${BOT_USERNAME}`,
+      '--var', `TELEGRAM_API_BASE:http://127.0.0.1:${bot.port}`,
+      '--var', `PUBLIC_ORIGIN:${ORIGIN}`,
+    ], { cwd: root, stdio: 'ignore', detached: true });
+    const request = (path: string, init: RequestInit = {}) => fetch(`${ORIGIN}${path}`, { ...init, headers: { connection: 'close', ...(init.headers ?? {}) } });
+    let ready = false;
+    for (let attempt = 0; attempt < 150; attempt += 1) {
+      try { if ((await request('/')).ok) { ready = true; break; } } catch { /* worker is still starting */ }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(ready, 'local Worker should start');
+    await run({ request, query, bot });
+  } finally {
+    if (server?.pid) {
+      try { process.kill(-server.pid, 'SIGTERM'); } catch { server.kill('SIGTERM'); }
+      await Promise.race([
+        new Promise<void>((resolve) => server!.once('exit', () => resolve())),
+        new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+      ]);
+    }
+    await bot.stop();
+    rmSync(persistTo, { recursive: true, force: true });
+  }
+}
+
+async function createWorkspace(request: Harness['request'], name: string): Promise<string> {
+  const response = await request('/api/workspaces', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, people: ['Ada', 'Lin'], currencies: [{ code: 'USD', is_default: true }, { code: 'THB', is_default: false }] }),
+  });
+  assert.equal(response.status, 201);
+  const created = await response.json() as { workspace_url: string };
+  return created.workspace_url.slice(3);
+}
+
+async function mintPairing(request: Harness['request'], secret: string): Promise<{ token: string; command: string; url: string | null }> {
+  const response = await request(`/w/${secret}/api/telegram/pair`, { method: 'POST' });
+  assert.equal(response.status, 201);
+  const body = await response.json() as { pairing: { token: string; command: string; url: string | null; expires_in_seconds: number } };
+  assert.equal(body.pairing.expires_in_seconds, 600);
+  assert.equal(body.pairing.command, `/start ${body.pairing.token}`);
+  return body.pairing;
+}
+
+type UpdateInit = { chat: { id: number; type: string; title?: string; first_name?: string }; from?: { id: number; first_name?: string }; text: string };
+
+async function sendUpdate(harness: Harness, update: UpdateInit, secretHeader: string | null = WEBHOOK_SECRET): Promise<Response> {
+  const message: Record<string, unknown> = { message_id: Math.floor(Math.random() * 1000), chat: update.chat, text: update.text };
+  if (update.from) message.from = update.from;
+  return harness.request('/api/telegram/webhook', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...(secretHeader === null ? {} : { 'x-telegram-bot-api-secret-token': secretHeader }) },
+    body: JSON.stringify({ update_id: Math.floor(Math.random() * 1_000_000), message }),
+  });
+}
+
+const PRIVATE_CHAT = (id: number, name = 'Willow') => ({ id, type: 'private', first_name: name });
+const GROUP_CHAT = (id: number, title = 'Chiang Mai trip') => ({ id, type: 'group', title });
+
+/** POST /start <token> into a private chat and return the text Telegram received back. */
+async function startInPrivate(harness: Harness, token: string, chatId: number): Promise<string> {
+  const before = harness.bot.messages.length;
+  const response = await sendUpdate(harness, { chat: PRIVATE_CHAT(chatId), text: `/start ${token}` });
+  assert.equal(response.status, 200);
+  await waitFor(() => harness.bot.messages.length > before, 'a pairing answer should come back');
+  return harness.bot.lastText();
+}
+
+/** POST /start <token> from inside a group or channel, where the sender decides eligibility. */
+async function startIn(harness: Harness, chat: UpdateInit['chat'], from: { id: number; first_name?: string }, token: string): Promise<string> {
+  const before = harness.bot.messages.length;
+  const response = await sendUpdate(harness, { chat, from, text: `/start ${token}` });
+  assert.equal(response.status, 200);
+  await waitFor(() => harness.bot.messages.length > before, 'a pairing answer should come back');
+  return harness.bot.lastText();
+}
+
+async function waitFor(predicate: () => boolean, message: string, timeout = 8_000): Promise<void> {
+  const started = Date.now();
+  while (Date.now() - started < timeout) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  assert.ok(predicate(), message);
+}
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+/** The chat a connection row points at: chat ids are 64-bit, so they are stored and read as text. */
+function connectionRows(query: Harness['query'], workspaceId: number): { id: number; chat_id: string; chat_type: string; enabled: number }[] {
+  return query(`SELECT id, chat_id, chat_type, enabled FROM telegram_connections WHERE workspace_id = ${workspaceId} ORDER BY id`) as { id: number; chat_id: string; chat_type: string; enabled: number }[];
+}
+
+test('pairing tokens are single use, expire after ten minutes, and never land in storage raw', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Pairing trip');
+    const workspaceId = Number(query('SELECT id FROM workspaces')[0].id);
+
+    // /start with no payload: a welcome whose button opens the public app root, never a workspace link.
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(555), text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a welcome should be sent');
+    const welcome = bot.messages[0];
+    const markup = welcome.reply_markup as { inline_keyboard: { text: string; url: string }[][] };
+    assert.equal(markup.inline_keyboard[0][0].text, 'Open Trip Finance Workspace');
+    assert.equal(markup.inline_keyboard[0][0].url, ORIGIN);
+    assert.ok(!welcome.text.includes('/w/'));
+    assert.equal(connectionRows(query, workspaceId).length, 0);
+
+    // A token is stored as a hash only.
+    const pairing = await mintPairing(request, secret);
+    assert.match(pairing.token, /^[A-Za-z0-9_-]{40,}$/);
+    assert.equal(pairing.url, `https://t.me/${BOT_USERNAME}?start=${pairing.token}`);
+    const stored = query('SELECT token_hash, consumed_at, expires_at FROM telegram_pairing_tokens') as { token_hash: string; consumed_at: string | null; expires_at: string }[];
+    assert.equal(stored.length, 1);
+    assert.match(stored[0].token_hash, /^[a-f0-9]{64}$/);
+    assert.equal(stored[0].token_hash, sha256(pairing.token));
+    assert.equal(stored[0].token_hash === pairing.token, false);
+    const rawLeak = query(`SELECT COUNT(*) AS count FROM telegram_pairing_tokens WHERE token_hash = '${pairing.token}'`) as { count: number }[];
+    assert.equal(rawLeak[0].count, 0);
+
+    // Expiry is enforced on the server clock, not by the link's own text.
+    query(`UPDATE telegram_pairing_tokens SET expires_at = '2020-01-01T00:00:00.000Z' WHERE token_hash = '${stored[0].token_hash}'`);
+    const expired = await startInPrivate({ request, query, bot }, pairing.token, 555);
+    assert.match(expired, /expired/);
+    assert.equal(connectionRows(query, workspaceId).length, 0);
+
+    // A live token links once and only once.
+    const fresh = await mintPairing(request, secret);
+    const linked = await startInPrivate({ request, query, bot }, fresh.token, 555);
+    assert.match(linked, /is now connected/);
+    assert.equal(connectionRows(query, workspaceId).length, 1);
+    assert.equal((query('SELECT consumed_at FROM telegram_pairing_tokens ORDER BY id DESC LIMIT 1') as { consumed_at: string | null }[])[0].consumed_at !== null, true);
+
+    const replayed = await startInPrivate({ request, query, bot }, fresh.token, 555);
+    assert.match(replayed, /already been used/);
+    assert.equal(connectionRows(query, workspaceId).length, 1);
+  });
+});
+
+test('one chat can follow several trips, a repeat connect is not a duplicate, and connections stay per workspace', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const first = await createWorkspace(request, 'Trip one');
+    const second = await createWorkspace(request, 'Trip two');
+    const ids = query('SELECT id, name FROM workspaces ORDER BY id') as { id: number; name: string }[];
+    assert.equal(ids.length, 2);
+
+    const chatId = 900001;
+    const chat = PRIVATE_CHAT(chatId, 'Willow');
+    const firstToken = await mintPairing(request, first);
+    const firstReply = await startInPrivate({ request, query, bot }, firstToken.token, chatId);
+    assert.match(firstReply, /connected to “Trip one”/);
+
+    // The same chat follows the second trip as well.
+    const secondToken = await mintPairing(request, second);
+    const secondReply = await startInPrivate({ request, query, bot }, secondToken.token, chatId);
+    assert.match(secondReply, /connected to “Trip two”/);
+
+    // Re-connecting the first trip reuses the row and says so.
+    const againToken = await mintPairing(request, first);
+    query(`UPDATE telegram_connections SET enabled = 0 WHERE workspace_id = ${ids[0].id} AND chat_id = '${chatId}'`);
+    const againReply = await startInPrivate({ request, query, bot }, againToken.token, chatId);
+    assert.match(againReply, /already connected to “Trip one”/);
+    const rows = connectionRows(query, ids[0].id);
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].enabled, 1);
+    assert.equal(rows[0].chat_id, '900001');
+
+    // Each workspace sees only its own chat, and neither can touch the other's connection.
+    const stateA = await (await request(`/w/${first}/api`)).json() as { telegram: { configured: boolean; connections: { id: number; chat_title: string; chat_type: string }[] } };
+    const stateB = await (await request(`/w/${second}/api`)).json() as { telegram: { configured: boolean; connections: { id: number }[] } };
+    assert.equal(stateA.telegram.configured, true);
+    assert.equal(stateA.telegram.connections.length, 1);
+    assert.equal(stateA.telegram.connections[0].chat_title, 'Willow');
+    assert.equal(stateA.telegram.connections[0].chat_type, 'private');
+    assert.equal(stateB.telegram.connections.length, 1);
+    assert.notEqual(stateB.telegram.connections[0].id, stateA.telegram.connections[0].id);
+
+    const foreignId = stateA.telegram.connections[0].id;
+    assert.equal((await request(`/w/${second}/api/telegram/connections/${foreignId}`, { method: 'DELETE' })).status, 404);
+    assert.equal((await request(`/w/${second}/api/telegram/connections/${foreignId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) })).status, 404);
+    assert.equal(connectionRows(query, ids[0].id).length, 1, 'another workspace must not be able to disconnect it');
+
+    // Listed, toggled and disconnected through this workspace's own routes.
+    const listed = await (await request(`/w/${first}/api/telegram`)).json() as { configured: boolean; bot_username: string | null; connections: { id: number; enabled: boolean }[] };
+    assert.equal(listed.bot_username, BOT_USERNAME);
+    assert.equal((await request(`/w/${first}/api/telegram/connections/${foreignId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: false }) })).status, 200);
+    assert.equal(connectionRows(query, ids[0].id)[0].enabled, 0);
+    assert.equal((await request(`/w/${first}/api/telegram/connections/${foreignId}`, { method: 'DELETE' })).status, 200);
+    assert.equal(connectionRows(query, ids[0].id).length, 0);
+    assert.equal((query('SELECT COUNT(*) AS count FROM telegram_notifications') as { count: number }[])[0].count, 0);
+  });
+});
+
+test('the webhook refuses unauthenticated calls and only a group administrator can link a group', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Group trip');
+    const workspaceId = Number(query('SELECT id FROM workspaces')[0].id);
+    const pairing = await mintPairing(request, secret);
+
+    const before = bot.calls.length;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(1), text: '/start' }, null)).status, 401);
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(1), text: '/start' }, 'wrong-secret')).status, 401);
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(1), text: '/start' }, '')).status, 401);
+    assert.equal((await request('/api/telegram/webhook', { method: 'GET' })).status, 405);
+    assert.equal((await request('/api/telegram/webhook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET }, body: 'not json' })).status, 400);
+    assert.equal(bot.calls.length, before, 'a refused update must not reach the Bot API');
+    assert.equal(connectionRows(query, workspaceId).length, 0);
+    assert.equal((query('SELECT consumed_at FROM telegram_pairing_tokens ORDER BY id DESC LIMIT 1') as { consumed_at: string | null }[])[0].consumed_at, null);
+
+    // A plain member cannot link the group, and that refusal does not burn the workspace's link.
+    const group = GROUP_CHAT(-1001234567890);
+    bot.statuses.set('-1001234567890', 'member');
+    const memberReply = await startIn({ request, query, bot }, group, { id: 4242, first_name: 'Willow' }, pairing.token);
+    assert.match(memberReply, /administrator/);
+    assert.equal(connectionRows(query, workspaceId).length, 0);
+    assert.equal((query('SELECT consumed_at FROM telegram_pairing_tokens ORDER BY id DESC LIMIT 1') as { consumed_at: string | null }[])[0].consumed_at, null, 'a refused attempt must not consume the token');
+    assert.ok(bot.calls.some((call) => call.method === 'getChatMember'));
+
+    // A group administrator can, and the stored chat id keeps its full 64-bit text form.
+    bot.statuses.set('-1001234567890', 'administrator');
+    const adminUpdate = await sendUpdate({ request, query, bot }, { chat: group, from: { id: 4242, first_name: 'Willow' }, text: `/start ${pairing.token}` });
+    assert.equal(adminUpdate.status, 200);
+    await waitFor(() => connectionRows(query, workspaceId).length === 1, 'an administrator should be able to link the group');
+    const linked = connectionRows(query, workspaceId)[0];
+    assert.equal(linked.chat_id, '-1001234567890');
+    assert.equal(linked.chat_type, 'group');
+    assert.equal((await request(`/w/${secret}/api/telegram`).then((response) => response.json()) as { connections: { chat_title: string }[] }).connections[0].chat_title, 'Chiang Mai trip');
+    assert.equal((query(`SELECT COUNT(*) AS count FROM telegram_connections WHERE chat_id LIKE '%e%'`) as { count: number }[])[0].count, 0, 'a chat id must never be stored as a float');
+
+    // A channel is never linkable, however the update arrives.
+    const channelToken = await mintPairing(request, secret);
+    bot.statuses.set('-1009876543210', 'member');
+    const channelReply = await startIn({ request, query, bot }, { id: -1009876543210, type: 'channel', title: 'Chiang Mai announcements' }, { id: 4242, first_name: 'Willow' }, channelToken.token);
+    assert.match(channelReply, /administrator/);
+    assert.equal(connectionRows(query, workspaceId).length, 1);
+  });
+});
+
+test('committed writes are announced, previews and refused writes are not, and a replay never repeats a message', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Quiet trip');
+    const workspaceId = Number(query('SELECT id FROM workspaces')[0].id);
+    const pairing = await mintPairing(request, secret);
+    const chatId = 770001;
+    assert.match(await startInPrivate({ request, query, bot }, pairing.token, chatId), /is now connected/);
+    const connectionId = connectionRows(query, workspaceId)[0].id;
+    await waitFor(() => bot.messages.some((message) => message.text.includes('is now connected')), 'the pairing answer should be recorded');
+
+    const stateBefore = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = stateBefore.people;
+    const write = (body: Record<string, unknown>) => request(`/w/${secret}/api/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const transaction = { occurred_on: '2026-10-12', entry_kind: 'debt', topic: 'Night market', category: 'Food', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 4250, currency_code: 'USD' };
+
+    // A refused write is never announced.
+    const delivered = () => bot.sentMatching('Night market').length;
+    assert.equal((await write({ ...transaction, amount_minor: 'nope' })).status, 400);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(delivered(), 0);
+    assert.equal((query('SELECT COUNT(*) AS count FROM telegram_notifications') as { count: number }[])[0].count, 0);
+
+    // A preview of a split writes nothing, so it has nothing to announce.
+    const splitPreview = await request(`/w/${secret}/api/splits/preview`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-12', topic: 'Preview only', category: 'Food', payer_person_id: ada.id, participant_person_ids: [ada.id, lin.id], amount_minor: 3000, currency_code: 'USD', notes: '' }),
+    });
+    assert.equal(splitPreview.status, 200, 'a valid draft is previewed without writing anything');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(delivered(), 0);
+
+    // A committed write is announced, once, with the amount and no attribution.
+    const created = await write(transaction);
+    assert.equal(created.status, 201);
+    const transactionId = ((await created.json()) as { transaction: { id: number } }).transaction.id;
+    await waitFor(() => delivered() === 1, 'a committed transaction should be announced');
+    const announcement = bot.sentMatching('Night market')[0];
+    assert.equal(announcement.chat_id, String(chatId));
+    assert.match(announcement.text, /Trip Finance — Quiet trip/);
+    assert.match(announcement.text, /A transaction was recorded/);
+    assert.match(announcement.text, /USD 42\.50/);
+    assert.equal(/Willow|Ada|Lin/.test(announcement.text), false, 'a notification never names anyone');
+    assert.equal((query("SELECT COUNT(*) AS count FROM telegram_notifications WHERE status = 'sent'") as { count: number }[])[0].count, 1);
+    assert.equal((query('SELECT last_audit_id FROM telegram_connections') as { last_audit_id: number }[])[0].last_audit_id > 0, true);
+
+    // Editing, archiving and restoring the row are each announced in the same chat.
+    assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ topic: 'Night market snacks', amount_minor: 5000 }) })).status, 200);
+    await waitFor(() => bot.sentMatching('Night market snacks').length === 1, 'an edit should be announced');
+    assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}`, { method: 'DELETE' })).status, 200);
+    await waitFor(() => bot.sentMatching('A row was archived').length === 1, 'an archive should be announced');
+    assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}/restore`, { method: 'POST' })).status, 200);
+    await waitFor(() => bot.sentMatching('A row was restored').length === 1, 'a restore should be announced');
+    assert.equal((await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
+    await waitFor(() => bot.sentMatching('setup was changed').length === 1, 'a settings change should be announced');
+
+    // Delivery is deduplicated at the database, not by luck: rewind the watermark and replay.
+    // A retry re-reads the same audit window, so capture the watermark, let a write be announced, then
+    // put the watermark back where it stood before that write and replay the window. A split preview
+    // writes nothing but still reaches the dispatcher, which is exactly the re-read a retry performs.
+    const watermarkBefore = Number((query('SELECT last_audit_id FROM telegram_connections') as { last_audit_id: number }[])[0].last_audit_id);
+    assert.equal((await write({ ...transaction, topic: 'Second round', amount_minor: 1000 })).status, 201);
+    await waitFor(() => bot.sentMatching('Second round').length === 1, 'a committed write should be announced once');
+    const queuedAfterDelivery = Number((query(`SELECT COUNT(*) AS count FROM telegram_notifications WHERE connection_id = ${connectionId}`) as { count: number }[])[0].count);
+    const messagesAfterDelivery = bot.messages.length;
+
+    query(`UPDATE telegram_connections SET last_audit_id = ${watermarkBefore} WHERE id = ${connectionId}`);
+    assert.equal((await request(`/w/${secret}/api/splits/preview`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-12', topic: 'Preview only', category: 'Food', payer_person_id: ada.id, participant_person_ids: [ada.id, lin.id], amount_minor: 3000, currency_code: 'USD', notes: '' }),
+    })).status, 200, 'the replay is driven by a write that commits nothing');
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(bot.messages.length, messagesAfterDelivery, 'a replayed window must not resend what was already delivered');
+    assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_notifications WHERE connection_id = ${connectionId}`) as { count: number }[])[0].count), queuedAfterDelivery, 'a replay must add no outbox row');
+    assert.equal(Number((query('SELECT COUNT(*) AS count FROM telegram_notifications') as { count: number }[])[0].count), Number((query('SELECT COUNT(DISTINCT event_key) AS count FROM telegram_notifications') as { count: number }[])[0].count), 'one outbox row per event key');
+    assert.equal(Number((query('SELECT last_audit_id FROM telegram_connections') as { last_audit_id: number }[])[0].last_audit_id) > watermarkBefore, true, 'the replay still advances the watermark past what it re-read');
+
+    // Deduplication must not swallow a genuinely new event.
+    assert.equal((await write({ ...transaction, topic: 'Third round', amount_minor: 800 })).status, 201);
+    await waitFor(() => bot.sentMatching('Third round').length === 1, 'a new event after a replay should be announced');
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    assert.equal(bot.sentMatching('Third round').length, 1, 'and exactly once');
+
+    // A chat that no longer exists is switched off instead of being retried forever.
+    bot.mode = { error_code: 403, description: 'Forbidden: bot was blocked by the user' };
+    assert.equal((await write({ ...transaction, topic: 'Blocked round', amount_minor: 700 })).status, 201);
+    await waitFor(() => connectionRows(query, workspaceId)[0].enabled === 0, 'a blocked chat should be disabled');
+    assert.match(String((query('SELECT last_error FROM telegram_connections') as { last_error: string }[])[0].last_error), /blocked/);
+    bot.mode = null;
+
+    // Disconnecting removes the chat and everything queued for it, and stops the announcements.
+    const queuedBefore = Number((query(`SELECT COUNT(*) AS count FROM telegram_notifications WHERE connection_id = ${connectionId}`) as { count: number }[])[0].count);
+    assert.ok(queuedBefore > 0);
+    assert.equal((await request(`/w/${secret}/api/telegram/connections/${connectionId}`, { method: 'DELETE' })).status, 200);
+    assert.equal(connectionRows(query, workspaceId).length, 0);
+    assert.equal((query(`SELECT COUNT(*) AS count FROM telegram_notifications WHERE connection_id = ${connectionId}`) as { count: number }[])[0].count, 0);
+    const sendsBefore = bot.messages.length;
+    assert.equal((await write({ ...transaction, topic: 'After disconnect', amount_minor: 900 })).status, 201);
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    assert.equal(bot.messages.length, sendsBefore, 'a disconnected chat hears nothing');
+  });
+});
+
+test('no Telegram surface leaks a capability secret and the audit trail is untouched by chat management', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Secret trip');
+    const workspaceId = Number(query('SELECT id FROM workspaces')[0].id);
+    // A bare /start comes first, so this block's leak sweep also covers the welcome and its button.
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(880001), text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a welcome should be sent');
+    const pairing = await mintPairing(request, secret);
+    assert.match(await startInPrivate({ request, query, bot }, pairing.token, 880001), /is now connected/);
+    const connectionId = connectionRows(query, workspaceId)[0].id;
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    await request(`/w/${secret}/api/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-12', entry_kind: 'debt', topic: 'Ferry tickets', category: 'Transport', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 1500, currency_code: 'USD' }) }).then((response) => assert.equal(response.status, 201));
+    await waitFor(() => bot.sentMatching('Ferry tickets').length === 1, 'the write should be announced');
+    assert.equal((await request(`/w/${secret}/api/telegram/connections/${connectionId}`, { method: 'DELETE' })).status, 200);
+
+    // Nothing Telegram ever received may contain the capability secret, the workspace URL, the bot
+    // token or a pairing token.
+    assert.ok(bot.messages.length >= 2);
+    for (const message of bot.messages) {
+      assert.equal(message.text.includes(secret), false, 'a message must never carry the capability secret');
+      assert.equal(message.text.includes('/w/'), false, 'a message must never carry a workspace URL');
+      assert.equal(message.text.includes(BOT_TOKEN), false, 'a message must never carry the bot token');
+      assert.equal(message.text.includes(WEBHOOK_SECRET), false, 'a message must never carry the webhook secret');
+      assert.equal(/\/start [A-Za-z0-9_-]{20,}/.test(message.text), false, 'a pairing token must not be echoed back');
+      assert.equal(JSON.stringify(message.reply_markup ?? {}).includes(secret), false);
+    }
+    const welcome = bot.messages.find((message) => message.text.includes('Trip Finance Workspace'));
+    assert.ok(welcome, 'the /start welcome should have been sent');
+    assert.equal(JSON.stringify(welcome!.reply_markup).includes(ORIGIN), true);
+    assert.equal(JSON.stringify(welcome!.reply_markup).includes('/w/'), false, 'the bot button opens the public root, never a capability URL');
+
+    // The requests the worker made carried the token in the path (as the Bot API requires) and the
+    // stored hash is all we keep.
+    assert.equal(bot.calls.every((call) => call.token === BOT_TOKEN), true);
+    assert.equal((query('SELECT COUNT(*) AS count FROM telegram_pairing_tokens WHERE length(token_hash) != 64') as { count: number }[])[0].count, 0);
+
+    // Chat management is not a ledger event: nothing about it may enter the immutable trail, and the
+    // ledger's own rows are still the only audited entities.
+    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type LIKE 'telegram%'") as { count: number }[])[0].count, 0);
+    const entities = (query('SELECT DISTINCT entity_type FROM audit_log') as { entity_type: string }[]).map((row) => row.entity_type);
+    assert.ok(entities.includes('transaction'), 'ledger writes are still audited');
+    const known = ['currency', 'person', 'receipt', 'receipt_attachment', 'transaction', 'workspace', 'workspace_backup', 'workspace_settings'];
+    assert.deepEqual(entities.filter((entity) => !known.includes(entity)), [], 'chat management invents no audited entity');
+  });
+});

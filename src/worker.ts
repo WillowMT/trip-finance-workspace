@@ -3,12 +3,20 @@ import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validI
 import { autoNettingStatements } from './netting';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
 import { canonicalName, hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
+import { createPairing, dispatchWorkspaceNotifications, handleTelegramWebhook, isTelegramWebhookPath, removeConnection, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
 
 export interface Env {
   DB: D1Database;
   // Automatic snapshots. Optional so a bare local environment can still serve the ledger.
   BACKUPS?: R2Bucket;
   RECEIPTS?: R2Bucket;
+  // Telegram notifications. Absent on a bare deployment, which leaves the feature inert: nothing is
+  // paired, nothing is sent, and the webhook endpoint refuses every request.
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
+  TELEGRAM_BOT_USERNAME?: string;
+  TELEGRAM_API_BASE?: string;
+  PUBLIC_ORIGIN?: string;
 }
 
 type Json = Record<string, unknown>;
@@ -120,7 +128,9 @@ async function state(env: Env, workspace: Workspace): Promise<Json> {
     db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? ORDER BY id`).bind(workspace.id).all<ReceiptAttachment>(),
   ]);
   const backups = await backupStatus(db, workspace.id);
-  return { workspace, people: people.results, currencies: currencies.results, receipts: boardReceipts(receipts.results, attachments.results), settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS } };
+  // Telegram connections ride along with the state the Setup tab already reads, so the card renders on
+  // first paint. The bot's username is left out here (it costs a Bot API call) and fetched on demand.
+  return { workspace, people: people.results, currencies: currencies.results, receipts: boardReceipts(receipts.results, attachments.results), settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS }, telegram: await telegramStatus(env, workspace.id) };
 }
 function workspaceTimeZone(value: unknown): string | null {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -214,6 +224,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const workspace = await resolveWorkspace(env.DB, secret);
     return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, secretHeaders());
   }
+  // Telegram's own endpoint: a dedicated path, authenticated by the secret registered at setWebhook
+  // time, and shut entirely until a token and secret exist on the deployment.
+  if (isTelegramWebhookPath(pathname)) return handleTelegramWebhook(request, env);
   const match = pathname.match(/^\/w\/([^/]+)(?:\/(.*))?$/);
   if (!match) return new Response('Not found', { status: 404 });
   const [, secret, rawTail = ''] = match;
@@ -719,6 +732,28 @@ async function handle(request: Request, env: Env): Promise<Response> {
     else if (action === 'restore' && request.method === 'POST') await env.DB.prepare(`UPDATE transactions SET is_deleted = 0, updated_at = ${now} WHERE id = ? AND workspace_id = ?`).bind(transaction.id, workspace.id).run(); else return secretResponse({ error: 'Not found' }, 404);
     return secretResponse({ transaction: await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE id = ? AND workspace_id = ?').bind(transaction.id, workspace.id).first<Transaction>() });
   }
+  // --- Telegram notifications. Anyone holding the capability link manages these, exactly like the
+  // rest of the workspace: the link is the authorization, and these routes can only ever touch a chat
+  // link, never a ledger row.
+  if (tail === 'telegram' && request.method === 'GET') return secretResponse(await telegramStatus(env, workspace.id, true));
+  if (tail === 'telegram/pair' && request.method === 'POST') {
+    const pairing = await createPairing(env, workspace.id);
+    // Nothing to hand out until the deployment carries a bot token and a webhook secret.
+    if (!pairing) return secretResponse({ error: 'Telegram is not configured on this deployment' }, 503);
+    return secretResponse({ pairing }, 201);
+  }
+  const telegramConnection = tail.match(/^telegram\/connections\/([0-9]{1,12})$/);
+  if (telegramConnection && (request.method === 'PATCH' || request.method === 'DELETE')) {
+    const connectionId = Number(telegramConnection[1]);
+    if (request.method === 'DELETE') {
+      const removed = await removeConnection(env, workspace.id, connectionId);
+      return removed ? secretResponse({ removed: connectionId }) : secretResponse({ error: 'Not found' }, 404);
+    }
+    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
+    if (typeof input.enabled !== 'boolean') return secretResponse({ error: 'Invalid connection update' }, 400);
+    const connection = await setConnectionEnabled(env, workspace.id, connectionId, input.enabled);
+    return connection ? secretResponse({ connection }) : secretResponse({ error: 'Not found' }, 404);
+  }
   return new Response('Not found', { status: 404, headers: secretHeaders() });
 }
 
@@ -843,4 +878,28 @@ function receiptState(value: unknown, fallback: number): number | null {
 }
 
 
-export default { fetch: handle } satisfies ExportedHandler<Env>;
+// The secret in a workspace API path, but only for a request that would have committed something:
+// notifications are announced after the write they describe, never before it.
+function notificationSecret(request: Request): string | null {
+  if (request.method !== 'POST' && request.method !== 'PATCH' && request.method !== 'DELETE') return null;
+  const match = new URL(request.url).pathname.match(/^\/w\/([^/]+)\/api(?:\/|$)/);
+  return match ? match[1] : null;
+}
+
+export default {
+  async fetch(request: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    const response = await handle(request, env);
+    // The ledger never waits on Telegram: the write has already committed and answered by the time
+    // this runs, and a delivery problem can only ever leave a message queued in the outbox.
+    const secret = response.status < 400 ? notificationSecret(request) : null;
+    if (secret && telegramConfigured(env) && ctx && typeof ctx.waitUntil === 'function') {
+      ctx.waitUntil(
+        (async () => {
+          const workspace = await resolveWorkspace(env.DB, secret);
+          if (workspace) await dispatchWorkspaceNotifications(env, workspace.id);
+        })().catch(() => {}),
+      );
+    }
+    return response;
+  },
+} satisfies ExportedHandler<Env>;

@@ -429,7 +429,7 @@ var TABS=(function(){
   if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
   return out.length?out:['ledger','ranking','balances','split','tools','audit','settings'];
 })();
-var stateReady=false, selectedTab='ledger';
+var stateReady=false, selectedTab='ledger', telegram=null;
 function showTab(tab){
   selectedTab=tab;
   if(!stateReady){return}
@@ -468,7 +468,7 @@ async function syncInstructions(){
 async function loadState(){
   var r=await call('');
   if(!r.ok){ $('banner').textContent=r.error; $('banner').hidden=false; return false }
-  me=r.data.workspace; people=r.data.people||[]; currencies=r.data.currencies||[]; settings=r.data.settings||null; backups=r.data.backups||null;
+  me=r.data.workspace; people=r.data.people||[]; currencies=r.data.currencies||[]; settings=r.data.settings||null; backups=r.data.backups||null; telegram=r.data.telegram||null;
   $('banner').hidden=true;
   if(me&&me.name){document.title=me.name}
   var sig=rosterSignature(); if(sig!==rosterSig){ rosterSig=sig; renderSplitPeople() }
@@ -756,7 +756,7 @@ async function doOffset(a,b,c,btn){
 }
 /* ---------------- person popup ---------------- */
 var pmOpenId=null, pmData=null;
-function initials(n){ var parts=String(n==null?'':n).trim().split(/s+/); if(!parts[0]){return '?'} var out=parts[0].slice(0,1); if(parts.length>1){ out=out+parts[parts.length-1].slice(0,1) } return out.toUpperCase() }
+function initials(n){ var parts=String(n==null?'':n).trim().split(/\\s+/); if(!parts[0]){return '?'} var out=parts[0].slice(0,1); if(parts.length>1){ out=out+parts[parts.length-1].slice(0,1) } return out.toUpperCase() }
 function signedMoney(v,code){ if(!v){return '—'} return (v>0?'+':'−')+money(Math.abs(v),code) }
 function netPhrase(v,who){ return v>0?('owed to '+who):(v<0?('owed by '+who):'settled up') }
 function netChip(v,code,who){
@@ -996,6 +996,76 @@ function renderSettings(){
   $('s-name').value=(me&&me.name)||'';
   if($('s-auto-offset')){ $('s-auto-offset').checked=!((settings&&settings.auto_offset)===0) }
   renderBackups();
+  renderTelegram();
+}
+/* ---------------- telegram notifications ----------------
+   The connected-chat list is the whole state of the feature: the connect button mints a single-use
+   link, and the chat list is read straight off the workspace state. Nothing here writes a ledger row.
+   Keep this region free of backticks and of the template-literal interpolation marker. */
+var telegramLink=null;
+function telegramLinkHtml(p){
+  var command=(p&&p.command)||'', url=(p&&p.url)||'';
+  return '<div class="row"><div><div class="who">Send <b>'+esc(command)+'</b> to the bot</div>'+
+    '<div class="meta">Single use, expires in ten minutes. In a group, send it from an administrator.</div></div>'+
+    '<div class="btns flush">'+(url?('<a class="mini ghost link-plain" href="'+esc(url)+'" target="_blank" rel="noopener">Open Telegram</a>'):'')+
+    '<button class="mini ghost" type="button" data-tg-copy="1">Copy command</button></div></div>';
+}
+function renderTelegram(){
+  var box=$('s-tg-status'); if(!box){return}
+  var on=!!(telegram&&telegram.configured), list=(telegram&&telegram.connections)||[];
+  box.innerHTML='';
+  if(!on){ box.innerHTML='<span class="err">Telegram notifications are not configured on this deployment.</span>' }
+  else if(!list.length){ box.innerHTML='<span class="meta">No chat is connected yet.</span>' }
+  var pair=$('s-tg-pair'); if(pair){ pair.disabled=!on }
+  var out=$('s-tg-out'); if(out){ out.innerHTML=telegramLink?telegramLinkHtml(telegramLink):'' }
+  var rows=$('s-tg-list'); if(!rows){return}
+  rows.innerHTML='';
+  for(var i=0;i<list.length;i++){var c=list[i];
+    var el=document.createElement('div'); el.className='row';
+    el.innerHTML='<div><div class="who">'+esc(c.chat_title||'Telegram chat')+' <span class="chip">'+esc(c.chat_type||'chat')+'</span></div>'+
+      '<div class="meta">'+(c.enabled?'Notifications on':'Notifications off')+
+      (c.last_error?(' &middot; <span class="err">'+esc(c.last_error)+'</span>'):'')+
+      ' &middot; connected '+stamp(c.created_at)+'</div></div>'+
+      '<div class="btns flush"><button class="mini ghost" type="button" data-tg-toggle="'+c.id+':'+(c.enabled?'off':'on')+'">'+(c.enabled?'Disable':'Enable')+'</button>'+
+      '<button class="mini danger" type="button" data-tg-remove="'+c.id+'">Disconnect</button></div>';
+    rows.appendChild(el);
+  }
+}
+async function telegramPair(){
+  var btn=$('s-tg-pair'); if(btn){ busy(btn,true) }
+  var r=await call('/telegram/pair',{method:'POST'});
+  if(btn){ busy(btn,false) }
+  if(!r.ok){ toast(r.error||'Could not create a connect link',true); return }
+  telegramLink=(r.data&&r.data.pairing)||null;
+  renderTelegram();
+  toast('Connect link ready — it lasts ten minutes');
+}
+async function telegramList(){
+  var r=await call('/telegram'); if(!r.ok||!r.data){return}
+  telegram=r.data; renderTelegram();
+}
+async function telegramAction(id,action){
+  var path='/telegram/connections/'+id;
+  var r=(action==='remove')?await call(path,{method:'DELETE'}):await call(path,{method:'PATCH',body:{enabled:action==='on'}});
+  if(!r.ok){ toast(r.error||'Could not update this chat',true); return }
+  await telegramList();
+  toast(action==='remove'?'Chat disconnected':(action==='on'?'Notifications on':'Notifications off'));
+}
+function telegramClick(ev){
+  var node=ev.target, t=(node&&node.closest)?node.closest('[data-tg-toggle],[data-tg-remove]'):null;
+  if(!t){return}
+  var remove=t.getAttribute('data-tg-remove');
+  if(remove){ if(confirm('Disconnect this chat? It stops receiving notifications for this workspace.')){ telegramAction(Number(remove),'remove') } return }
+  var spec=(t.getAttribute('data-tg-toggle')||'').split(':');
+  telegramAction(Number(spec[0]),spec[1]==='on'?'on':'off');
+}
+function telegramCopy(){
+  var command=(telegramLink&&telegramLink.command)||''; if(!command){return}
+  if(navigator.clipboard&&navigator.clipboard.writeText){
+    navigator.clipboard.writeText(command).then(function(){toast('Command copied')},function(){toast(command)});
+    return;
+  }
+  toast(command);
 }
 /* ---------------- split an expense ---------------- */
 function splitBoxes(){
@@ -1622,7 +1692,10 @@ function init(){
   if($('s-save-backup-every')){ $('s-save-backup-every').onclick=async function(){ var every=Number($('s-backup-every').value); if(!isFinite(every)||Math.round(every)!==every||every<5||every>10000){ toast('Back up every 5 to 10000 transactions',true); return } var r=await call('',{method:'PATCH',body:{settings:{backup_every:every}}}); if(!r.ok){ toast(r.error||'Could not save the backup interval',true); return } await loadState(); renderSettings(); toast('Backups will run every '+every+' transactions') } }
   if($('s-backup-now')){ $('s-backup-now').onclick=async function(){ var btn=$('s-backup-now'); btn.disabled=true; var r=await call('/backups',{method:'POST'}); btn.disabled=false; if(!r.ok){ toast(r.error||'Could not write a backup',true); return } await loadState(); renderSettings(); toast('Backup #'+r.data.backup.sequence+' written ('+r.data.backup.rows+' transactions)') } }
   if($('s-backup-list')){ $('s-backup-list').onclick=async function(ev){ var t=ev.target; var seq=t&&t.getAttribute?t.getAttribute('data-restore'):null; if(!seq){return} if(!confirm('Restore backup #'+seq+' into a new workspace? This workspace is left untouched.')){return} t.disabled=true; var r=await call('/backups/'+seq+'/restore',{method:'POST'}); t.disabled=false; var out=$('s-restore-out'); if(!r.ok){ toast(r.error||'Could not restore this backup',true); return } var link=location.origin+r.data.workspace_url; out.innerHTML='Restored into a new workspace: <b>'+r.data.restored.transactions+'</b> transactions, '+r.data.restored.people+' people'+(r.data.restored.skipped_transactions?(' · '+r.data.restored.skipped_transactions+' rows skipped'):'')+'.<br>Open or share: <a href="'+r.data.workspace_url+'">'+esc(link)+'</a>'; toast('Restored into a new workspace') } }
-  if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var emoji=''; var parts=v.split(/s+/); if(parts.length>1){ var last=parts[parts.length-1]; if(last.length<=16&&!/[p{L}p{N}]/u.test(last)){ emoji=last; v=parts.slice(0,-1).join(' ') } } var r=await call('/people',{method:'POST',body:{display_name:v,emoji:emoji}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast(emoji?('Person added with '+emoji):'Person added') } }
+  if($('s-add-person')){ $('s-add-person').onclick=async function(){ var v=$('s-person').value.trim(); if(!v){return} var emoji=''; var parts=v.split(/\\s+/); if(parts.length>1){ var last=parts[parts.length-1]; if(last.length<=16&&!/[\\p{L}\\p{N}]/u.test(last)){ emoji=last; v=parts.slice(0,-1).join(' ') } } var r=await call('/people',{method:'POST',body:{display_name:v,emoji:emoji}}); if(!r.ok){toast(r.error,true);return} $('s-person').value=''; await loadState(); renderSettings(); renderParty(); toast(emoji?('Person added with '+emoji):'Person added') } }
+  if($('s-tg-pair')){ $('s-tg-pair').onclick=function(){ telegramPair() } }
+  if($('s-tg-list')){ $('s-tg-list').addEventListener('click',telegramClick) }
+  if($('s-tg-out')){ $('s-tg-out').addEventListener('click',function(ev){ var t=ev.target&&ev.target.closest?ev.target.closest('[data-tg-copy]'):null; if(t){ telegramCopy() } }) }
   if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
   if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
   window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
@@ -1962,6 +2035,14 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="btns mt-8"><button class="ghost" type="button" id="s-backup-now"><span aria-hidden="true">💾</span> Back up now</button></div>
     <div id="s-backup-list" class="mt-12"></div>
     <div id="s-restore-out" class="meta mt-10"></div>
+  </div>
+  <div class="card"><h2><span aria-hidden="true">🔔</span> Telegram notifications</h2>
+    <p class="hint">Connect a Telegram chat and it receives one short, anonymous message when this workspace changes — an entry was added, an import was committed, a repayment came back, the settings changed. Messages never name anyone, and a connected chat can never change a record. One chat can follow several trips; one trip can have several chats.</p>
+    <div id="s-tg-status" class="meta"></div>
+    <div class="btns mt-10"><button class="ghost" type="button" id="s-tg-pair"><span aria-hidden="true">🔔</span> Connect Telegram chat</button></div>
+    <div id="s-tg-out" class="mt-12"></div>
+    <div id="s-tg-list" class="mt-12"></div>
+    <p class="hint mt-10">For a group: add the bot to the group first, then press Connect and send the command from the group as an administrator.</p>
   </div>
   <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><div id="s-people"></div>
     <div class="inline"><div class="field flush"><label>Add person</label><input id="s-person" autocomplete="off"></div><button id="s-add-person" type="button">Add</button></div>
