@@ -38,9 +38,9 @@ processing, AI features, transaction commands and user authentication are out of
   own name change; backup restore actions. Preview-only requests, refused writes and failed writes announce
   nothing — that is structural, not a special case.
 - **Wording names the entities, in the active voice** (see *Wording: who did what to whom* below):
-  "Lin owes Ada USD 42.50 · Night market", never "A transaction was recorded". (This supersedes the original
+  "🧾 Lin owes Ada USD 42.50 · Night market", never "A transaction was recorded". (This supersedes the original
   V1 line that asked for anonymous, passive wording.)
-- One sentence per change for settings (`⚙️ The trip's setup was changed`, `Ada joined the trip`), never a
+- One sentence per change for settings (`⚙️ The trip's setup was changed`, `🙋 Ada joined the trip`), never a
   key/value dump.
 - **Backup and receipt housekeeping stay silent** rather than inventing a line for housekeeping events.
 - Delivery dedupe lives in the database: `UNIQUE(connection_id, event_key)` plus `INSERT OR IGNORE`, and the
@@ -58,7 +58,7 @@ sentence naming an "editor" would be a lie.
 
 | What happened | What the chat reads |
 |---|---|
-| a debt was recorded | `Lin owes Ada USD 42.50 · Night market` |
+| a debt was recorded | `🧾 Lin owes Ada USD 42.50 · Night market` |
 | a repayment was recorded | `💸 Lin paid Ada USD 25.00 · Settling up` |
 | a row was edited | `✏️ Edited — Lin owes Ada USD 50.00 · Night market snacks` |
 | archived or deleted | `🗄️ Removed — Lin owes Ada USD 50.00 · Night market snacks` |
@@ -68,8 +68,14 @@ sentence naming an "editor" would be a lie.
 | a batch commit | `🧾 3 entries added in one batch · Hotel`, then the `owes` lines |
 | two people settled up | `🔁 Lin and Ada settled up · 2 rows` |
 | reciprocal balances netted | `🔁 Lin and Ada netted their reciprocal balances · 2 rows` |
-| a member joined / left | `🦊 Ada joined the trip` / `Ada left the trip` |
-| the trip was renamed | `Trip renamed to “Tet lunch”` |
+| a member joined / left | `🙋 🦊 Ada joined the trip` / `👋 Ada left the trip` |
+| the trip was renamed | `🧳 Trip renamed to “Tet lunch”` |
+
+Every alert opens with `🧳 Trip Finance — <trip name>` and closes with a `🕒 <date, time>` stamp, so a
+message read away from its chat still says which trip it is about and when it happened. A line that
+stands alone — a single entry, the header, the stamp — leads with its own emoji; the rows inside a
+grouped message do not repeat one, because the headline has already said what happened and what kind
+of rows these are.
 
 - Grouped messages list up to `MAX_PAIR_LINES = 6` entity pairs, then `+N more entries` and the per-currency
   totals of the debts (payments are excluded from that total — they move the other way).
@@ -83,20 +89,22 @@ sentence naming an "editor" would be a lie.
 ## The `/start` menu: a navigation grid
 
 A chat that is already connected to a trip gets a **grid of buttons instead of a single link**. The two
-columns are the app's own tabs, in the portal's order, two to a row:
+columns are the app's own sections, in the app's own sidebar order, two to a row — creating first, then
+reading, then the workshop:
 
 ```
-📒 Ledger        ✂️ Split a bill
-⚖️ Balances      🏆 Ranking
-🧾 Receipts      📥 Bulk & import
-🕐 Audit         ⚙️ Setup
+➕ Add expense    ↩️ Record a payment
+✂️ Split a bill   📒 Transactions
+⚖️ Balances       🏆 Ranking
+🧾 Receipts       📥 Bulk & import
+🕐 Audit          ⚙️ Setup
 🌐 All trips & a new trip
 ```
 
 - A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid
   appears only once a trip is connected, and the chat's own `/start <pairing_token>` answer now ends with it.
-- A chat that follows **several** trips gets four rows per trip, each label suffixed with the trip's name
-  (`📒 Ledger · Japan 2028`), capped at `MAX_MENU_TRIPS = 3` — the rest are reachable from the app root.
+- A chat that follows **several** trips gets five rows per trip, each label suffixed with the trip's name
+  (`📒 Transactions · Japan 2028`), capped at `MAX_MENU_TRIPS = 3` — the rest are reachable from the app root.
 - Groups get the same grid, from the addressed command Telegram actually delivers in a group
   (`/start@tripfinancethingbot`). **Any member** of a connected group can open the menu — the grid is a way
   into the trip the chat already reads, while *linking* a group stays administrator-only.

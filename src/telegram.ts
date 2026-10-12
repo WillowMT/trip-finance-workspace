@@ -36,10 +36,13 @@ export const NAV_TTL_MS = 24 * 60 * 60 * 1000;
 /** A chat following more trips than this gets the first few buttons here and the rest in the browser. */
 const MAX_MENU_TRIPS = 3;
 
-/** The app's own tabs, in the portal's order: one button per section, two to a row. */
+/** The app's own sections, in the app's own order: creating first, then reading, then the workshop.
+ *  One button per section, two to a row, so the grid mirrors the app's sidebar exactly. */
 export const NAV_SECTIONS: { tab: string; label: string }[] = [
-  { tab: 'ledger', label: '📒 Ledger' },
+  { tab: 'add', label: '➕ Add expense' },
+  { tab: 'pay', label: '↩️ Record a payment' },
   { tab: 'split', label: '✂️ Split a bill' },
+  { tab: 'ledger', label: '📒 Transactions' },
   { tab: 'balances', label: '⚖️ Balances' },
   { tab: 'ranking', label: '🏆 Ranking' },
   { tab: 'receipts', label: '🧾 Receipts' },
@@ -230,9 +233,9 @@ function formatStamp(iso: string, timeZone: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return '';
   try {
-    return new Intl.DateTimeFormat('en-GB', { timeZone, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+    return `🕒 ${new Intl.DateTimeFormat('en-GB', { timeZone, day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)}`;
   } catch {
-    return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date);
+    return `🕒 ${new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(date)}`;
   }
 }
 
@@ -674,10 +677,10 @@ export async function handleNavRedirect(request: Request, env: TelegramEnv): Pro
 }
 
 const PAIRING_REFUSALS: Record<string, string> = {
-  invalid: 'That connect link is not valid. Open the trip’s ⚙️ Setup tab and press “Connect Telegram chat” to get a fresh one.',
-  used: 'That connect link has already been used — each one works exactly once. Open the trip’s ⚙️ Setup tab for a new one.',
-  expired: 'That connect link has expired — they last ten minutes. Open the trip’s ⚙️ Setup tab for a fresh one.',
-  inactive: 'That trip is no longer active, so this chat cannot be connected to it.',
+  invalid: '⚠️ That connect link is not valid. Open the trip’s ⚙️ Setup tab and press “Connect Telegram chat” to get a fresh one.',
+  used: '⚠️ That connect link has already been used — each one works exactly once. Open the trip’s ⚙️ Setup tab for a new one.',
+  expired: '⏳ That connect link has expired — they last ten minutes. Open the trip’s ⚙️ Setup tab for a fresh one.',
+  inactive: '💤 That trip is no longer active, so this chat cannot be connected to it.',
 };
 
 async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: string): Promise<void> {
@@ -696,7 +699,7 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
     return;
   }
   if (chatType(chat) !== 'private' && !(await eligible(env, chat, message?.from))) {
-    await sendMessage(env, chatId, 'Only a Telegram administrator can connect a group. Ask an admin of this group to send that command.');
+    await sendMessage(env, chatId, '🔒 Only a Telegram administrator can connect a group. Ask an admin of this group to send that command.');
     return;
   }
   const consumed = await consumePairingToken(env, payload);
@@ -706,7 +709,7 @@ async function handleStart(env: TelegramEnv, update: TelegramUpdate, root: strin
   }
   const linked = await linkChat(env, consumed.workspaceId, chat);
   if (!linked) {
-    await sendMessage(env, chatId, 'That trip could not be connected right now. Please try again from its ⚙️ Setup tab.');
+    await sendMessage(env, chatId, '⚠️ That trip could not be connected right now. Please try again from its ⚙️ Setup tab.');
     return;
   }
   const opening = linked.duplicate ? '✅ This chat is already connected to' : '✅ This chat is now connected to';
@@ -744,12 +747,12 @@ async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promi
     await sendMessage(
       env,
       chatId,
-      'This chat is not connected to any trip, so there is nothing to disconnect. Open a trip’s ⚙️ Setup tab to connect one.',
+      '🔕 This chat is not connected to any trip, so there is nothing to disconnect. Open a trip’s ⚙️ Setup tab to connect one.',
     );
     return;
   }
   if (chatType(chat) !== 'private' && !(await eligible(env, chat, message?.from))) {
-    await sendMessage(env, chatId, 'Only a Telegram administrator can disconnect this group. Ask an admin of this group to send /disconnect.');
+    await sendMessage(env, chatId, '🔒 Only a Telegram administrator can disconnect this group. Ask an admin of this group to send /disconnect.');
     return;
   }
   const removed: string[] = [];
@@ -765,7 +768,7 @@ async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promi
           '',
           'This chat stops hearing about those changes and the menu buttons stop working. To connect again, open the trip’s ⚙️ Setup tab and press “Connect Telegram chat”.',
         ].join('\n')
-      : 'Nothing is connected to this chat any more.',
+      : '🔕 Nothing is connected to this chat any more.',
   );
 }
 
@@ -810,7 +813,7 @@ export async function handleTelegramWebhook(request: Request, env: TelegramEnv):
   } catch {
     // Our own bookkeeping must never turn into an endless Telegram retry loop, but the person on the
     // other end is still owed an answer.
-    if (chatId !== undefined && chatId !== null) await sendMessage(env, String(chatId), 'Something went wrong on our side. Please try the connect button in the trip’s ⚙️ Setup tab again.').catch(() => {});
+    if (chatId !== undefined && chatId !== null) await sendMessage(env, String(chatId), '⚠️ Something went wrong on our side. Please try the connect button in the trip’s ⚙️ Setup tab again.').catch(() => {});
     return jsonResponse({ ok: true });
   }
   // Any incoming update is also a chance to flush messages that a rate limit or an outage left queued.
@@ -821,7 +824,7 @@ export async function handleTelegramWebhook(request: Request, env: TelegramEnv):
 // ---------------------------------------------------------------------------- message wording
 
 function header(name: string): string {
-  return `Trip Finance — ${name.slice(0, 60)}`;
+  return `🧳 Trip Finance — ${name.slice(0, 60)}`;
 }
 
 function groupIdOf(row: AuditRow): string | null {
@@ -873,13 +876,19 @@ function topicOf(after: Json): string {
   return String(after['topic'] ?? '').trim().slice(0, 60);
 }
 
-function pairLine(after: Json, people: PersonLabels): string {
+/**
+ * A line that stands alone is the whole event, so a lone debt leads with its own emoji. Inside an
+ * action line or a grouped message the heading has already said what happened and what kind of rows
+ * these are, so repeating the emoji on every line would only add noise.
+ */
+function pairLine(after: Json, people: PersonLabels, leadDebt = false): string {
   const debtor = labelOf(people, after['debtor_person_id']);
   const creditor = labelOf(people, after['creditor_person_id']);
   const amount = money(after['amount_minor'], after['currency_code']);
   const tail = amount ? ` ${amount}` : '';
   // A repayment moves money the other way: the debtor is the one who paid.
-  return String(after['entry_kind'] ?? 'debt') === 'payment' ? `💸 ${debtor} paid ${creditor}${tail}` : `${debtor} owes ${creditor}${tail}`;
+  if (String(after['entry_kind'] ?? 'debt') === 'payment') return `💸 ${debtor} paid ${creditor}${tail}`;
+  return `${leadDebt ? '🧾 ' : ''}${debtor} owes ${creditor}${tail}`;
 }
 
 /** A topic only earns its place on a grouped message when every row in it agrees. */
@@ -934,7 +943,8 @@ function createMessage(rows: AuditRow[], context: MessageContext): { key: string
   const grouped = rows.length > 1 || Boolean(groupIdOf(rows[0]));
   if (!grouped) {
     const after = parseJson(rows[0].after_json);
-    lines.push([pairLine(after, people), topicOf(after)].filter(Boolean).join(' · '));
+    // A single entry is the event itself, so its line carries the emoji for what it is.
+    lines.push([pairLine(after, people, true), topicOf(after)].filter(Boolean).join(' · '));
   } else {
     lines.push([groupHeadline(rows, people), sharedTopic(rows)].filter(Boolean).join(' · '));
     const offsets = rows.filter(isOffsetRow);
@@ -1020,24 +1030,24 @@ function settingLines(rows: AuditRow[]): string[] {
       continue;
     }
     if (row.entity_type === 'workspace') {
-      if (changed(before, after, 'name')) note(`Trip renamed to “${String(after['name'] ?? '')}”`);
+      if (changed(before, after, 'name')) note(`🧳 Trip renamed to “${String(after['name'] ?? '')}”`);
       continue;
     }
     if (row.entity_type === 'person') {
       const who = (source: Json): string => `${String(source['emoji'] ?? '')} ${String(source['display_name'] ?? '')}`.trim();
       const label = who(Object.keys(after).length ? after : before);
       const was = who(before);
-      if (row.action === 'create') note(`${label} joined the trip`);
-      else if (row.action === 'update') note(was && was !== label ? `${was} is now ${label}` : `${label} updated their details`);
-      else if (row.action === 'restore') note(`${label} rejoined the trip`);
-      else note(`${label} left the trip`);
+      if (row.action === 'create') note(`🙋 ${label} joined the trip`);
+      else if (row.action === 'update') note(was && was !== label ? `✏️ ${was} is now ${label}` : `✏️ ${label} updated their details`);
+      else if (row.action === 'restore') note(`🙋 ${label} rejoined the trip`);
+      else note(`👋 ${label} left the trip`);
       continue;
     }
     if (row.entity_type === 'currency') {
       const code = String(after['code'] ?? before['code'] ?? '');
       if (row.action === 'update' && Number(after['is_default']) === 1) push('Default currency', code);
-      else if (row.action === 'create') note(`Currency ${code} is available in this trip`);
-      else note(`Currency ${code} was ${row.action === 'delete' ? 'removed' : 'changed'}`);
+      else if (row.action === 'create') note(`💱 Currency ${code} is available in this trip`);
+      else note(`💱 Currency ${code} was ${row.action === 'delete' ? 'removed' : 'changed'}`);
       continue;
     }
     // Anything else stays quiet on purpose: backup bookkeeping and receipt housekeeping are not

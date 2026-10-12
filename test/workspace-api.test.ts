@@ -148,11 +148,31 @@ test('the ledger colours signed amounts, deletes with an icon, and pages at 50 r
     assert.match(html, /class="amt '\+cls\+'"/, 'the amount carries a signed colour class');
     assert.match(html, /class="mini icon danger"/, 'delete is an icon button');
     assert.ok(!html.includes('>Delete</button>'), 'the old text delete button is gone');
-    assert.match(html, /id="t-kind-hint"/, 'the mode hint is rendered');
+    assert.match(html, /id="t-direction"/, 'the add page states its one direction instead of offering a type switch');
+    assert.ok(!html.includes('id="t-kind"'), 'no type dropdown is left for a first-timer to get wrong');
     assert.match(html, /t-creditor-label">(<span[^>]*>[^<]*<\/span>\s*)?Paid by \(is owed\)/);
     assert.match(html, /t-debtor-label">(<span[^>]*>[^<]*<\/span>\s*)?For \(owes\)/);
     assert.match(html, /Repaid to \(was owed\)/, 'the repayment wording is shipped');
     assert.match(html, /Repaid by \(who owed it\)/);
+
+    /* One job per page: writing pages carry a form and no analytics, the read page carries the
+       analytics and no form. Sliced at the next section so a later section cannot satisfy the
+       assertion for an earlier one. */
+    const sectionBody = (id: string) => (html.match(new RegExp(`<section id="${id}"[^>]*>[\\s\\S]*?(?=<section id=")`)) || [''])[0];
+    const addBody = sectionBody('add'), payBody = sectionBody('pay'), ledgerBody = sectionBody('ledger');
+    assert.match(addBody, /id="t-add"/, 'the add page owns the expense form');
+    assert.match(payBody, /id="p-add"/, 'the payment page owns the repayment form');
+    assert.match(ledgerBody, /id="spend-chart"/, 'the read page carries the analytics');
+    assert.match(ledgerBody, /id="recent-splits"/, 'the read page carries the split list');
+    assert.ok(!ledgerBody.includes('<input') && !ledgerBody.includes('<select'), 'the read page has no form controls at all');
+    assert.ok(!addBody.includes('id="spend-chart"') && !addBody.includes('id="tx-list"'), 'the add page carries no analytics');
+    assert.ok(!payBody.includes('id="spend-chart"') && !payBody.includes('id="tx-list"'), 'the payment page carries no analytics');
+    assert.match(html, /<details class="card fold">\s*<summary>/, 'data cards collapse by default');
+    assert.ok(!/<details class="card fold"[^>]*\sopen/.test(html), 'no data card starts expanded');
+    assert.ok(!html.includes('class="tabs"'), 'the always-visible tab bar is gone');
+    assert.match(html, /id="nav-open"[^>]*aria-expanded="false"/, 'the drawer control starts closed');
+    assert.match(html, /id="nav-drawer"/, 'the sidebar drawer exists');
+    assert.ok(!/id="nav-drawer"[^>]*class="[^"]*\bopen\b/.test(html), 'the drawer is closed on load');
   });
 });
 

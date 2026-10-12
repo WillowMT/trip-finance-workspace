@@ -410,10 +410,14 @@ test('committed writes are announced, previews and refused writes are not, and a
     await waitFor(() => delivered() === 1, 'a committed transaction should be announced');
     const announcement = bot.sentMatching('Night market')[0];
     assert.equal(announcement.chat_id, String(chatId));
-    assert.match(announcement.text, /Trip Finance — Quiet trip/);
+    assert.match(announcement.text, /🧳 Trip Finance — Quiet trip/);
     // Active voice with both entities named: the debtor owes the creditor, and the amount follows.
-    assert.match(announcement.text, /Lin owes Ada USD 42\.50/);
+    assert.match(announcement.text, /🧾 Lin owes Ada USD 42\.50/);
     assert.match(announcement.text, /Night market/);
+    // Alerts lead with an emoji on every line: the trip, the entry, the time it happened.
+    for (const line of announcement.text.split('\n').filter((line) => line.trim())) {
+      assert.match(line, /^\p{Extended_Pictographic}/u, `line without a leading emoji: ${line}`);
+    }
     assert.equal(
       /was recorded|was created|was split|were recorded|Entries were added/.test(announcement.text),
       false,
@@ -706,15 +710,16 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     const grid = (menu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard;
     assert.match(menu.text, /Menu trip/, 'the menu names the trip');
     assert.match(menu.text, /work for a day/);
-    assert.equal(grid.length, 5, 'four rows of sections plus the app root');
-    assert.deepEqual(grid[0].map((button) => button.text), ['📒 Ledger', '✂️ Split a bill']);
-    assert.equal(grid[4][0].url, ORIGIN, 'the last button opens the public app root');
+    assert.equal(grid.length, 6, 'five rows of sections plus the app root');
+    assert.deepEqual(grid[0].map((button) => button.text), ['➕ Add expense', '↩️ Record a payment']);
+    assert.deepEqual(grid[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
+    assert.equal(grid[5][0].url, ORIGIN, 'the last button opens the public app root');
     assert.ok(!menu.text.includes(secret) && !menu.text.includes('/w/'), 'the menu never carries the trip link');
     for (const row of grid) {
       for (const button of row) {
         assert.ok(!button.url.includes('/w/'), `a menu button must not carry a capability URL: ${button.text}`);
         assert.ok(!button.url.includes(secret), 'no button carries the capability secret');
-        if (button.url !== ORIGIN) assert.match(button.url, new RegExp(`^${ORIGIN}/go/[A-Za-z0-9_-]{20,}/(ledger|split|balances|ranking|receipts|tools|audit|settings)$`));
+        if (button.url !== ORIGIN) assert.match(button.url, new RegExp(`^${ORIGIN}/go/[A-Za-z0-9_-]{20,}/(add|pay|split|ledger|balances|ranking|receipts|tools|audit|settings)$`));
       }
     }
 
@@ -768,7 +773,7 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     await waitFor(() => bot.messages.length === 1, 'a group menu should be sent');
     const groupMenu = bot.messages[0];
     assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
-    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 5, 'the group gets the same grid');
+    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 6, 'the group gets the same grid');
     assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
   });
 });

@@ -113,11 +113,31 @@ button.icon>span{pointer-events:none}
 .check input{width:18px;height:18px;min-height:0;padding:0;flex:0 0 auto;accent-color:var(--brand);cursor:pointer}
 .check.off{opacity:.5}
 
-/* ── navigation ─────────────────────────────────────────────────────────── */
-.tabs{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) auto 0;max-width:var(--maxw);padding:2px 2px 4px}
-.tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-pill);padding:0 var(--sp-5);min-height:var(--ctl-tab);font-size:var(--fs-sm)}
-.tabs button:hover{background:var(--hover);color:var(--ink)}
-.tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
+/* ── navigation: a hidden sidebar behind a hamburger ───────────────────── */
+.navbar{display:flex;align-items:center;gap:var(--sp-4);margin:var(--sp-4) auto 0;max-width:var(--maxw)}
+.hamburger{width:auto;flex:0 0 auto;min-width:0;min-height:var(--ctl-tab);padding:0 var(--sp-5);background:var(--card);color:var(--ink);border-color:var(--line);border-radius:var(--r-pill);font-size:var(--fs-sm);box-shadow:var(--shadow)}
+.nav-now{color:var(--muted);font-size:var(--fs-sm);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drawer-backdrop{position:fixed;inset:0;z-index:54;background:rgba(9,9,11,.45);opacity:0;visibility:hidden;transition:opacity var(--dur) var(--ease),visibility var(--dur)}
+body.nav-open .drawer-backdrop{opacity:1;visibility:visible}
+.drawer{position:fixed;top:0;bottom:0;left:0;z-index:55;width:min(84vw,300px);background:var(--card);border-right:1px solid var(--line);box-shadow:var(--shadow);padding:var(--sp-6) var(--sp-5);overflow-y:auto;transform:translateX(-102%);visibility:hidden;transition:transform var(--dur) var(--ease),visibility var(--dur)}
+body.nav-open .drawer{transform:none;visibility:visible}
+.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);margin-bottom:var(--sp-5)}
+.drawer-title{font-size:var(--fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.drawer nav{display:flex;flex-direction:column;gap:2px}
+.nav-group{font-size:var(--fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:var(--sp-5) 0 var(--sp-2)}
+.drawer button{width:auto;flex:0 1 auto;min-width:0;justify-content:flex-start;text-align:left;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-md);padding:0 var(--sp-5);min-height:var(--ctl);font-size:var(--fs-base)}
+.drawer button:hover{background:var(--hover);color:var(--ink)}
+.drawer button[aria-selected=true]{background:var(--surface);color:var(--ink);border-color:var(--line);font-weight:600}
+
+/* a data card that opens on demand — the summary row is the whole title */
+details.card.fold{padding:0}
+details.card.fold > summary{display:flex;align-items:center;gap:var(--sp-3);cursor:pointer;list-style:none;padding:var(--sp-6);border-radius:var(--r-xl)}
+details.card.fold > summary::-webkit-details-marker{display:none}
+details.card.fold > summary::after{content:'▾';margin-left:auto;color:var(--muted);font-size:var(--fs-md);transition:transform var(--dur) var(--ease)}
+details.card.fold[open] > summary::after{transform:rotate(180deg)}
+details.card.fold > summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
+.fold-count{color:var(--muted);font-size:var(--fs-sm);font-weight:600;white-space:nowrap}
 
 /* ── ranking ────────────────────────────────────────────────────────────── */
 .ranking-currencies{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) 0}
@@ -250,8 +270,8 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
   header{padding:var(--sp-4) var(--sp-5) var(--sp-3);margin:0 calc(var(--sp-5) * -1) var(--sp-5)}
   .head{gap:var(--sp-3)}
   .card{padding:var(--sp-5)}
-  .tabs{gap:var(--sp-1)}
-  .tabs button{padding:0 var(--sp-4);min-height:var(--ctl-sm);font-size:var(--fs-xs)}
+  .navbar{gap:var(--sp-3)}
+  .drawer button{padding:0 var(--sp-4);min-height:var(--ctl-sm);font-size:var(--fs-sm)}
   .row .meta .cat{display:none}
   .kpi .k-value{font-size:var(--fs-base)}
 }

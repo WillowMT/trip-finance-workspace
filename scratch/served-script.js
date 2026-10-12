@@ -58,13 +58,36 @@ function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria
 
 var TABS=(function(){
   var out=[], nodes=null;
-  try{ nodes=document.querySelectorAll('.tabs button') }catch(e){ nodes=null }
+  try{ nodes=document.querySelectorAll('#nav-drawer nav button') }catch(e){ nodes=null }
   if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
-  return out.length?out:['ledger','ranking','balances','split','tools','audit','settings'];
+  return out.length?out:['add','pay','split','ledger','balances','ranking','receipts','tools','audit','settings'];
 })();
+/* the drawer holds navigation, so the page it switches to is named once, plainly, next to the ☰ */
+/* classList is not guaranteed — a stripped embedder or a DOM stub can hand us a bare body — so the
+   drawer state is applied through one guarded pair instead of reaching for classList inline. */
+function navIsOpen(){ var b=document.body; return !!(b&&b.classList&&b.classList.contains('nav-open')) }
+function navSetOpen(on){ var b=document.body; if(!b||!b.classList){return} if(on){ b.classList.add('nav-open') } else { b.classList.remove('nav-open') } }
+function openNav(){
+  navSetOpen(true);
+  var b=$('nav-open'); if(b){ b.setAttribute('aria-expanded','true') }
+  var first=null; try{ first=document.querySelector('#nav-drawer button[role="tab"]') }catch(e){}
+  if(first&&first.focus){ try{first.focus()}catch(err){} }
+}
+function closeNav(){
+  if(!navIsOpen()){return}
+  navSetOpen(false);
+  var b=$('nav-open'); if(b){ b.setAttribute('aria-expanded','false'); if(b.focus){ try{b.focus()}catch(err){} } }
+}
+function navMark(tab){
+  var btn=null; try{ btn=document.getElementById('tab-'+tab) }catch(e){}
+  var now=$('nav-now');
+  if(now&&btn&&btn.textContent){ now.textContent=btn.textContent.replace(/s+/g,' ').trim() }
+  closeNav();
+}
 var stateReady=false, selectedTab='ledger', telegram=null;
 function showTab(tab){
   selectedTab=tab;
+  navMark(tab);
   if(!stateReady){return}
   for(var i=0;i<TABS.length;i++){
     var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
@@ -112,16 +135,6 @@ async function loadState(){
 }
 
 /* ---------------- ledger ---------------- */
-/* the two people fields mean different things per mode, so say what they are instead of leaving "Paid by / For" to guesswork */
-function syncKindLabels(){
-  var kind=$('t-kind'); if(!kind){return}
-  var pay=kind.value==='payment';
-  var c=$('t-creditor-label'), d=$('t-debtor-label'), hint=$('t-kind-hint');
-  if(c){ c.innerHTML=pay?'<span aria-hidden="true">📥</span> Repaid to (was owed)':'<span aria-hidden="true">💳</span> Paid by (is owed)' }
-  if(d){ d.innerHTML=pay?'<span aria-hidden="true">📤</span> Repaid by (who owed it)':'<span aria-hidden="true">🧾</span> For (owes)' }
-  if(hint){ hint.textContent=pay?'Money goes from "Repaid by" ➜ "Repaid to": the person who owed it hands the money back.':'One person paid the bill for someone else, so the other person owes them.' }
-  var sw=$('t-swap'); if(sw){ sw.textContent=pay?'↔️ Swap who paid back':'↔️ Swap people' }
-}
 function txRow(t){
   var el=document.createElement('div'); el.className='row';
   /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
@@ -145,6 +158,7 @@ async function loadLedger(){
   var keys=Object.keys(totals).sort();
   var box=$('tx-totals'); box.innerHTML='';
   if(keys.length){ for(var k=0;k<keys.length;k++){ var v=totals[keys[k]], cls2=v>0?'pos':(v<0?'neg':'zero'); var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b class="'+cls2+'">'+esc(money(v,keys[k])||'')+'</b>'; box.appendChild(d) } }
+  var cnt=$('tx-count'); if(cnt){ cnt.textContent=(txs.length===1?'1 entry':txs.length+' entries') }
   renderTxList();
   renderSpend(txs);
 }
@@ -295,12 +309,17 @@ async function confirmReview(){
   reviewBusy=false;
   closeReview();
 }
-async function addTx(){
-  var btn=$('t-add'); var err=$('t-err'); err.textContent='';
-  var rows=[{occurred_on:$('t-date').value,entry_kind:$('t-kind').value,topic:$('t-topic').value.trim(),
-    category:$('t-category').value.trim(),creditor_person_id:Number($('t-creditor').value),
-    debtor_person_id:Number($('t-debtor').value),amount_minor:toMinor($('t-amount').value),
-    currency_code:$('t-currency').value,notes:$('t-notes').value.trim()}];
+/* One form definition per writing page. Each page writes exactly one kind of entry, so the kind is
+   baked into the page rather than picked from a dropdown — a new-expense page can only ever create
+   a debt, and a repayment page can only ever create a repayment. */
+var TX_FORM={date:'t-date',topic:'t-topic',category:'t-category',creditor:'t-creditor',debtor:'t-debtor',amount:'t-amount',currency:'t-currency',notes:'t-notes',err:'t-err',add:'t-add'};
+var PAY_FORM={date:'p-date',topic:'p-topic',category:'p-category',creditor:'p-creditor',debtor:'p-debtor',amount:'p-amount',currency:'p-currency',notes:'p-notes',err:'p-err',add:'p-add'};
+async function addTx(kind, F){
+  var btn=$(F.add); var err=$(F.err); err.textContent='';
+  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim(),
+    category:$(F.category).value.trim(),creditor_person_id:Number($(F.creditor).value),
+    debtor_person_id:Number($(F.debtor).value),amount_minor:toMinor($(F.amount).value),
+    currency_code:$(F.currency).value,notes:$(F.notes).value.trim()}];
   var problem=validateRows(rows);
   if(problem){ err.textContent=problem; return }
   /* nothing is written until the review sheet is confirmed */
@@ -800,12 +819,14 @@ async function postSplit(d,btn,err){
   $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='Other';
   renderSplit();
   var out=$('sp-out');
-  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
+  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in Transactions.</div>'+
     txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
   loadLedger(); loadRecentSplits();
 }
 function renderRecentSplits(rows){
-  var box=$('recent-splits'); if(!box){return}
+  var box=$('recent-splits');
+  var sc=$('splits-count'); if(sc){ var live=0; for(var z=0;z<rows.length;z++){ if(rows[z].entry_kind==='split'&&!rows[z].is_deleted){live++} } sc.textContent=(live===1?'1 row':live+' rows') }
+  if(!box){return}
   var groups={}, order=[];
   for(var i=0;i<rows.length;i++){ var t=rows[i];
     if(t.entry_kind!=='split'||t.is_deleted){continue}
@@ -844,7 +865,7 @@ function receiptCard(r){
   var count=r.attachment_count||0;
   var meta=[when,count?(count+(count===1?' photo':' photos')):''].filter(Boolean).join(' · ');
   /* the badge is the point of the link: a card that is not in the ledger yet says so */
-  var badge=r.transaction_id?('<span class="chip">&#128279; ledger #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
+  var badge=r.transaction_id?('<span class="chip">&#128279; entry #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
   var acts='<button class="mini" type="button" data-rec-action="toggle" data-rec-id="'+r.id+'"><span aria-hidden="true">'+(r.is_added?'↩️':'✅')+'</span> '+(r.is_added?'Not added yet':'Mark added')+'</button>'
     +'<button class="mini ghost" type="button" data-rec-action="edit" data-rec-id="'+r.id+'"><span aria-hidden="true">✏️</span> Edit</button>'
     +'<button class="mini ghost" type="button" data-rec-action="delete" data-rec-id="'+r.id+'" aria-label="Delete receipt"><span aria-hidden="true">🗑️</span></button>';
@@ -860,8 +881,8 @@ function renderReceipts(){
   for(i=0;i<receipts.length;i++){ (receipts[i].is_added?added:open).push(receipts[i]) }
   var a=$('rec-added'), o=$('rec-open'); if(!a||!o){return}
   $('rec-added-count').textContent=added.length; $('rec-open-count').textContent=open.length;
-  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in the ledger.</div>';
-  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is in the ledger 🎉</div>';
+  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in Transactions.</div>';
+  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is entered 🎉</div>';
 }
 async function refreshReceipts(){
   var state=await call('');
@@ -928,7 +949,7 @@ async function receiptAction(action,id,btn){
       var flip=await call('/receipts/'+id,{method:'PATCH',body:{is_added:!r.is_added}});
       if(!flip.ok){ toast(flip.error,true); return }
       await refreshReceipts();
-      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written to the ledger':'Moved back to Not added');
+      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written':'Moved back to Not added');
       return;
     }
     if(action==='delete'){
@@ -989,7 +1010,7 @@ function wireReceipts(){
   /* The sheet owns the ledger link: a saved card can be logged (or unlinked) from here, and an
      unsaved one is told to save first, because there is no card id to point a row at yet. */
   if(log){ log.addEventListener('click',function(){
-    if(!recEditing){ toast('Save the card first — then it can be logged in the ledger',true); return }
+    if(!recEditing){ toast('Save the card first — then it can be logged',true); return }
     if(recEditing.transaction_id){ unlinkReceipt(recEditing.id,log); return }
     startReceiptLog(recEditing.id);
   }) }
@@ -1095,17 +1116,15 @@ function renderSettle(rows){
 /* Recording a plan line goes through the ordinary entry form and its review sheet, so the plan
    never writes anything itself: the payer confirms it like any other repayment. */
 function startSettlePayment(from,to,code,minor){
-  showTab('ledger');
-  if($('t-kind')){ $('t-kind').value='payment' }
-  syncKindLabels();
-  if($('t-creditor')){ $('t-creditor').value=String(to) }
-  if($('t-debtor')){ $('t-debtor').value=String(from) }
-  if($('t-currency')){ $('t-currency').value=code }
-  if($('t-amount')){ $('t-amount').value=(minor/100).toFixed(2) }
-  if($('t-topic')){ $('t-topic').value='Settle up' }
-  if($('t-category')){ $('t-category').value='Other' }
-  toast('Check it, then Add transaction — the review sheet confirms it');
-  addTx();
+  showTab('pay');
+  if($('p-creditor')){ $('p-creditor').value=String(to) }
+  if($('p-debtor')){ $('p-debtor').value=String(from) }
+  if($('p-currency')){ $('p-currency').value=code }
+  if($('p-amount')){ $('p-amount').value=(minor/100).toFixed(2) }
+  if($('p-topic')){ $('p-topic').value='Settle up' }
+  if($('p-category')){ $('p-category').value='Other' }
+  toast('Check it, then Record payment — the review sheet confirms it');
+  addTx('payment',PAY_FORM);
 }
 /* ---------------- spend by day ---------------- */
 /* Spending is money fronted for the group. A repayment gives money back, and a netting offset is a
@@ -1202,10 +1221,10 @@ function renderReceiptLog(id){
   var state=$('rec-log-state'), btn=$('rec-log'); if(!state||!btn){ return }
   var r=null, i;
   if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
-  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged in the ledger.'; return }
+  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged.'; return }
   btn.hidden=false;
-  if(r.transaction_id){ state.textContent='Logged as ledger row #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the ledger' }
-  else { state.textContent='Not in the ledger yet. Logging it opens the ledger form with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in the ledger' }
+  if(r.transaction_id){ state.textContent='Logged as entry #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the entry' }
+  else { state.textContent='Not entered yet. Logging it opens the Add expense page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
 }
 function startReceiptLog(id){
   var r=null, i;
@@ -1213,7 +1232,7 @@ function startReceiptLog(id){
   if(!r){ toast('That receipt is no longer in the list.',true); return }
   logReceiptId=r.id;
   closeReceiptForm();
-  showTab('ledger');
+  showTab('add');
   if($('t-topic')){ $('t-topic').value=r.title||'' }
   if($('t-notes')){ $('t-notes').value=r.note||'' }
   toast('Enter the amount — the card links to this entry when it saves');
@@ -1221,7 +1240,7 @@ function startReceiptLog(id){
 async function linkReceiptTransaction(id,transactionId){
   var r=await call('/receipts/'+id+'/link',{method:'POST',body:{transaction_id:transactionId}});
   if(!r.ok){ toast('Saved, but the receipt was not linked: '+r.error,true); return }
-  await refreshReceipts(); toast('Receipt linked to the ledger row');
+  await refreshReceipts(); toast('Receipt linked to the entry');
 }
 async function unlinkReceipt(id,btn){
   busy(btn,true);
@@ -1295,9 +1314,13 @@ function init(){
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
-  if($('t-add')){ $('t-add').onclick=addTx }
-  if($('t-kind')){ $('t-kind').onchange=syncKindLabels }
-  syncKindLabels();
+  if($('t-add')){ $('t-add').onclick=function(){ addTx('debt',TX_FORM) } }
+  if($('p-add')){ $('p-add').onclick=function(){ addTx('payment',PAY_FORM) } }
+  if($('p-swap')){ $('p-swap').onclick=function(){ var a=$('p-creditor'),b=$('p-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
+  if($('nav-open')){ $('nav-open').onclick=openNav }
+  if($('nav-close')){ $('nav-close').onclick=closeNav }
+  if($('nav-backdrop')){ $('nav-backdrop').onclick=closeNav }
+  document.addEventListener('keydown',function(e){ if((e.key==='Escape'||e.keyCode===27)&&navIsOpen()){ closeNav() } });
   if($('tx-prev')){ $('tx-prev').onclick=function(){ txGo(-1) } }
   if($('tx-next')){ $('tx-next').onclick=function(){ txGo(1) } }
   if($('au-apply')){ $('au-apply').onclick=function(){ loadAudit() } }

@@ -117,11 +117,31 @@ button.icon>span{pointer-events:none}
 .check input{width:18px;height:18px;min-height:0;padding:0;flex:0 0 auto;accent-color:var(--brand);cursor:pointer}
 .check.off{opacity:.5}
 
-/* ── navigation ─────────────────────────────────────────────────────────── */
-.tabs{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) auto 0;max-width:var(--maxw);padding:2px 2px 4px}
-.tabs button{width:auto;flex:0 1 auto;min-width:0;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-pill);padding:0 var(--sp-5);min-height:var(--ctl-tab);font-size:var(--fs-sm)}
-.tabs button:hover{background:var(--hover);color:var(--ink)}
-.tabs button[aria-selected=true]{background:var(--card);color:var(--ink);border-color:var(--line);box-shadow:var(--shadow)}
+/* ── navigation: a hidden sidebar behind a hamburger ───────────────────── */
+.navbar{display:flex;align-items:center;gap:var(--sp-4);margin:var(--sp-4) auto 0;max-width:var(--maxw)}
+.hamburger{width:auto;flex:0 0 auto;min-width:0;min-height:var(--ctl-tab);padding:0 var(--sp-5);background:var(--card);color:var(--ink);border-color:var(--line);border-radius:var(--r-pill);font-size:var(--fs-sm);box-shadow:var(--shadow)}
+.nav-now{color:var(--muted);font-size:var(--fs-sm);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.drawer-backdrop{position:fixed;inset:0;z-index:54;background:rgba(9,9,11,.45);opacity:0;visibility:hidden;transition:opacity var(--dur) var(--ease),visibility var(--dur)}
+body.nav-open .drawer-backdrop{opacity:1;visibility:visible}
+.drawer{position:fixed;top:0;bottom:0;left:0;z-index:55;width:min(84vw,300px);background:var(--card);border-right:1px solid var(--line);box-shadow:var(--shadow);padding:var(--sp-6) var(--sp-5);overflow-y:auto;transform:translateX(-102%);visibility:hidden;transition:transform var(--dur) var(--ease),visibility var(--dur)}
+body.nav-open .drawer{transform:none;visibility:visible}
+.drawer-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);margin-bottom:var(--sp-5)}
+.drawer-title{font-size:var(--fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+.drawer nav{display:flex;flex-direction:column;gap:2px}
+.nav-group{font-size:var(--fs-2xs);font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:var(--sp-5) 0 var(--sp-2)}
+.drawer button{width:auto;flex:0 1 auto;min-width:0;justify-content:flex-start;text-align:left;background:transparent;color:var(--muted);border-color:transparent;border-radius:var(--r-md);padding:0 var(--sp-5);min-height:var(--ctl);font-size:var(--fs-base)}
+.drawer button:hover{background:var(--hover);color:var(--ink)}
+.drawer button[aria-selected=true]{background:var(--surface);color:var(--ink);border-color:var(--line);font-weight:600}
+
+/* a data card that opens on demand — the summary row is the whole title */
+details.card.fold{padding:0}
+details.card.fold > summary{display:flex;align-items:center;gap:var(--sp-3);cursor:pointer;list-style:none;padding:var(--sp-6);border-radius:var(--r-xl)}
+details.card.fold > summary::-webkit-details-marker{display:none}
+details.card.fold > summary::after{content:'▾';margin-left:auto;color:var(--muted);font-size:var(--fs-md);transition:transform var(--dur) var(--ease)}
+details.card.fold[open] > summary::after{transform:rotate(180deg)}
+details.card.fold > summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
+.fold-count{color:var(--muted);font-size:var(--fs-sm);font-weight:600;white-space:nowrap}
 
 /* ── ranking ────────────────────────────────────────────────────────────── */
 .ranking-currencies{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin:var(--sp-4) 0}
@@ -254,8 +274,8 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
   header{padding:var(--sp-4) var(--sp-5) var(--sp-3);margin:0 calc(var(--sp-5) * -1) var(--sp-5)}
   .head{gap:var(--sp-3)}
   .card{padding:var(--sp-5)}
-  .tabs{gap:var(--sp-1)}
-  .tabs button{padding:0 var(--sp-4);min-height:var(--ctl-sm);font-size:var(--fs-xs)}
+  .navbar{gap:var(--sp-3)}
+  .drawer button{padding:0 var(--sp-4);min-height:var(--ctl-sm);font-size:var(--fs-sm)}
   .row .meta .cat{display:none}
   .kpi .k-value{font-size:var(--fs-base)}
 }
@@ -425,13 +445,36 @@ function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria
 
 var TABS=(function(){
   var out=[], nodes=null;
-  try{ nodes=document.querySelectorAll('.tabs button') }catch(e){ nodes=null }
+  try{ nodes=document.querySelectorAll('#nav-drawer nav button') }catch(e){ nodes=null }
   if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
-  return out.length?out:['ledger','ranking','balances','split','tools','audit','settings'];
+  return out.length?out:['add','pay','split','ledger','balances','ranking','receipts','tools','audit','settings'];
 })();
+/* the drawer holds navigation, so the page it switches to is named once, plainly, next to the ☰ */
+/* classList is not guaranteed — a stripped embedder or a DOM stub can hand us a bare body — so the
+   drawer state is applied through one guarded pair instead of reaching for classList inline. */
+function navIsOpen(){ var b=document.body; return !!(b&&b.classList&&b.classList.contains('nav-open')) }
+function navSetOpen(on){ var b=document.body; if(!b||!b.classList){return} if(on){ b.classList.add('nav-open') } else { b.classList.remove('nav-open') } }
+function openNav(){
+  navSetOpen(true);
+  var b=$('nav-open'); if(b){ b.setAttribute('aria-expanded','true') }
+  var first=null; try{ first=document.querySelector('#nav-drawer button[role="tab"]') }catch(e){}
+  if(first&&first.focus){ try{first.focus()}catch(err){} }
+}
+function closeNav(){
+  if(!navIsOpen()){return}
+  navSetOpen(false);
+  var b=$('nav-open'); if(b){ b.setAttribute('aria-expanded','false'); if(b.focus){ try{b.focus()}catch(err){} } }
+}
+function navMark(tab){
+  var btn=null; try{ btn=document.getElementById('tab-'+tab) }catch(e){}
+  var now=$('nav-now');
+  if(now&&btn&&btn.textContent){ now.textContent=btn.textContent.replace(/\s+/g,' ').trim() }
+  closeNav();
+}
 var stateReady=false, selectedTab='ledger', telegram=null;
 function showTab(tab){
   selectedTab=tab;
+  navMark(tab);
   if(!stateReady){return}
   for(var i=0;i<TABS.length;i++){
     var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
@@ -479,16 +522,6 @@ async function loadState(){
 }
 
 /* ---------------- ledger ---------------- */
-/* the two people fields mean different things per mode, so say what they are instead of leaving "Paid by / For" to guesswork */
-function syncKindLabels(){
-  var kind=$('t-kind'); if(!kind){return}
-  var pay=kind.value==='payment';
-  var c=$('t-creditor-label'), d=$('t-debtor-label'), hint=$('t-kind-hint');
-  if(c){ c.innerHTML=pay?'<span aria-hidden="true">📥</span> Repaid to (was owed)':'<span aria-hidden="true">💳</span> Paid by (is owed)' }
-  if(d){ d.innerHTML=pay?'<span aria-hidden="true">📤</span> Repaid by (who owed it)':'<span aria-hidden="true">🧾</span> For (owes)' }
-  if(hint){ hint.textContent=pay?'Money goes from "Repaid by" ➜ "Repaid to": the person who owed it hands the money back.':'One person paid the bill for someone else, so the other person owes them.' }
-  var sw=$('t-swap'); if(sw){ sw.textContent=pay?'↔️ Swap who paid back':'↔️ Swap people' }
-}
 function txRow(t){
   var el=document.createElement('div'); el.className='row';
   /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
@@ -512,6 +545,7 @@ async function loadLedger(){
   var keys=Object.keys(totals).sort();
   var box=$('tx-totals'); box.innerHTML='';
   if(keys.length){ for(var k=0;k<keys.length;k++){ var v=totals[keys[k]], cls2=v>0?'pos':(v<0?'neg':'zero'); var d=document.createElement('div'); d.className='total'; d.innerHTML='<span>'+esc(keys[k])+' outstanding</span><b class="'+cls2+'">'+esc(money(v,keys[k])||'')+'</b>'; box.appendChild(d) } }
+  var cnt=$('tx-count'); if(cnt){ cnt.textContent=(txs.length===1?'1 entry':txs.length+' entries') }
   renderTxList();
   renderSpend(txs);
 }
@@ -662,12 +696,17 @@ async function confirmReview(){
   reviewBusy=false;
   closeReview();
 }
-async function addTx(){
-  var btn=$('t-add'); var err=$('t-err'); err.textContent='';
-  var rows=[{occurred_on:$('t-date').value,entry_kind:$('t-kind').value,topic:$('t-topic').value.trim(),
-    category:$('t-category').value.trim(),creditor_person_id:Number($('t-creditor').value),
-    debtor_person_id:Number($('t-debtor').value),amount_minor:toMinor($('t-amount').value),
-    currency_code:$('t-currency').value,notes:$('t-notes').value.trim()}];
+/* One form definition per writing page. Each page writes exactly one kind of entry, so the kind is
+   baked into the page rather than picked from a dropdown — a new-expense page can only ever create
+   a debt, and a repayment page can only ever create a repayment. */
+var TX_FORM={date:'t-date',topic:'t-topic',category:'t-category',creditor:'t-creditor',debtor:'t-debtor',amount:'t-amount',currency:'t-currency',notes:'t-notes',err:'t-err',add:'t-add'};
+var PAY_FORM={date:'p-date',topic:'p-topic',category:'p-category',creditor:'p-creditor',debtor:'p-debtor',amount:'p-amount',currency:'p-currency',notes:'p-notes',err:'p-err',add:'p-add'};
+async function addTx(kind, F){
+  var btn=$(F.add); var err=$(F.err); err.textContent='';
+  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim(),
+    category:$(F.category).value.trim(),creditor_person_id:Number($(F.creditor).value),
+    debtor_person_id:Number($(F.debtor).value),amount_minor:toMinor($(F.amount).value),
+    currency_code:$(F.currency).value,notes:$(F.notes).value.trim()}];
   var problem=validateRows(rows);
   if(problem){ err.textContent=problem; return }
   /* nothing is written until the review sheet is confirmed */
@@ -1167,12 +1206,14 @@ async function postSplit(d,btn,err){
   $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='Other';
   renderSplit();
   var out=$('sp-out');
-  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in the ledger.</div>'+
+  if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in Transactions.</div>'+
     txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }
   loadLedger(); loadRecentSplits();
 }
 function renderRecentSplits(rows){
-  var box=$('recent-splits'); if(!box){return}
+  var box=$('recent-splits');
+  var sc=$('splits-count'); if(sc){ var live=0; for(var z=0;z<rows.length;z++){ if(rows[z].entry_kind==='split'&&!rows[z].is_deleted){live++} } sc.textContent=(live===1?'1 row':live+' rows') }
+  if(!box){return}
   var groups={}, order=[];
   for(var i=0;i<rows.length;i++){ var t=rows[i];
     if(t.entry_kind!=='split'||t.is_deleted){continue}
@@ -1211,7 +1252,7 @@ function receiptCard(r){
   var count=r.attachment_count||0;
   var meta=[when,count?(count+(count===1?' photo':' photos')):''].filter(Boolean).join(' · ');
   /* the badge is the point of the link: a card that is not in the ledger yet says so */
-  var badge=r.transaction_id?('<span class="chip">&#128279; ledger #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
+  var badge=r.transaction_id?('<span class="chip">&#128279; entry #'+r.transaction_id+'</span>'):'<span class="chip">not logged</span>';
   var acts='<button class="mini" type="button" data-rec-action="toggle" data-rec-id="'+r.id+'"><span aria-hidden="true">'+(r.is_added?'↩️':'✅')+'</span> '+(r.is_added?'Not added yet':'Mark added')+'</button>'
     +'<button class="mini ghost" type="button" data-rec-action="edit" data-rec-id="'+r.id+'"><span aria-hidden="true">✏️</span> Edit</button>'
     +'<button class="mini ghost" type="button" data-rec-action="delete" data-rec-id="'+r.id+'" aria-label="Delete receipt"><span aria-hidden="true">🗑️</span></button>';
@@ -1227,8 +1268,8 @@ function renderReceipts(){
   for(i=0;i<receipts.length;i++){ (receipts[i].is_added?added:open).push(receipts[i]) }
   var a=$('rec-added'), o=$('rec-open'); if(!a||!o){return}
   $('rec-added-count').textContent=added.length; $('rec-open-count').textContent=open.length;
-  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in the ledger.</div>';
-  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is in the ledger 🎉</div>';
+  a.innerHTML=added.length?added.map(receiptCard).join(''):'<div class="empty">Nothing added yet — move a card across once it is in Transactions.</div>';
+  o.innerHTML=open.length?open.map(receiptCard).join(''):'<div class="empty">Every receipt is entered 🎉</div>';
 }
 async function refreshReceipts(){
   var state=await call('');
@@ -1295,7 +1336,7 @@ async function receiptAction(action,id,btn){
       var flip=await call('/receipts/'+id,{method:'PATCH',body:{is_added:!r.is_added}});
       if(!flip.ok){ toast(flip.error,true); return }
       await refreshReceipts();
-      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written to the ledger':'Moved back to Not added');
+      toast(flip.data.receipt&&flip.data.receipt.is_added?'Marked as added — nothing was written':'Moved back to Not added');
       return;
     }
     if(action==='delete'){
@@ -1356,7 +1397,7 @@ function wireReceipts(){
   /* The sheet owns the ledger link: a saved card can be logged (or unlinked) from here, and an
      unsaved one is told to save first, because there is no card id to point a row at yet. */
   if(log){ log.addEventListener('click',function(){
-    if(!recEditing){ toast('Save the card first — then it can be logged in the ledger',true); return }
+    if(!recEditing){ toast('Save the card first — then it can be logged',true); return }
     if(recEditing.transaction_id){ unlinkReceipt(recEditing.id,log); return }
     startReceiptLog(recEditing.id);
   }) }
@@ -1462,17 +1503,15 @@ function renderSettle(rows){
 /* Recording a plan line goes through the ordinary entry form and its review sheet, so the plan
    never writes anything itself: the payer confirms it like any other repayment. */
 function startSettlePayment(from,to,code,minor){
-  showTab('ledger');
-  if($('t-kind')){ $('t-kind').value='payment' }
-  syncKindLabels();
-  if($('t-creditor')){ $('t-creditor').value=String(to) }
-  if($('t-debtor')){ $('t-debtor').value=String(from) }
-  if($('t-currency')){ $('t-currency').value=code }
-  if($('t-amount')){ $('t-amount').value=(minor/100).toFixed(2) }
-  if($('t-topic')){ $('t-topic').value='Settle up' }
-  if($('t-category')){ $('t-category').value='Other' }
-  toast('Check it, then Add transaction — the review sheet confirms it');
-  addTx();
+  showTab('pay');
+  if($('p-creditor')){ $('p-creditor').value=String(to) }
+  if($('p-debtor')){ $('p-debtor').value=String(from) }
+  if($('p-currency')){ $('p-currency').value=code }
+  if($('p-amount')){ $('p-amount').value=(minor/100).toFixed(2) }
+  if($('p-topic')){ $('p-topic').value='Settle up' }
+  if($('p-category')){ $('p-category').value='Other' }
+  toast('Check it, then Record payment — the review sheet confirms it');
+  addTx('payment',PAY_FORM);
 }
 /* ---------------- spend by day ---------------- */
 /* Spending is money fronted for the group. A repayment gives money back, and a netting offset is a
@@ -1569,10 +1608,10 @@ function renderReceiptLog(id){
   var state=$('rec-log-state'), btn=$('rec-log'); if(!state||!btn){ return }
   var r=null, i;
   if(id){ for(i=0;i<receipts.length;i++){ if(receipts[i].id===id){ r=receipts[i] } } }
-  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged in the ledger.'; return }
+  if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged.'; return }
   btn.hidden=false;
-  if(r.transaction_id){ state.textContent='Logged as ledger row #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the ledger' }
-  else { state.textContent='Not in the ledger yet. Logging it opens the ledger form with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in the ledger' }
+  if(r.transaction_id){ state.textContent='Logged as entry #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the entry' }
+  else { state.textContent='Not entered yet. Logging it opens the Add expense page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
 }
 function startReceiptLog(id){
   var r=null, i;
@@ -1580,7 +1619,7 @@ function startReceiptLog(id){
   if(!r){ toast('That receipt is no longer in the list.',true); return }
   logReceiptId=r.id;
   closeReceiptForm();
-  showTab('ledger');
+  showTab('add');
   if($('t-topic')){ $('t-topic').value=r.title||'' }
   if($('t-notes')){ $('t-notes').value=r.note||'' }
   toast('Enter the amount — the card links to this entry when it saves');
@@ -1588,7 +1627,7 @@ function startReceiptLog(id){
 async function linkReceiptTransaction(id,transactionId){
   var r=await call('/receipts/'+id+'/link',{method:'POST',body:{transaction_id:transactionId}});
   if(!r.ok){ toast('Saved, but the receipt was not linked: '+r.error,true); return }
-  await refreshReceipts(); toast('Receipt linked to the ledger row');
+  await refreshReceipts(); toast('Receipt linked to the entry');
 }
 async function unlinkReceipt(id,btn){
   busy(btn,true);
@@ -1662,9 +1701,13 @@ function init(){
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
-  if($('t-add')){ $('t-add').onclick=addTx }
-  if($('t-kind')){ $('t-kind').onchange=syncKindLabels }
-  syncKindLabels();
+  if($('t-add')){ $('t-add').onclick=function(){ addTx('debt',TX_FORM) } }
+  if($('p-add')){ $('p-add').onclick=function(){ addTx('payment',PAY_FORM) } }
+  if($('p-swap')){ $('p-swap').onclick=function(){ var a=$('p-creditor'),b=$('p-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
+  if($('nav-open')){ $('nav-open').onclick=openNav }
+  if($('nav-close')){ $('nav-close').onclick=closeNav }
+  if($('nav-backdrop')){ $('nav-backdrop').onclick=closeNav }
+  document.addEventListener('keydown',function(e){ if((e.key==='Escape'||e.keyCode===27)&&navIsOpen()){ closeNav() } });
   if($('tx-prev')){ $('tx-prev').onclick=function(){ txGo(-1) } }
   if($('tx-next')){ $('tx-next').onclick=function(){ txGo(1) } }
   if($('au-apply')){ $('au-apply').onclick=function(){ loadAudit() } }
@@ -1831,34 +1874,70 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   <div class="head">
     <div>
       <h1>${esc(name)}</h1>
-      <p class="sub">Shared editable ledger · every change is audited</p>
+      <p class="sub">Shared with everyone on the trip · every change is audited</p>
     </div>
     <button id="c-copy" class="mini ghost" type="button">Copy link</button>
   </div>
-  <div class="tabs" role="tablist">
-    <button id="tab-ledger" role="tab" aria-selected="true" type="button"><span aria-hidden="true">📒</span> Ledger</button>
-    <button id="tab-ranking" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🏆</span> Ranking</button>
-    <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split</button>
-    <button id="tab-balances" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚖️</span> Balances</button>
-    <button id="tab-tools" role="tab" aria-selected="false" type="button"><span aria-hidden="true">📥</span> Bulk &amp; import</button>
-    <button id="tab-receipts" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🧾</span> Receipts</button>
-    <button id="tab-audit" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🕐</span> Audit</button>
-    <button id="tab-settings" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚙️</span> Setup</button>
+  <div class="navbar">
+    <button id="nav-open" class="hamburger" type="button" aria-expanded="false" aria-controls="nav-drawer"><span aria-hidden="true">☰</span> Menu</button>
+    <span id="nav-now" class="nav-now">📒 Transactions</span>
   </div>
 </header>
+<div id="nav-backdrop" class="drawer-backdrop"></div>
+<aside id="nav-drawer" class="drawer" aria-label="Sections">
+  <div class="drawer-head">
+    <span class="drawer-title">Go to</span>
+    <button id="nav-close" class="mini ghost" type="button" aria-label="Close menu">✕</button>
+  </div>
+  <nav role="tablist" aria-label="Sections">
+    <span class="nav-group">Write</span>
+    <button id="tab-add" role="tab" aria-selected="false" type="button"><span aria-hidden="true">➕</span> Add expense</button>
+    <button id="tab-pay" role="tab" aria-selected="false" type="button"><span aria-hidden="true">↩️</span> Record a payment</button>
+    <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split a bill</button>
+    <span class="nav-group">Read</span>
+    <button id="tab-ledger" role="tab" aria-selected="true" type="button"><span aria-hidden="true">📒</span> Transactions</button>
+    <button id="tab-balances" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚖️</span> Balances</button>
+    <button id="tab-ranking" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🏆</span> Ranking</button>
+    <button id="tab-receipts" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🧾</span> Receipts</button>
+    <span class="nav-group">Workshop</span>
+    <button id="tab-tools" role="tab" aria-selected="false" type="button"><span aria-hidden="true">📥</span> Bulk &amp; import</button>
+    <button id="tab-audit" role="tab" aria-selected="false" type="button"><span aria-hidden="true">🕐</span> Audit</button>
+    <button id="tab-settings" role="tab" aria-selected="false" type="button"><span aria-hidden="true">⚙️</span> Setup</button>
+  </nav>
+</aside>
 <div id="banner" class="err" hidden></div>
 <div id="digest" class="card" hidden></div>
 
 <section id="ledger">
-  <div class="card">
-    <h2><span aria-hidden="true">➕</span> Add transaction</h2>
-    <div class="field"><label for="t-kind">Type</label>
-      <select id="t-kind">
-        <option value="debt">Someone owes — one person paid</option>
-        <option value="payment">Repayment — someone paid back</option>
-      </select>
-      <div class="hint" id="t-kind-hint"></div>
+  <details class="card fold">
+    <summary><h2><span aria-hidden="true">📈</span> Spend by day</h2><span class="fold-count" id="spend-count"></span></summary>
+    <div class="fold-body">
+      <p class="hint">What was fronted each day — money coming back (a repayment) and netting offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
+      <div id="spend-chart"><div class="empty">Loading…</div></div>
     </div>
+  </details>
+  <details class="card fold">
+    <summary><h2><span aria-hidden="true">📒</span> Transactions</h2><span class="fold-count" id="tx-count"></span></summary>
+    <div class="fold-body">
+      <p class="hint">Green <b>+</b> is a debt someone owes the payer · red <b>−</b> is a repayment coming back.</p>
+      <div id="tx-totals" class="totals"></div>
+      <div id="tx-list"><div class="empty">Loading…</div></div>
+      <div id="tx-pager" class="pager" hidden><button id="tx-prev" class="ghost" type="button">‹ Prev</button><span id="tx-pager-info" class="pager-info"></span><button id="tx-next" class="ghost" type="button">Next ›</button></div>
+    </div>
+  </details>
+  <details class="card fold">
+    <summary><h2><span aria-hidden="true">🕘</span> Recent splits</h2><span class="fold-count" id="splits-count"></span></summary>
+    <div class="fold-body">
+      <p class="hint">Latest active split records. The amount is the debt created for the payer; deleted split records stay out of this list.</p>
+      <div id="recent-splits" aria-live="polite"><div class="empty">Loading…</div></div>
+    </div>
+  </details>
+</section>
+
+<section id="add" hidden>
+  <div class="card">
+    <h2><span aria-hidden="true">➕</span> Add expense</h2>
+    <p class="hint" id="t-direction">One person paid for the group, and this page only ever records that direction: whoever paid is owed by whoever it was for. Recording money handed back is the separate <b>Record a payment</b> page.</p>
     <div class="grid three">
       <div class="field"><label for="t-amount">Amount</label><input id="t-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
       <div class="field"><label for="t-currency">Currency</label><select id="t-currency">${currencyOptions}</select></div>
@@ -1874,25 +1953,37 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="field"><label for="t-category">Category</label><select id="t-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
     </div>
     <div class="field"><label for="t-notes">Notes (optional)</label><input id="t-notes" autocomplete="off"></div>
-    <button id="t-add" type="button"><span aria-hidden="true">✅</span> Add transaction</button>
+    <button id="t-add" type="button"><span aria-hidden="true">✅</span> Add expense</button>
     <div id="t-err" class="err"></div>
   </div>
+</section>
+
+<section id="pay" hidden>
   <div class="card">
-    <h2><span aria-hidden="true">📈</span> Spend by day</h2>
-    <p class="hint">What was fronted each day — money coming back (a repayment) and netting offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
-    <div id="spend-chart"><div class="empty">Loading…</div></div>
-  </div>
-  <div class="card">
-    <h2><span aria-hidden="true">📒</span> Transactions</h2>
-    <p class="hint">Green <b>+</b> is a debt someone owes the payer · red <b>−</b> is a repayment coming back.</p>
-    <div id="tx-totals" class="totals"></div>
-    <div id="tx-list"><div class="empty">Loading…</div></div>
-    <div id="tx-pager" class="pager" hidden><button id="tx-prev" class="ghost" type="button">‹ Prev</button><span id="tx-pager-info" class="pager-info"></span><button id="tx-next" class="ghost" type="button">Next ›</button></div>
+    <h2><span aria-hidden="true">↩️</span> Record a payment</h2>
+    <p class="hint" id="p-direction">Someone handed money back, and this page only ever records that direction: the person who paid reduces what they owe the person they paid. New spending is the separate <b>Add expense</b> page.</p>
+    <div class="grid three">
+      <div class="field"><label for="p-amount">Amount</label><input id="p-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
+      <div class="field"><label for="p-currency">Currency</label><select id="p-currency">${currencyOptions}</select></div>
+      <div class="field"><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
+    </div>
+    <div class="grid">
+      <div class="field"><label for="p-debtor" id="p-debtor-label"><span aria-hidden="true">📤</span> Repaid by (who owed it)</label><select id="p-debtor">${personOptions}</select></div>
+      <div class="field"><label for="p-creditor" id="p-creditor-label"><span aria-hidden="true">📥</span> Repaid to (was owed)</label><select id="p-creditor">${personOptions}</select></div>
+    </div>
+    <div class="swap"><button id="p-swap" type="button">↔️ Swap people</button></div>
+    <div class="grid">
+      <div class="field"><label for="p-topic">What for</label><input id="p-topic" placeholder="Settle up" autocomplete="off"></div>
+      <div class="field"><label for="p-category">Category</label><select id="p-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
+    </div>
+    <div class="field"><label for="p-notes">Notes (optional)</label><input id="p-notes" autocomplete="off"></div>
+    <button id="p-add" type="button"><span aria-hidden="true">✅</span> Record payment</button>
+    <div id="p-err" class="err"></div>
   </div>
 </section>
 
 <section id="ranking" hidden>
-  <div class="card"><h2><span aria-hidden="true">🏆</span> Who owes most</h2><p class="hint">Outstanding balances only. Choose a currency to compare like with like; this view never changes the ledger.</p><div id="ranking-currencies" class="ranking-currencies" role="group" aria-label="Ranking currency"></div><div id="ranking-list" class="ranking-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">🏆</span> Who owes most</h2><p class="hint">Outstanding balances only. Choose a currency to compare like with like; this view never changes the records.</p><div id="ranking-currencies" class="ranking-currencies" role="group" aria-label="Ranking currency"></div><div id="ranking-list" class="ranking-list"><div class="empty">Loading…</div></div></div>
 </section>
 
 <section id="split" hidden>
@@ -1924,11 +2015,6 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     </div>
     <div id="sp-err" class="err"></div>
     <div id="sp-out"></div>
-  </div>
-  <div class="card">
-    <h2><span aria-hidden="true">🕘</span> Recent splits</h2>
-    <p class="hint">Latest active split records. The amount is the debt created for the payer; deleted split records stay out of this list.</p>
-    <div id="recent-splits" aria-live="polite"><div class="empty">Loading…</div></div>
   </div>
 </section>
 
@@ -1963,18 +2049,18 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="receipts" hidden>
   <div class="card"><h2><span aria-hidden="true">🧾</span> Receipts backlog</h2>
-    <p class="sub">Your own checklist of receipt photos and what each one was for. A card holds its notes and a few photos &mdash; move it across to <b>Added</b> once you have entered it in the ledger. Nothing here writes transactions by itself.</p>
+    <p class="sub">Your own checklist of receipt photos and what each one was for. A card holds its notes and a few photos &mdash; move it across to <b>Added</b> once you have entered it in Transactions. Nothing here writes transactions by itself.</p>
     <div class="btns">
       <button type="button" id="rec-new"><span aria-hidden="true">&#10133;</span> New receipt</button>
     </div>
   </div>
   <div class="rec-board">
     <div class="rec-col">
-      <div class="rec-head"><h3><span aria-hidden="true">📥</span> Not added <span class="count" id="rec-open-count">0</span></h3><p class="hint">Receipts still to be entered in the ledger.</p></div>
+      <div class="rec-head"><h3><span aria-hidden="true">📥</span> Not added <span class="count" id="rec-open-count">0</span></h3><p class="hint">Receipts still to be entered.</p></div>
       <div class="rec-list" id="rec-open"><div class="empty">Loading&hellip;</div></div>
     </div>
     <div class="rec-col">
-      <div class="rec-head"><h3><span aria-hidden="true">✅</span> Added <span class="count" id="rec-added-count">0</span></h3><p class="hint">Already recorded in the ledger.</p></div>
+      <div class="rec-head"><h3><span aria-hidden="true">✅</span> Added <span class="count" id="rec-added-count">0</span></h3><p class="hint">Already recorded in Transactions.</p></div>
       <div class="rec-list" id="rec-added"><div class="empty">Loading&hellip;</div></div>
     </div>
   </div>
@@ -2075,10 +2161,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
         <label class="ghost" for="rec-files"><span aria-hidden="true">&#128206;</span> Add photos</label>
       </div>
       <p class="hint">Pick from your photo library &mdash; up to six. On a receipt you have not saved yet they upload when you save. Tap a photo to see it larger, or to take it off.</p></div>
-    <div class="field"><label class="check"><input type="checkbox" id="rec-state"> <span>Already added to the ledger</span></label></div>
-    <div class="field"><label>Ledger</label>
+    <div class="field"><label class="check"><input type="checkbox" id="rec-state"> <span>Already added to Transactions</span></label></div>
+    <div class="field"><label>Entry</label>
       <div id="rec-log-state" class="hint"></div>
-      <div class="btns"><button type="button" id="rec-log" class="ghost"><span aria-hidden="true">&#129534;</span> Log this in the ledger</button></div>
+      <div class="btns"><button type="button" id="rec-log" class="ghost"><span aria-hidden="true">&#129534;</span> Log this in Transactions</button></div>
     </div>
     <div class="btns"><button type="button" id="rec-save"><span aria-hidden="true">&#128190;</span> Save receipt</button></div>
   </div>
