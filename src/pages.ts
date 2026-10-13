@@ -1584,7 +1584,7 @@ function startSettlePayment(from,to,code,minor){
   if($('p-debtor')){ $('p-debtor').value=String(from) }
   if($('p-currency')){ $('p-currency').value=code }
   if($('p-amount')){ $('p-amount').value=(minor/100).toFixed(2) }
-  if($('p-topic')){ $('p-topic').value='Settle up' }
+  if($('p-topic')){ $('p-topic').value='Payment' }
   if($('p-category')){ $('p-category').value='Other' }
   toast('Check it, then Record payment — the review sheet confirms it');
   addTx('payment',PAY_FORM);
@@ -2096,7 +2096,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="pill-row" id="p-limits-list"><span class="hint">Choose who repaid and who was owed, and the most they can pay appears here.</span></div>
     </div>
     <div class="grid">
-      <div class="field"><label for="p-topic">What for</label><input id="p-topic" placeholder="Settle up" autocomplete="off"></div>
+      <div class="field"><label for="p-topic">What for</label><input id="p-topic" value="Payment" placeholder="Settle up" autocomplete="off"></div>
       <div class="field"><label for="p-category">Category</label><select id="p-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
     </div>
     <div class="field"><label for="p-notes">Notes (optional)</label><input id="p-notes" autocomplete="off"></div>

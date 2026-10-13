@@ -1182,7 +1182,7 @@ function startSettlePayment(from,to,code,minor){
   if($('p-debtor')){ $('p-debtor').value=String(from) }
   if($('p-currency')){ $('p-currency').value=code }
   if($('p-amount')){ $('p-amount').value=(minor/100).toFixed(2) }
-  if($('p-topic')){ $('p-topic').value='Settle up' }
+  if($('p-topic')){ $('p-topic').value='Payment' }
   if($('p-category')){ $('p-category').value='Other' }
   toast('Check it, then Record payment — the review sheet confirms it');
   addTx('payment',PAY_FORM);
