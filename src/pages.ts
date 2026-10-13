@@ -487,14 +487,21 @@ function navMark(tab){
   closeNav();
 }
 var stateReady=false, selectedTab='ledger', telegram=null;
-function showTab(tab){
-  selectedTab=tab;
-  navMark(tab);
-  if(!stateReady){return}
+/* Painting the chosen section is pure DOM, so it is deliberately not gated behind stateReady().
+   The app is served with the ledger visible and every other section hidden, so waiting for /api
+   before swapping showed the ledger first and then flicked to the real section - init() calls
+   showTab() before loadState() for exactly that reason. Only the data loads wait for state. */
+function paintTab(tab){
   for(var i=0;i<TABS.length;i++){
     var section=$(TABS[i]); if(section){section.hidden=TABS[i]!==tab}
     var btn=$('tab-'+TABS[i]); if(btn){btn.setAttribute('aria-selected',String(TABS[i]===tab))}
   }
+}
+function showTab(tab){
+  selectedTab=tab;
+  navMark(tab);
+  paintTab(tab);
+  if(!stateReady){return}
   if(location.hash!=='#'+tab){try{history.replaceState(null,'','#'+tab)}catch(e){}}
   if(tab==='ledger'){loadLedger()}
   if(tab==='ranking'){loadRanking()}
