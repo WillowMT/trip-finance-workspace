@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -20,11 +21,32 @@ const WEBHOOK_SECRET = 'fake-webhook-secret-0123456789abcdef';
 const BOT_USERNAME = 'trip_finance_test_bot';
 
 type BotCall = { method: string; token: string; payload: Record<string, unknown> };
+type BotPhoto = { chat_id: string; bytes: number[] };
+type CallbackAnswer = { callback_query_id: string; text?: string };
+
+function multipartPayload(bytes: Buffer, contentType: string): { fields: Record<string, string>; photo: number[] } {
+  const match = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
+  const boundary = match?.[1] ?? match?.[2];
+  if (!boundary) return { fields: {}, photo: [] };
+  const fields: Record<string, string> = {};
+  let photo: number[] = [];
+  for (const part of bytes.toString('latin1').split(`--${boundary}`)) {
+    const divider = part.indexOf('\r\n\r\n');
+    const name = part.slice(0, divider).match(/name="([^"]+)"/i)?.[1];
+    if (divider < 0 || !name) continue;
+    const value = part.slice(divider + 4).replace(/\r\n$/, '');
+    if (name === 'photo') photo = [...Buffer.from(value, 'latin1')];
+    else fields[name] = value;
+  }
+  return { fields, photo };
+}
 
 /** A minimal Bot API double: records every call and lets a test choose how the next send behaves. */
 class FakeBot {
   readonly calls: BotCall[] = [];
   readonly messages: { chat_id: string; text: string; reply_markup?: unknown }[] = [];
+  readonly photos: BotPhoto[] = [];
+  readonly callbackAnswers: CallbackAnswer[] = [];
   readonly statuses = new Map<string, string>();
   mode: { error_code: number; description: string } | null = null;
   /** Failures aimed at one chat only, so a test can break a single connection while the rest stay healthy. */
@@ -34,8 +56,8 @@ class FakeBot {
 
   async start(): Promise<void> {
     this.server = createServer((incoming, outgoing) => {
-      let body = '';
-      incoming.on('data', (chunk) => { body += chunk; });
+      const chunks: Buffer[] = [];
+      incoming.on('data', (chunk: Buffer) => { chunks.push(Buffer.from(chunk)); });
       incoming.on('end', () => {
         const path = incoming.url ?? '';
         const match = path.match(/^\/bot([^/]+)\/([A-Za-z]+)$/);
@@ -45,8 +67,17 @@ class FakeBot {
           return;
         }
         const [, token, method] = match;
+        const bytes = Buffer.concat(chunks);
+        const contentType = String(incoming.headers['content-type'] ?? '');
         let payload: Record<string, unknown> = {};
-        try { payload = JSON.parse(body || '{}') as Record<string, unknown>; } catch { payload = {}; }
+        let photo: number[] = [];
+        if (contentType.startsWith('multipart/form-data')) {
+          const multipart = multipartPayload(bytes, contentType);
+          payload = multipart.fields;
+          photo = multipart.photo;
+        } else {
+          try { payload = JSON.parse(bytes.toString('utf8') || '{}') as Record<string, unknown>; } catch { payload = {}; }
+        }
         this.calls.push({ method, token, payload });
         const reply = (data: unknown, status = 200) => {
           outgoing.writeHead(status, { 'content-type': 'application/json' });
@@ -76,6 +107,16 @@ class FakeBot {
           reply({ ok: true, result: { message_id: this.messages.length } });
           return;
         }
+        if (method === 'sendPhoto') {
+          this.photos.push({ chat_id: String(payload.chat_id ?? ''), bytes: photo });
+          reply({ ok: true, result: { message_id: this.photos.length } });
+          return;
+        }
+        if (method === 'answerCallbackQuery') {
+          this.callbackAnswers.push({ callback_query_id: String(payload.callback_query_id ?? ''), text: typeof payload.text === 'string' ? payload.text : undefined });
+          reply({ ok: true, result: true });
+          return;
+        }
         reply({ ok: false, error_code: 404, description: 'Not Found' });
       });
     });
@@ -99,6 +140,27 @@ class FakeBot {
     return this.messages.length ? this.messages[this.messages.length - 1].text : '';
   }
 }
+
+test('FakeBot captures multipart photos and callback acknowledgements', async () => {
+  const bot = new FakeBot();
+  await bot.start();
+  try {
+    const form = new FormData();
+    form.set('chat_id', '101');
+    form.set('photo', new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], { type: 'image/png' }), 'summary.png');
+    const photo = await fetch(`http://127.0.0.1:${bot.port}/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form });
+    assert.equal(photo.status, 200);
+    assert.deepEqual(bot.photos, [{ chat_id: '101', bytes: [137, 80, 78, 71, 13, 10, 26, 10] }]);
+
+    const callback = await fetch(`http://127.0.0.1:${bot.port}/bot${BOT_TOKEN}/answerCallbackQuery`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ callback_query_id: 'callback-101' }),
+    });
+    assert.equal(callback.status, 200);
+    assert.deepEqual(bot.callbackAnswers, [{ callback_query_id: 'callback-101', text: undefined }]);
+  } finally {
+    await bot.stop();
+  }
+});
 
 type Harness = {
   request: (path: string, init?: RequestInit) => Promise<Response>;
@@ -174,6 +236,17 @@ async function sendUpdate(harness: Harness, update: UpdateInit, secretHeader: st
     method: 'POST',
     headers: { 'content-type': 'application/json', ...(secretHeader === null ? {} : { 'x-telegram-bot-api-secret-token': secretHeader }) },
     body: JSON.stringify({ update_id: Math.floor(Math.random() * 1_000_000), message }),
+  });
+}
+
+async function sendCallbackQuery(harness: Harness, chat: UpdateInit['chat'], data: string, from = { id: 4242, first_name: 'Willow' }): Promise<Response> {
+  return harness.request('/api/telegram/webhook', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET },
+    body: JSON.stringify({
+      update_id: Math.floor(Math.random() * 1_000_000),
+      callback_query: { id: `callback-${Math.random()}`, from, message: { message_id: Math.floor(Math.random() * 1000), chat }, data },
+    }),
   });
 }
 
@@ -840,5 +913,43 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
     assert.match(bot.messages[0].text, /Disconnected .*Disconnect group trip/);
     assert.equal(connectionRows(query, groupId).length, 0, 'an administrator can disconnect the group');
     assert.equal(Number((query(groupPasses) as { count: number }[])[0].count), 0);
+  });
+});
+
+test('sends a current debt summary image after its Summary callback', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Summary trip');
+    const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
+    query(`INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (${workspaceId}, 'MYR', 0)`);
+    const chatId = 101;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const write = (creditor: number, debtor: number, amount: number, currency: string) => request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'debt', topic: 'Summary fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: currency }),
+    });
+    // Reciprocal USD entries and a separate MYR debt ensure the callback reads the current, multi-currency ledger.
+    assert.equal((await write(ada.id, lin.id, 5_000, 'USD')).status, 201);
+    assert.equal((await write(lin.id, ada.id, 1_200, 'USD')).status, 201);
+    assert.equal((await write(lin.id, ada.id, 3_300, 'MYR')).status, 201);
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('Tap a section')), 'the connected chat should receive its menu');
+    const menu = bot.messages.find((message) => message.text.includes('Tap a section'))!;
+    const buttons = ((menu.reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard).flat();
+    const summary = buttons.find((button) => button.text === '📊 Send debt summary');
+    const callbackData = summary?.callback_data;
+    assert.ok(callbackData, 'the menu should offer a Summary callback');
+
+    assert.equal((await sendCallbackQuery({ request, query, bot }, chat, callbackData)).status, 200);
+    assert.equal(bot.photos.length, 1);
+    assert.equal(bot.photos[0].chat_id, String(chatId));
+    assert.deepEqual(bot.photos[0].bytes.slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(bot.callbackAnswers.length, 1);
   });
 });
