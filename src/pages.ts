@@ -190,14 +190,23 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .p-block{min-width:0;flex:1 1 auto}
 .pm-analytics{margin-top:var(--sp-6)}
 .pm-analytics-title{margin:0 0 var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
-.pm-analytics-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
-.pm-analytics-card{min-width:0;padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
-.pm-analytics-card.in{background:color-mix(in srgb,var(--ok) 6%,var(--surface));border-color:color-mix(in srgb,var(--ok) 22%,var(--line))}
-.pm-analytics-card.out{background:color-mix(in srgb,var(--bad) 4%,var(--surface));border-color:color-mix(in srgb,var(--bad) 18%,var(--line))}
-.pm-analytics-label{display:block;margin-bottom:var(--sp-3);font-size:var(--fs-xs);font-weight:750;letter-spacing:.055em;text-transform:uppercase;color:var(--muted)}
+.pm-analytics-grid{display:grid;grid-template-columns:1fr;gap:var(--sp-3)}
+.analytics-item{min-width:0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.analytics-item.in{background:color-mix(in srgb,var(--ok) 6%,var(--surface));border-color:color-mix(in srgb,var(--ok) 22%,var(--line))}
+.analytics-item.out{background:color-mix(in srgb,var(--bad) 4%,var(--surface));border-color:color-mix(in srgb,var(--bad) 18%,var(--line))}
+.pm-analytics-card{display:flex;align-items:center;gap:var(--sp-4);width:100%;padding:var(--sp-5);background:none;border:0;color:inherit;font:inherit;text-align:left;cursor:pointer;white-space:normal}
+.pm-analytics-card:hover{background:var(--hover)}
+.pm-analytics-main{display:block;min-width:0;flex:1 1 auto}
+.pm-analytics-label{display:block;margin-bottom:2px;font-size:var(--fs-xs);font-weight:750;letter-spacing:.055em;text-transform:uppercase;color:var(--muted)}
+.pm-analytics-count{display:block;color:var(--muted);font-size:var(--fs-xs)}
+.pm-analytics-amounts{min-width:0;flex:0 1 auto;text-align:right}
 .pm-analytics-amount{display:block;font-size:var(--fs-xl);line-height:1.15;font-variant-numeric:tabular-nums;font-weight:800;overflow-wrap:anywhere}
 .pm-analytics-amount+.pm-analytics-amount{margin-top:var(--sp-2)}
-@media(max-width:420px){.pm-analytics-grid{grid-template-columns:1fr}.pm-analytics-card{padding:var(--sp-4)}}
+.analytics-detail{padding:0 var(--sp-5) var(--sp-4);border-top:1px solid var(--line)}
+.analytics-detail .rec:first-child{padding-top:var(--sp-4)}
+.pm-analytics-card .p-caret{flex:0 0 auto;width:7px;height:7px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
+.pm-analytics-card[aria-expanded="true"] .p-caret{transform:rotate(-135deg)}
+@media(max-width:420px){.pm-analytics-card{padding:var(--sp-4)}.analytics-detail{padding:0 var(--sp-4) var(--sp-3)}}
 .pm-relations{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .pm-relations-title{margin:0;padding:var(--sp-5) var(--sp-5) var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
@@ -945,6 +954,12 @@ function togglePair(key){
   var head=document.querySelector('[data-pair="'+key+'"]');
   if(head){ head.setAttribute('aria-expanded',String(!el.hidden)) }
 }
+function toggleAnalytics(key){
+  var el=$('pm-analytics-'+key); if(!el){return}
+  el.hidden=!el.hidden;
+  var head=document.querySelector('[data-analytics="'+key+'"]');
+  if(head){ head.setAttribute('aria-expanded',String(!el.hidden)) }
+}
 async function openPerson(id){
   var modal=$('person-modal'); if(!modal){return}
   pmOpenId=Number(id); pmData=null; modal.hidden=false; document.body.style.overflow='hidden';
@@ -1037,10 +1052,19 @@ function renderPerson(){
   html+='</section>';
   /* Analytics is deliberately after the relationship answer: these are lifetime activity totals,
      not a second way of reading the current net. settled_in means repayments received by this person. */
+  function analyticsCard(key,label,field,cls,rows,empty){
+    var n=rows.length, plural=n===1?'':'s';
+    var detail=n?rows.map(function(r0){ return recRow(r0,meName) }).join(''):'<div class="empty">'+esc(empty)+'</div>';
+    return '<div class="analytics-item '+cls+'"><button class="pm-analytics-card" type="button" data-analytics="'+key+'" aria-expanded="false">'+
+      '<span class="pm-analytics-main"><span class="pm-analytics-label">'+esc(label)+'</span><span class="pm-analytics-count">'+n+' record'+plural+'</span></span>'+
+      '<span class="pm-analytics-amounts">'+analyticsAmounts(field,cls==='in'?'pos':'neg')+'</span><span class="p-caret" aria-hidden="true"></span></button>'+
+      '<div class="analytics-detail" id="pm-analytics-'+key+'" hidden>'+detail+'</div></div>';
+  }
+  var expenses=bk.covered_for_them||[], paidFor=bk.paid_for||[], paidBack=(bk.settlements||[]).filter(function(r0){ return r0.direction==='settled_in' });
   html+='<section class="pm-analytics" aria-labelledby="pm-analytics-title"><h3 class="pm-analytics-title" id="pm-analytics-title">Analytics</h3><div class="pm-analytics-grid">'+
-    '<div class="pm-analytics-card out"><span class="pm-analytics-label">Their expenses</span>'+analyticsAmounts('covered_for_them_minor','neg')+'</div>'+
-    '<div class="pm-analytics-card in"><span class="pm-analytics-label">What they paid for</span>'+analyticsAmounts('paid_for_minor','pos')+'</div>'+
-    '<div class="pm-analytics-card in"><span class="pm-analytics-label">They were paid for</span>'+analyticsAmounts('settled_in_minor','pos')+'</div>'+
+    analyticsCard('expenses','Their expenses','covered_for_them_minor','out',expenses,'Nothing was paid for them yet.')+
+    analyticsCard('paid-for','What they paid for','paid_for_minor','in',paidFor,'They have not paid for anyone yet.')+
+    analyticsCard('paid-back','They were paid for','settled_in_minor','in',paidBack,'Nobody has paid them back yet.')+
     '</div></section>';
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
@@ -1885,6 +1909,7 @@ document.addEventListener('click',async function(ev){
   var pclose=ev.target.closest?ev.target.closest('#pm-close'):null; if(pclose){ closePerson(); return }
   if(openPersonFromElement(ev.target)){return}
   var pairHead=ev.target.closest?ev.target.closest('[data-pair]'):null; if(pairHead){ togglePair(pairHead.getAttribute('data-pair')); return }
+  var analyticsHead=ev.target.closest?ev.target.closest('[data-analytics]'):null; if(analyticsHead){ toggleAnalytics(analyticsHead.getAttribute('data-analytics')); return }
   var carch=t.getAttribute('data-carch'); if(carch){ var cp=carch.split(':'); var cr=await call('/currencies/'+cp[0]+'/'+cp[1],{method:'POST'}); if(!cr.ok){toast(cr.error,true)}else{await loadState();renderSettings();toast('Updated')} return }
 });
 function init(){
