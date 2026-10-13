@@ -59,8 +59,8 @@ two can never drift). It closes on a pick, on the backdrop, on ✕, and on Esc; 
 validates against it, so adding a page to the list is all it takes to make it addressable from Telegram.
 
 **The chat menu is a subset of that list.** `MENU_SECTIONS` filters out `audit` and `settings` — Willow
-does not want Audit or Setup offered in the chat, and the grid's last button is the plain `🌐 All trips`
-root rather than "All trips & a new trip". `NAV_SECTIONS` stays complete so section passes for the two
+does not want Audit or Setup offered in the chat, and every button now opens a section of a trip the
+chat follows — no app-root row at all. `NAV_SECTIONS` stays complete so section passes for the two
 workshop pages still resolve for anyone who has such a link.
 
 ## Follow-up: the label beside the ☰ said "Add expen e"
