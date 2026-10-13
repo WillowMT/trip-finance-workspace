@@ -101,7 +101,7 @@ chat has no use for, reachable from the app's own drawer.
 
 - A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid
   appears only once a trip is connected, and the chat's own `/start <pairing_token>` answer now ends with it.
-- A chat that follows **several** trips gets four rows per trip, each label suffixed with the trip's name
+- A chat that follows **several** trips gets three rows per trip, each label suffixed with the trip's name
   (`📒 Transactions · Japan 2028`), capped at `MAX_MENU_TRIPS = 3` — the rest are reachable from the app root.
 - Groups get the same grid, from the addressed command Telegram actually delivers in a group
   (`/start@tripfinancethingbot`). **Any member** of a connected group can open the menu — the grid is a way
