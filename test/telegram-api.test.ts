@@ -391,7 +391,6 @@ test('one chat can follow several trips, a repeat connect is not a duplicate, an
     assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/start' })).status, 200);
     await waitFor(() => bot.messages.length === 1, 'a multi-trip menu should be sent');
     const multiTripGrid = (bot.messages[0].reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard;
-    assert.equal(multiTripGrid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary').length, 2, 'one full-width Summary row is present for each linked trip');
 
     // Re-connecting the first trip reuses the row and says so.
     const againToken = await mintPairing(request, first);
@@ -811,11 +810,9 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     const menu = bot.messages[0];
     const grid = (menu.reply_markup as { inline_keyboard: { text: string; url?: string; callback_data?: string }[][] }).inline_keyboard;
     const navigationRows = grid.filter((row) => row.every((button) => button.url));
-    const summaryRows = grid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary');
     assert.match(menu.text, /Menu trip/, 'the menu names the trip');
     assert.match(menu.text, /work for a day/);
     assert.equal(navigationRows.length, 3, 'three rows of sections, two per row');
-    assert.equal(summaryRows.length, 1, 'each linked trip gets one full-width Summary row');
     assert.deepEqual(navigationRows[0].map((button) => button.text), ['➕ Create debt', '↩️ Record a payment']);
     assert.deepEqual(navigationRows[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
     assert.deepEqual(navigationRows[2].map((button) => button.text), ['⚖️ View debts and analytics'], 'the reading row names what the page holds');
@@ -884,7 +881,6 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
     const groupGrid = (groupMenu.reply_markup as { inline_keyboard: { text: string; url?: string; callback_data?: string }[][] }).inline_keyboard;
     assert.equal(groupGrid.filter((row) => row.every((button) => button.url)).length, 3, 'the group gets the same navigation rows');
-    assert.equal(groupGrid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary').length, 1, 'the group gets one Summary row per linked trip');
     assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
   });
 });
@@ -951,13 +947,10 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   });
 });
 
-test('routes an authenticated Summary callback to one current text summary', async () => {
+test('/summary replies with the current outstanding debts as text', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
-    // A multi-digit id makes a plaintext decimal/base36 leak detectable without random-token coincidences.
-    query("DELETE FROM sqlite_sequence WHERE name = 'telegram_connections'");
-    query("INSERT INTO sqlite_sequence(name, seq) VALUES ('telegram_connections', 1234566)");
     query(`INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (${workspaceId}, 'MYR', 0)`);
     const chatId = 101;
     const chat = PRIVATE_CHAT(chatId);
@@ -970,58 +963,38 @@ test('routes an authenticated Summary callback to one current text summary', asy
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'debt', topic: 'Summary fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: currency }),
     });
-    // Reciprocal USD entries and a separate MYR debt ensure the callback reads the current, multi-currency ledger.
     assert.equal((await write(ada.id, lin.id, 5_000, 'USD')).status, 201);
     assert.equal((await write(lin.id, ada.id, 1_200, 'USD')).status, 201);
     assert.equal((await write(lin.id, ada.id, 3_300, 'MYR')).status, 201);
 
     bot.messages.length = 0;
-    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/start' })).status, 200);
-    await waitFor(() => bot.messages.some((message) => message.text.includes('Tap a section')), 'the connected chat should receive its menu');
-    const menu = bot.messages.find((message) => message.text.includes('Tap a section'))!;
-    const buttons = ((menu.reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard).flat();
-    const summary = buttons.find((button) => button.text === '📊 Send debt summary');
-    const callbackData = summary?.callback_data;
-    const connectionId = connectionRows(query, workspaceId)[0].id;
-    assert.ok(callbackData, 'the menu should offer a Summary callback');
-    assert.ok(callbackData.length < 64, 'Telegram callback_data stays below its 64-byte limit');
-    assert.equal(callbackData.includes('/w/'), false, 'callback_data never carries a workspace path');
-    assert.equal(callbackData.includes(secret), false, 'callback_data never carries the workspace secret');
-    assert.equal(callbackData.includes(WEBHOOK_SECRET), false, 'callback_data never carries the webhook secret');
-    assert.equal(callbackData.includes(String(connectionId)), false, 'callback_data never exposes the decimal connection id');
-    assert.equal(callbackData.includes(connectionId.toString(36)), false, 'callback_data never exposes the base36 connection id');
-
-    const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
-    assert.equal(submitted.response.status, 200);
-    await waitFor(() => bot.messages.some((message) => message.text.includes('2 outstanding lines across 2 currencies')), 'the Summary callback should send one current text summary');
-    await waitFor(() => bot.callbackAnswers.length === 1, 'the Summary callback should be acknowledged');
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/summary' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('2 outstanding lines across 2 currencies')), '/summary should reply with the current text summary');
     const summaryMessage = bot.messages.find((message) => message.text.includes('2 outstanding lines across 2 currencies'))!;
     assert.match(summaryMessage.text, /📊 Summary trip — 2 outstanding lines across 2 currencies/, 'the summary leads with trip and counts');
     assert.match(summaryMessage.text, /owes Ada - USD 38\.00/, 'USD lines are netted');
     assert.match(summaryMessage.text, /owes Lin - MYR 33\.00/, 'MYR stays a separate line');
     assert.equal(summaryMessage.text.includes('/w/'), false, 'the summary text carries no workspace link');
-    assert.equal(bot.callbackAnswers.length, 1);
-    assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
 
-    const rejected = async (data: string, callbackId: string, sourceChat = chat) => {
-      const photosBefore = bot.photos.length;
-      const messagesBefore = bot.messages.length;
-      const answerBefore = bot.callbackAnswers.length;
-      const result = await sendCallbackQuery({ request, query, bot }, sourceChat, data, callbackId);
-      assert.equal(result.response.status, 200);
-      await waitFor(() => bot.messages.length === messagesBefore + 1, `${callbackId} should receive recovery guidance`);
-      await waitFor(() => bot.callbackAnswers.length === answerBefore + 1, `${callbackId} should still be acknowledged`);
-      assert.equal(bot.photos.length, photosBefore, `${callbackId} must not produce a photo`);
-      assert.match(bot.lastText(), /^⚠️ .*fresh menu/, `${callbackId} gets emoji recovery guidance`);
-    };
+    // Settling everything flips the reply to the all-settled message.
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 3_800, currency_code: 'USD' }),
+    })).status, 201);
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 3_300, currency_code: 'MYR' }),
+    })).status, 201);
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/summary' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('is all settled')), 'a settled trip answers with the all-settled reply');
 
-    await rejected(callbackData, 'summary-wrong-chat', PRIVATE_CHAT(chatId + 1));
-    const altered = `${callbackData.slice(0, -1)}${callbackData.endsWith('A') ? 'B' : 'A'}`;
-    await rejected(altered, 'summary-altered');
-    query(`UPDATE telegram_connections SET enabled = 0 WHERE id = ${connectionId}`);
-    await rejected(callbackData, 'summary-disabled');
-    query(`UPDATE telegram_connections SET enabled = 1 WHERE id = ${connectionId}`);
-    await rejected('ds2.not-a-valid-packet', 'summary-malformed');
-    await rejected(expiredSummaryCallback(connectionId), 'summary-expired');
+    // An unconnected chat is told how to connect instead of getting a summary.
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(999), text: '/summary' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'an unconnected chat should get guidance');
+    assert.match(bot.messages[0].text, /not connected to any trip/);
   });
 });

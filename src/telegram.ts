@@ -317,6 +317,7 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
  */
 export const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'start', description: 'Open the trip menu, or connect a trip' },
+  { command: 'summary', description: 'Show who owes what in the connected trip' },
   { command: 'disconnect', description: 'Stop trip notifications in this chat' },
 ];
 
@@ -604,76 +605,25 @@ function shortTripName(name: string): string {
   return trimmed.length > 18 ? `${trimmed.slice(0, 17)}…` : trimmed;
 }
 
-function base64Url(bytes: Uint8Array): string {
-  let binary = '';
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-const SUMMARY_CALLBACK_PREFIX = 'ds2.';
-const SUMMARY_CALLBACK_AAD = new TextEncoder().encode('trip-finance-summary-v1');
-
-/** The webhook secret derives an AES-GCM key, so callback data is opaque and authenticated without D1 state. */
-async function summaryCallbackKey(secret: string): Promise<CryptoKey> {
-  const material = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
-  return crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
-}
-
-function fromBase64Url(value: string): Uint8Array | null {
-  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
-  try {
-    const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
-    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
-  } catch {
-    return null;
-  }
-}
-
-/** An opaque AEAD packet: 12-byte nonce plus encrypted 32-bit connection id and expiry. */
-async function summaryCallbackData(env: TelegramEnv, connectionId: number): Promise<string | null> {
-  const secret = webhookSecret(env);
-  if (!secret || !Number.isSafeInteger(connectionId) || connectionId <= 0 || connectionId > 0xffff_ffff) return null;
-  const expirySeconds = Math.floor((Date.now() + SUMMARY_CALLBACK_TTL_MS) / 1000);
-  if (!Number.isSafeInteger(expirySeconds) || expirySeconds > 0xffff_ffff) return null;
-  const plaintext = new Uint8Array(8);
-  const view = new DataView(plaintext.buffer);
-  view.setUint32(0, connectionId);
-  view.setUint32(4, expirySeconds);
-  const nonce = crypto.getRandomValues(new Uint8Array(12));
-  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: SUMMARY_CALLBACK_AAD }, await summaryCallbackKey(secret), plaintext));
-  const data = `${SUMMARY_CALLBACK_PREFIX}${base64Url(new Uint8Array([...nonce, ...ciphertext]))}`;
-  return data.length <= 64 ? data : null;
-}
-
-async function verifiedSummaryConnection(env: TelegramEnv, data: string, chatId: string): Promise<{ id: number; workspace_id: number } | null> {
-  if (!data.startsWith(SUMMARY_CALLBACK_PREFIX) || data.length > 64) return null;
-  const packet = fromBase64Url(data.slice(SUMMARY_CALLBACK_PREFIX.length));
-  // AES-GCM includes a 16-byte tag, therefore this fixed payload is always exactly 36 bytes.
-  if (!packet || packet.length !== 36) return null;
-  let plaintext: ArrayBuffer;
-  try {
-    plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: packet.slice(0, 12), additionalData: SUMMARY_CALLBACK_AAD },
-      await summaryCallbackKey(webhookSecret(env)),
-      packet.slice(12),
-    );
-  } catch {
-    return null;
-  }
-  const view = new DataView(plaintext);
-  const connectionId = view.getUint32(0);
-  const expirySeconds = view.getUint32(4);
-  if (connectionId <= 0 || expirySeconds * 1000 <= Date.now()) return null;
-  return await env.DB.prepare(
-    `SELECT c.id, c.workspace_id
-       FROM telegram_connections c JOIN workspaces w ON w.id = c.workspace_id
-      WHERE c.id = ? AND c.chat_id = ? AND c.enabled = 1 AND w.is_active = 1`,
-  ).bind(connectionId, chatId).first<{ id: number; workspace_id: number }>();
-}
 
 type SummaryBalance = { debtor_id: number; creditor_id: number; currency_code: string; outstanding: number; debtor: string; creditor: string };
 
-/** Reads the ledger at tap time, nets reciprocal obligations and sends exactly one PNG to this verified chat. */
+/** /summary replies with the current outstanding debts of every trip this chat follows, as text. */
+async function handleSummaryCommand(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
+  const chat = update.message?.chat;
+  if (!chat || chat.id === undefined || chat.id === null) return;
+  const chatId = String(chat.id);
+  const trips = await linkedTrips(env, chatId);
+  if (!trips.length) {
+    await sendMessage(env, chatId, '📭 This chat is not connected to any trip. Open a trip\u2019s \u2699\ufe0f Setup tab and press \u201cConnect Telegram chat\u201d.');
+    return;
+  }
+  for (const trip of trips) {
+    await handleDebtSummary(env, { id: trip.connectionId, workspace_id: trip.workspaceId }, chatId);
+  }
+}
+
+/** Reads the ledger at command time, nets reciprocal obligations and sends the outstanding debts as text. */
 async function handleDebtSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
   const workspace = await env.DB.prepare('SELECT name FROM workspaces WHERE id = ? AND is_active = 1').bind(connection.workspace_id).first<{ name: string }>();
   if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
@@ -759,8 +709,6 @@ async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Pr
       if (row.length === 2) buttons.push(row.splice(0, 2));
     }
     if (row.length) buttons.push(row);
-    const callbackData = await summaryCallbackData(env, pass.trip.connectionId);
-    if (callbackData) buttons.push([{ text: '📊 Send debt summary', callback_data: callbackData }]);
   }
   await sendMessage(env, chatId, lines.join('\n'), { inline_keyboard: buttons });
 }
@@ -947,6 +895,7 @@ async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promi
 async function handleCommand(env: TelegramEnv, update: TelegramUpdate, root: string): Promise<void> {
   const text = (update.message?.text ?? '').trim();
   if (/^\/disconnect(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleDisconnect(env, update);
+  if (/^\/summary(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleSummaryCommand(env, update);
   return handleStart(env, update, root);
 }
 
@@ -957,15 +906,6 @@ async function handleCallbackQuery(env: TelegramEnv, update: TelegramUpdate): Pr
   const chatId = chat?.id;
   if (!callback?.id || chatId === undefined || chatId === null) return;
   await answerCallbackQuery(env, callback.id).catch(() => {});
-  const connection = typeof callback.data === 'string'
-    ? await verifiedSummaryConnection(env, callback.data, String(chatId))
-    : null;
-  console.log(`[summary-diag] callback chat=${chatId} data_len=${typeof callback.data === 'string' ? callback.data.length : -1} validated=${connection ? 'yes' : 'no'}`);
-  if (!connection) {
-    await sendMessage(env, String(chatId), '⚠️ This summary request is not available. Send /start for a fresh menu.');
-    return;
-  }
-  await handleDebtSummary(env, connection, String(chatId));
 }
 
 // ---------------------------------------------------------------------------- webhook
