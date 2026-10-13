@@ -188,9 +188,11 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .amt.zero{color:var(--muted)}
 .pos{color:var(--ok)} .neg{color:var(--bad)}
 .p-block{min-width:0;flex:1 1 auto}
-.pair{border-bottom:1px solid var(--line)}
-.pair:last-child{border-bottom:0}
-.pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:var(--r-sm);padding:var(--sp-4) var(--sp-2);color:inherit;font:inherit;text-align:left;cursor:pointer}
+.pm-relations{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-relations-title{margin:0;padding:var(--sp-5) var(--sp-5) var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
+.pair{border-top:1px solid var(--line)}
+.pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:0;padding:var(--sp-5);color:inherit;font:inherit;text-align:left;cursor:pointer}
 /* content cards are buttons too, but their text must wrap (the base button rule is nowrap) */
 .pair-head,.person-card{white-space:normal}
 .pair-head:hover{background:var(--hover)}
@@ -1003,8 +1005,8 @@ function renderPerson(){
     out.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return b.id-a.id } return a.occurred_on<b.occurred_on?1:-1 });
     return out;
   }
-  html+='<h3 class="mt-16">Who owes whom</h3>';
-  if(!pairs.length){ html+='<div class="empty">Nothing outstanding with anyone yet.</div>' }
+  html+='<section class="pm-relations" aria-labelledby="pm-relations-title"><h3 class="pm-relations-title" id="pm-relations-title">Who owes whom</h3>';
+  if(!pairs.length){ html+='<div class="empty pm-relations-empty">Nothing outstanding with anyone yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id;
     var pairOwedTo=Math.max((pr.paid_for_minor||0)-(pr.settled_in_minor||0),0);
     var pairOwes=Math.max((pr.covered_minor||0)-(pr.settled_out_minor||0),0);
@@ -1017,6 +1019,7 @@ function renderPerson(){
       '<span class="p-caret" aria-hidden="true"></span></button>'+
       '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+detail+'</div></div>';
   }
+  html+='</section>';
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];
