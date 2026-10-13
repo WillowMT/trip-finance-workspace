@@ -323,5 +323,12 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
 .dg-head h2{margin:0}
 .dg-list{margin:var(--sp-4) 0 0;padding-left:var(--sp-6);color:var(--muted);font-size:var(--fs-sm)}
 .dg-list li{margin-bottom:var(--sp-1);overflow-wrap:anywhere}
+/* The digest is the app's notification panel: the bell carries the red dot, the list pops out under
+   it, and because the bell sits in the shared header it is there on every page. */
+.head-acts{display:flex;align-items:center;gap:var(--sp-3);flex:0 0 auto}
+.bell{position:relative}
+.bell .dot{position:absolute;top:-4px;right:-4px;width:10px;height:10px;border-radius:50%;background:var(--bad);box-shadow:0 0 0 2px var(--card)}
+#digest{position:fixed;z-index:60;top:76px;right:max(var(--sp-5),calc((100vw - var(--maxw)) / 2 + var(--sp-6)));margin:0;width:min(92vw,380px);max-height:min(72vh,520px);overflow-y:auto}
+#digest[hidden]{display:none}
 @media (max-width:640px){.rec-board{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}

@@ -327,6 +327,13 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
 .dg-head h2{margin:0}
 .dg-list{margin:var(--sp-4) 0 0;padding-left:var(--sp-6);color:var(--muted);font-size:var(--fs-sm)}
 .dg-list li{margin-bottom:var(--sp-1);overflow-wrap:anywhere}
+/* The digest is the app's notification panel: the bell carries the red dot, the list pops out under
+   it, and because the bell sits in the shared header it is there on every page. */
+.head-acts{display:flex;align-items:center;gap:var(--sp-3);flex:0 0 auto}
+.bell{position:relative}
+.bell .dot{position:absolute;top:-4px;right:-4px;width:10px;height:10px;border-radius:50%;background:var(--bad);box-shadow:0 0 0 2px var(--card)}
+#digest{position:fixed;z-index:60;top:76px;right:max(var(--sp-5),calc((100vw - var(--maxw)) / 2 + var(--sp-6)));margin:0;width:min(92vw,380px);max-height:min(72vh,520px);overflow-y:auto}
+#digest[hidden]{display:none}
 @media (max-width:640px){.rec-board{grid-template-columns:1fr}}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.01ms !important;transition-duration:.01ms !important}}`;
 
@@ -1585,22 +1592,47 @@ function digestPhrases(rows){
   }
   return out;
 }
-async function loadDigest(){
-  var box=$('digest'); if(!box||!me){ return }
-  var seen=readSeen();
-  /* first look on this device: start the clock instead of opening with a wall of old history */
-  if(!seen){ writeSeen(new Date().toISOString()); box.hidden=true; return }
-  var r=await call('/audit?since='+encodeURIComponent(seen)+'&limit=500');
-  if(!r.ok){ box.hidden=true; return }
-  var rows=(r.data&&r.data.audit)||[];
-  if(!rows.length){ box.hidden=true; return }
-  digestSeen=seen; digestNewest=rows[0].occurred_at||new Date().toISOString();
+/* read is decided by the bell, not by the page load: the dot stays lit until the panel is opened. */
+var digestRows=0, digestReady=false;
+function digestBox(){ return $('digest') }
+function digestIsOpen(){ var d=digestBox(); return !!(d&&!d.hidden) }
+function bellDot(){ var d=$('bell-dot'); if(!d){ return } d.hidden=!digestReady||digestRows<1||digestIsOpen() }
+function placeDigest(){
+  var d=digestBox(), h=document.querySelector('header'); if(!d||!h){ return }
+  d.style.top=Math.round(h.getBoundingClientRect().bottom+8)+'px';
+}
+function markDigestRead(){ if(digestNewest){ writeSeen(digestNewest) } digestRows=0; bellDot() }
+function openDigest(){
+  var d=digestBox(); if(!d){ return }
+  placeDigest(); d.hidden=false;
+  var b=$('bell'); if(b){ b.setAttribute('aria-expanded','true') }
+  bellDot();
+}
+function closeDigest(){
+  var d=digestBox(); if(!d||d.hidden){ return }
+  d.hidden=true;
+  var b=$('bell'); if(b){ b.setAttribute('aria-expanded','false') }
+  markDigestRead();
+}
+function renderDigest(rows,seen,fresh){
+  var box=digestBox(); if(!box){ return }
   var phrases=digestPhrases(rows), items='', i;
   for(i=0;i<phrases.length;i++){ items+='<li>'+esc(phrases[i])+'</li>' }
-  box.innerHTML='<div class="dg-head"><h2><span aria-hidden="true">🕐</span> Since your last visit</h2><span class="chip">'+esc(agoWords(seen))+'</span></div>'+
-    '<ul class="dg-list">'+items+'</ul>'+
-    '<div class="btns"><button id="dg-open" class="mini ghost" type="button" data-dg="open">Open the audit log</button><button id="dg-dismiss" class="mini ghost" type="button" data-dg="dismiss">Dismiss</button></div>';
-  box.hidden=false;
+  box.innerHTML='<div class="dg-head"><h2><span aria-hidden="true">🕐</span> Since your last visit</h2><span class="chip">'+esc(fresh?'just now':agoWords(seen))+'</span></div>'
+    +(items?'<ul class="dg-list">'+items+'</ul>':'<p class="hint">Nothing new — the last changes were already in your digest.</p>')
+    +'<div class="btns"><button id="dg-open" class="mini ghost" type="button" data-dg="open">Open the audit log</button><button id="dg-dismiss" class="mini ghost" type="button" data-dg="dismiss">Close</button></div>';
+}
+async function loadDigest(){
+  var box=digestBox(); if(!box||!me){ return }
+  var seen=readSeen();
+  /* first look on this device: start the clock instead of opening with a wall of old history */
+  if(!seen){ writeSeen(new Date().toISOString()); digestReady=true; digestRows=0; renderDigest([],'',true); bellDot(); return }
+  var r=await call('/audit?since='+encodeURIComponent(seen)+'&limit=500');
+  var rows=r.ok?((r.data&&r.data.audit)||[]):[];
+  digestSeen=seen; digestReady=true; digestRows=r.ok?rows.length:0;
+  if(rows.length){ digestNewest=rows[0].occurred_at||digestNewest }
+  renderDigest(rows,seen,false);
+  bellDot();
 }
 /* ---------------- logging a receipt card in the ledger ---------------- */
 var logReceiptId=null;
@@ -1638,7 +1670,7 @@ async function unlinkReceipt(id,btn){
   } finally { busy(btn,false) }
 }
 /* ---------------- wiring ---------------- */
-document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
+document.addEventListener('keydown',function(ev){ if(ev.key==='Escape'){ if(digestIsOpen()){ closeDigest() } else if($('review-modal')&&!$('review-modal').hidden){ closeReview() } else if($('rec-modal')&&!$('rec-modal').hidden){ closeReceiptForm() } else { closePerson() } } });
 function openPersonFromElement(el){
   var pcard=el&&el.closest?el.closest('[data-person]'):null;
   if(!pcard){return false}
@@ -1674,8 +1706,8 @@ document.addEventListener('click',async function(ev){
   var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
   var settle=t.getAttribute('data-settle'); if(settle){ var sp=settle.split(':'); startSettlePayment(Number(sp[0]),Number(sp[1]),sp[2],Number(sp[3])); return }
   var dg=t.getAttribute('data-dg'); if(dg){
-    if(dg==='open'){ $('digest').hidden=true; showTab('audit'); return }
-    writeSeen(digestNewest||new Date().toISOString()); $('digest').hidden=true; return;
+    if(dg==='open'){ closeDigest(); showTab('audit'); return }
+    closeDigest(); return;
   }
   var emo=t.getAttribute('data-emoji-save'); if(emo){
     var eid=Number(emo); var ebox=document.querySelector('[data-emoji-input="'+eid+'"]');
@@ -1743,6 +1775,16 @@ function init(){
   if($('s-tg-out')){ $('s-tg-out').addEventListener('click',function(ev){ var t=ev.target&&ev.target.closest?ev.target.closest('[data-tg-copy]'):null; if(t){ telegramCopy() } }) }
   if($('s-add-cur')){ $('s-add-cur').onclick=async function(){ var v=$('s-cur').value.trim().toUpperCase(); if(!v){return} var r=await call('/currencies',{method:'POST',body:{code:v,is_default:false}}); if(!r.ok){toast(r.error,true);return} $('s-cur').value=''; await loadState(); renderSettings(); renderParty(); toast('Currency added') } }
   if($('c-copy')){ $('c-copy').onclick=async function(){ try{ await navigator.clipboard.writeText(location.origin+location.pathname); toast('Link copied') }catch(e){ toast('Copy failed — long-press the address bar instead',true) } } }
+  if($('bell')){ $('bell').onclick=function(){ if(digestIsOpen()){ closeDigest() } else { openDigest() } } }
+  window.addEventListener('resize',function(){ if(digestIsOpen()){ placeDigest() } });
+  /* a tap anywhere else puts the panel away, the same way the drawer behaves */
+  document.addEventListener('click',function(ev){
+    if(!digestIsOpen()){ return }
+    var d=digestBox(), b=$('bell');
+    if(d&&d.contains(ev.target)){ return }
+    if(b&&b.contains(ev.target)){ return }
+    closeDigest();
+  });
   window.addEventListener('hashchange',function(){ var h=(location.hash||'#ledger').slice(1); if(TABS.indexOf(h)>=0&&$('tab-'+h)){ showTab(h) } });
   var start=(location.hash||'#ledger').slice(1); if(TABS.indexOf(start)<0){start='ledger'}
   showTab(start);
@@ -1876,7 +1918,10 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <h1>${esc(name)}</h1>
       <p class="sub">Shared with everyone on the trip · every change is audited</p>
     </div>
-    <button id="c-copy" class="mini ghost" type="button">Copy link</button>
+    <div class="head-acts">
+      <button id="bell" class="mini ghost bell" type="button" aria-expanded="false" aria-controls="digest" aria-label="What changed since your last visit" title="Since your last visit"><span aria-hidden="true">🔔</span><span id="bell-dot" class="dot" hidden></span></button>
+      <button id="c-copy" class="mini ghost" type="button">Copy link</button>
+    </div>
   </div>
   <div class="navbar">
     <button id="nav-open" class="hamburger" type="button" aria-expanded="false" aria-controls="nav-drawer"><span aria-hidden="true">☰</span> Menu</button>
@@ -1906,7 +1951,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   </nav>
 </aside>
 <div id="banner" class="err" hidden></div>
-<div id="digest" class="card" hidden></div>
+<div id="digest" class="card" hidden role="region" aria-label="Since your last visit"></div>
 
 <section id="ledger">
   <details class="card fold">
