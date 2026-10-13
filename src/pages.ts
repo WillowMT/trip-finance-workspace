@@ -3,10 +3,13 @@ import { KEEP_BACKUPS } from './backups';
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
 const CSS = `/* person popup: one headline per currency, then what is owed to them and what they owe */
-.pm-why{margin:var(--sp-6) 0}
-.pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pm-why{margin:var(--sp-6) 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);border-bottom:1px solid var(--line)}
 .pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
 .pm-why-top .amt{font-size:var(--fs-xl);font-weight:800;font-variant-numeric:tabular-nums}
+.pm-why .pm-sides{gap:0;margin:0;flex-wrap:nowrap}
+.pm-why .pm-side{flex:1 1 50%;padding:var(--sp-4);background:transparent;border:0;border-radius:0}
+.pm-why .pm-side+.pm-side{border-left:1px solid var(--line)}
 .pm-line{display:flex;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-3) 0;border-bottom:1px solid var(--line)}
 .pm-line:last-child{border-bottom:0}
 .pm-line-val{font-variant-numeric:tabular-nums;font-weight:600}
