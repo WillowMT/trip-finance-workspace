@@ -188,6 +188,16 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .amt.zero{color:var(--muted)}
 .pos{color:var(--ok)} .neg{color:var(--bad)}
 .p-block{min-width:0;flex:1 1 auto}
+.pm-analytics{margin-top:var(--sp-6)}
+.pm-analytics-title{margin:0 0 var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.pm-analytics-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
+.pm-analytics-card{min-width:0;padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pm-analytics-card.in{background:color-mix(in srgb,var(--ok) 6%,var(--surface));border-color:color-mix(in srgb,var(--ok) 22%,var(--line))}
+.pm-analytics-card.out{background:color-mix(in srgb,var(--bad) 4%,var(--surface));border-color:color-mix(in srgb,var(--bad) 18%,var(--line))}
+.pm-analytics-label{display:block;margin-bottom:var(--sp-3);font-size:var(--fs-xs);font-weight:750;letter-spacing:.055em;text-transform:uppercase;color:var(--muted)}
+.pm-analytics-amount{display:block;font-size:var(--fs-xl);line-height:1.15;font-variant-numeric:tabular-nums;font-weight:800;overflow-wrap:anywhere}
+.pm-analytics-amount+.pm-analytics-amount{margin-top:var(--sp-2)}
+@media(max-width:420px){.pm-analytics-grid{grid-template-columns:1fr}.pm-analytics-card{padding:var(--sp-4)}}
 .pm-relations{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .pm-relations-title{margin:0;padding:var(--sp-5) var(--sp-5) var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
@@ -991,6 +1001,15 @@ function renderPerson(){
       (owedTo||owes?pmSides('Owed to '+esc(meName),owedTo,'pos',esc(meName)+' owes',owes,'neg',t.currency_code):'')+
       '</div>';
   }
+  function analyticsAmounts(field,cls){
+    var out=[];
+    for(var a=0;a<totals.length;a++){ var at=totals[a]; out.push('<span class="pm-analytics-amount '+cls+'">'+esc(money(at[field]||0,at.currency_code))+'</span>') }
+    return out.join('');
+  }
+  html+='<section class="pm-analytics" aria-labelledby="pm-analytics-title"><h3 class="pm-analytics-title" id="pm-analytics-title">Analytics</h3><div class="pm-analytics-grid">'+
+    '<div class="pm-analytics-card in"><span class="pm-analytics-label">'+esc(meName)+' paid for others</span>'+analyticsAmounts('paid_for_minor','pos')+'</div>'+
+    '<div class="pm-analytics-card out"><span class="pm-analytics-label">Others paid for '+esc(meName)+'</span>'+analyticsAmounts('covered_for_them_minor','neg')+'</div>'+
+    '</div></section>';
   html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
   var pairs=d.counterparties||[];
   var bk=d.breakdown||{};
