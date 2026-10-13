@@ -2,7 +2,7 @@ import { KEEP_BACKUPS } from './backups';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
-<style>/* person popup: one headline per currency, then what is owed to them and what they owe */
+const CSS = `/* person popup: one headline per currency, then what is owed to them and what they owe */
 .pm-why{margin:var(--sp-6) 0}
 .pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
 .pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
