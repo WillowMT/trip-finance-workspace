@@ -163,6 +163,57 @@ async function loadLedger(){
   renderSpend(txs);
 }
 function signedMinor(t){ return t.entry_kind==='payment'?-t.amount_minor:t.amount_minor }
+/* ---------------- maximum payment (only the Record a payment page) ----------------
+   The most that can be repaid is what the debtor still owes the creditor, so the cap is the ledger's
+   own number rather than a form-side guess: the signedMinor() sum of the rows between those two
+   people, per currency, floored at zero. A settled pair reads 0 and its Max button stays disabled,
+   and because the sum is the same arithmetic the ledger and the Balances view use, no two surfaces
+   can disagree about what is still owed. Archived rows never move a balance, so they are skipped. */
+var payLimitMax={}, payLimitSeq=0;
+function payLimitNote(){ return '<span class="hint" id="p-limits-note">' }
+async function payLimits(){
+  var box=$('p-limits-list'); if(!box){ return }
+  var d=Number(($('p-debtor')||{}).value||0), c=Number(($('p-creditor')||{}).value||0);
+  if(!d||!c||d===c){
+    payLimitMax={};
+    box.innerHTML='<span class="hint">'+(d&&c?'The two people must be different.':'Choose who repaid and who was owed, and the most they can pay appears here.')+'</span>';
+    return;
+  }
+  var seq=++payLimitSeq;
+  box.innerHTML='<span class="hint">Checking what is owed…</span>';
+  var r=await call('/transactions');
+  if(seq!==payLimitSeq){ return }
+  if(!r.ok){ payLimitMax={}; box.innerHTML='<span class="hint">'+esc(r.error)+'</span>'; return }
+  var txs=(r.data&&r.data.transactions)||[], owe={}, i, t;
+  for(i=0;i<txs.length;i++){
+    t=txs[i];
+    if(t.is_deleted||Number(t.payer_person_id)!==d||Number(t.payee_person_id)!==c){ continue }
+    owe[t.currency_code]=(owe[t.currency_code]||0)+signedMinor(t);
+  }
+  var out='', top=0, codes=[];
+  for(i=0;i<currencies.length;i++){
+    var cu=currencies[i];
+    var code=String((typeof cu==='string'?cu:(cu&&(cu.code||cu.currency_code)))||'');
+    if(!code){ continue }
+    codes.push(code);
+  }
+  payLimitMax={};
+  for(i=0;i<codes.length;i++){
+    var m=Math.max(0,owe[codes[i]]||0); if(m>top){ top=m }
+    payLimitMax[codes[i]]=m;
+    out+='<span class="pill'+(m>0?'':' zero')+'"><b>'+esc(money(m,codes[i]))+'</b><button class="mini ghost" type="button" data-pl-max="'+esc(codes[i])+'"'+(m>0?'':' disabled aria-disabled="true"')+'>Max</button></span>';
+  }
+  box.innerHTML=(out||'<span class="hint">No currencies yet.</span>')
+    +payLimitNote()+(top>0
+      ? '“Max” fills the amount with everything still owed in that currency.'
+      : 'Nothing is outstanding this way round — if money really moved, use Swap people.')+'</span>';
+}
+function applyMaxPayment(code){
+  var m=Number(payLimitMax[code]||0); if(!(m>0)){ return }
+  if($('p-currency')){ $('p-currency').value=code }
+  if($('p-amount')){ $('p-amount').value=(m/100).toFixed(2); $('p-amount').focus() }
+  toast(money(m,code)+' filled in — everything still owed in '+code);
+}
 /* ---------------- ranking ---------------- */
 var rankingCurrency='', rankingRows=null, rankingRequestId=0;
 async function loadRanking(){
@@ -1338,10 +1389,15 @@ document.addEventListener('click',async function(ev){
 function init(){
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
-  TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab) } } });
+  TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab); if(tab==='pay'){ payLimits() } } } });
   if($('t-add')){ $('t-add').onclick=function(){ addTx('debt',TX_FORM) } }
   if($('p-add')){ $('p-add').onclick=function(){ addTx('payment',PAY_FORM) } }
   if($('p-swap')){ $('p-swap').onclick=function(){ var a=$('p-creditor'),b=$('p-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
+  if($('p-debtor')){ $('p-debtor').onchange=payLimits }
+  if($('p-creditor')){ $('p-creditor').onchange=payLimits }
+  if($('p-swap')){ $('p-swap').onclick=function(){ var a=$('p-creditor'),b=$('p-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp; payLimits() } }
+  if($('p-limits')){ $('p-limits').onclick=function(ev){ var t=ev.target, b=(t&&t.closest)?t.closest('[data-pl-max]'):null; if(!b||b.disabled){ return } applyMaxPayment(b.getAttribute('data-pl-max')) } }
+  payLimits();
   if($('nav-open')){ $('nav-open').onclick=openNav }
   if($('nav-close')){ $('nav-close').onclick=closeNav }
   if($('nav-backdrop')){ $('nav-backdrop').onclick=closeNav }

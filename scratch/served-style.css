@@ -323,6 +323,14 @@ pre{background:var(--surface);border-radius:var(--r-sm);padding:var(--sp-4);over
 .dg-head h2{margin:0}
 .dg-list{margin:var(--sp-4) 0 0;padding-left:var(--sp-6);color:var(--muted);font-size:var(--fs-sm)}
 .dg-list li{margin-bottom:var(--sp-1);overflow-wrap:anywhere}
+/* Maximum payment panel — only the Record a payment page carries one. */
+.limits{border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-4);background:var(--hover);margin:var(--sp-4) 0}
+.limits h3{margin:0;font-size:var(--fs-sm)}
+.limits .pill-row{display:flex;flex-wrap:wrap;gap:var(--sp-2);margin-top:var(--sp-3)}
+.limits .pill{display:inline-flex;align-items:center;gap:var(--sp-2);padding:var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-pill);background:var(--card);font-size:var(--fs-sm)}
+.limits .pill b{font-variant-numeric:tabular-nums;white-space:nowrap}
+.limits .pill.zero{opacity:.62}
+.limits .hint{display:block;margin-top:var(--sp-3)}
 /* The digest is the app's notification panel: the bell carries the red dot, the list pops out under
    it, and because the bell sits in the shared header it is there on every page. */
 .head-acts{display:flex;align-items:center;gap:var(--sp-3);flex:0 0 auto}

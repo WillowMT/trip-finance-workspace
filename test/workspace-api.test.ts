@@ -809,6 +809,10 @@ test('a person summary reports what they fronted, what was covered for them, and
 
     const page = await (await request(`/w/${secret}`)).text();
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
+    assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
+    assert.match(page, /Maximum payment/);
+    assert.match(page, /data-pl-max/, 'each currency offers a Max button');
+    assert.match(page, /function payLimits/, 'and the panel is fed by the ledger sum');
     assert.match(page, /role="dialog"/);
     assert.match(page, /setAttribute\('aria-haspopup','dialog'\)/, 'the served card only marks itself as a dialog opener in script');
     assert.match(page, /person-card/);
