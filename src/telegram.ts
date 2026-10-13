@@ -39,7 +39,7 @@ const MAX_MENU_TRIPS = 3;
 /** The app's own sections, in the app's own order: creating first, then reading, then the workshop.
  *  This is also the allow-list for /go/<token>/<section> passes, so it stays the full app surface. */
 export const NAV_SECTIONS: { tab: string; label: string }[] = [
-  { tab: 'add', label: '➕ Add expense' },
+  { tab: 'add', label: '➕ Create debt' },
   { tab: 'pay', label: '↩️ Record a payment' },
   { tab: 'split', label: '✂️ Split a bill' },
   { tab: 'ledger', label: '📒 Transactions' },

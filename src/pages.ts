@@ -773,13 +773,13 @@ async function confirmReview(){
   closeReview();
 }
 /* One form definition per writing page. Each page writes exactly one kind of entry, so the kind is
-   baked into the page rather than picked from a dropdown — a new-expense page can only ever create
+   baked into the page rather than picked from a dropdown — a new-debt page can only ever create
    a debt, and a repayment page can only ever create a repayment. */
 var TX_FORM={date:'t-date',topic:'t-topic',category:'t-category',creditor:'t-creditor',debtor:'t-debtor',amount:'t-amount',currency:'t-currency',notes:'t-notes',err:'t-err',add:'t-add'};
 var PAY_FORM={date:'p-date',topic:'p-topic',category:'p-category',creditor:'p-creditor',debtor:'p-debtor',amount:'p-amount',currency:'p-currency',notes:'p-notes',err:'p-err',add:'p-add'};
 async function addTx(kind, F){
   var btn=$(F.add); var err=$(F.err); err.textContent='';
-  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim(),
+  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim()||$(F.category).value.trim(),
     category:$(F.category).value.trim(),creditor_person_id:Number($(F.creditor).value),
     debtor_person_id:Number($(F.debtor).value),amount_minor:toMinor($(F.amount).value),
     currency_code:$(F.currency).value,notes:$(F.notes).value.trim()}];
@@ -1712,7 +1712,7 @@ function renderReceiptLog(id){
   if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged.'; return }
   btn.hidden=false;
   if(r.transaction_id){ state.textContent='Logged as entry #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the entry' }
-  else { state.textContent='Not entered yet. Logging it opens the Add expense page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
+  else { state.textContent='Not entered yet. Logging it opens the Create debt page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
 }
 function startReceiptLog(id){
   var r=null, i;
@@ -1973,7 +1973,13 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   const initial = JSON.stringify({ people, currencies });
   const livePeople = people.filter((p) => !p.is_archived);
   const liveCurrencies = currencies.filter((c) => !c.is_archived);
-  const personOptions = livePeople.map((p) => `<option value="${p.id}">${esc(p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)}</option>`).join('');
+  const personOption = (p: (typeof livePeople)[number], picked: boolean) => `<option value="${p.id}"${picked ? ' selected' : ''}>${esc(p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)}</option>`;
+  const personOptions = livePeople.map((p) => personOption(p, false)).join('');
+  /* Whoever paid is preselected as the creditor and the next person as the debtor, so the two
+     selectors never open on the same name - that state failed validation with "Creditor and debtor
+     must differ." and read as "I cannot create a debt". */
+  const creditorOptions = livePeople.map((p, i) => personOption(p, i === 0)).join('');
+  const debtorOptions = livePeople.map((p, i) => personOption(p, i === 1)).join('');
   const currencyOptions = liveCurrencies.map((c) => `<option value="${esc(c.code)}"${c.is_default ? ' selected' : ''}>${esc(c.code)}</option>`).join('');
   const personChecks = livePeople.map((p) => `<label class="check"><input type="checkbox" value="${p.id}" checked><span>${esc(p.emoji ? p.emoji + ' ' + p.display_name : p.display_name)}</span></label>`).join('');
   const settingsRow = await db.prepare('SELECT timezone FROM workspace_settings WHERE workspace_id = ?').bind(workspaceId).first<{ timezone: string }>();
@@ -2010,7 +2016,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   </div>
   <nav role="tablist" aria-label="Sections">
     <span class="nav-group">Write</span>
-    <button id="tab-add" role="tab" aria-selected="false" type="button"><span aria-hidden="true">➕</span> Add expense</button>
+    <button id="tab-add" role="tab" aria-selected="false" type="button"><span aria-hidden="true">➕</span> Create debt</button>
     <button id="tab-pay" role="tab" aria-selected="false" type="button"><span aria-hidden="true">↩️</span> Record a payment</button>
     <button id="tab-split" role="tab" aria-selected="false" type="button"><span aria-hidden="true">✂️</span> Split a bill</button>
     <span class="nav-group">Read</span>
@@ -2055,7 +2061,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="add" hidden>
   <div class="card">
-    <h2><span aria-hidden="true">➕</span> Add expense</h2>
+    <h2><span aria-hidden="true">➕</span> Create debt</h2>
     <p class="hint" id="t-direction">One person paid for the group, and this page only ever records that direction: whoever paid is owed by whoever it was for. Recording money handed back is the separate <b>Record a payment</b> page.</p>
     <div class="grid three">
       <div class="field"><label for="t-amount">Amount</label><input id="t-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
@@ -2063,8 +2069,8 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="field"><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
     </div>
     <div class="grid">
-      <div class="field"><label for="t-creditor" id="t-creditor-label"><span aria-hidden="true">💳</span> Paid by (is owed)</label><select id="t-creditor">${personOptions}</select></div>
-      <div class="field"><label for="t-debtor" id="t-debtor-label"><span aria-hidden="true">🧾</span> For (owes)</label><select id="t-debtor">${personOptions}</select></div>
+      <div class="field"><label for="t-creditor" id="t-creditor-label"><span aria-hidden="true">💳</span> Paid by (is owed)</label><select id="t-creditor">${creditorOptions}</select></div>
+      <div class="field"><label for="t-debtor" id="t-debtor-label"><span aria-hidden="true">🧾</span> For (owes)</label><select id="t-debtor">${debtorOptions}</select></div>
     </div>
     <div class="swap"><button id="t-swap" type="button">↔️ Swap people</button></div>
     <div class="grid">
@@ -2072,7 +2078,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="field"><label for="t-category">Category</label><select id="t-category"><option value="Other" selected>&#128230; Other</option><option value="Food">&#127828; Food</option><option value="Transport">&#128663; Transport</option><option value="Shopping">&#128717;&#65039; Shopping</option></select></div>
     </div>
     <div class="field"><label for="t-notes">Notes (optional)</label><input id="t-notes" autocomplete="off"></div>
-    <button id="t-add" type="button"><span aria-hidden="true">✅</span> Add expense</button>
+    <button id="t-add" type="button"><span aria-hidden="true">✅</span> Create debt</button>
     <div id="t-err" class="err"></div>
   </div>
 </section>
@@ -2080,15 +2086,15 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 <section id="pay" hidden>
   <div class="card">
     <h2><span aria-hidden="true">↩️</span> Record a payment</h2>
-    <p class="hint" id="p-direction">Someone handed money back, and this page only ever records that direction: the person who paid reduces what they owe the person they paid. New spending is the separate <b>Add expense</b> page.</p>
+    <p class="hint" id="p-direction">Someone handed money back, and this page only ever records that direction: the person who paid reduces what they owe the person they paid. New spending is the separate <b>Create debt</b> page.</p>
     <div class="grid three">
       <div class="field"><label for="p-amount">Amount</label><input id="p-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
       <div class="field"><label for="p-currency">Currency</label><select id="p-currency">${currencyOptions}</select></div>
       <div class="field"><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
     </div>
     <div class="grid">
-      <div class="field"><label for="p-debtor" id="p-debtor-label"><span aria-hidden="true">📤</span> Repaid by (who owed it)</label><select id="p-debtor">${personOptions}</select></div>
-      <div class="field"><label for="p-creditor" id="p-creditor-label"><span aria-hidden="true">📥</span> Repaid to (was owed)</label><select id="p-creditor">${personOptions}</select></div>
+      <div class="field"><label for="p-debtor" id="p-debtor-label"><span aria-hidden="true">📤</span> Repaid by (who owed it)</label><select id="p-debtor">${debtorOptions}</select></div>
+      <div class="field"><label for="p-creditor" id="p-creditor-label"><span aria-hidden="true">📥</span> Repaid to (was owed)</label><select id="p-creditor">${creditorOptions}</select></div>
     </div>
     <div class="swap"><button id="p-swap" type="button">↔️ Swap people</button></div>
     <div id="p-limits" class="limits" aria-live="polite">

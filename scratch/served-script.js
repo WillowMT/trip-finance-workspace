@@ -371,13 +371,13 @@ async function confirmReview(){
   closeReview();
 }
 /* One form definition per writing page. Each page writes exactly one kind of entry, so the kind is
-   baked into the page rather than picked from a dropdown — a new-expense page can only ever create
+   baked into the page rather than picked from a dropdown — a new-debt page can only ever create
    a debt, and a repayment page can only ever create a repayment. */
 var TX_FORM={date:'t-date',topic:'t-topic',category:'t-category',creditor:'t-creditor',debtor:'t-debtor',amount:'t-amount',currency:'t-currency',notes:'t-notes',err:'t-err',add:'t-add'};
 var PAY_FORM={date:'p-date',topic:'p-topic',category:'p-category',creditor:'p-creditor',debtor:'p-debtor',amount:'p-amount',currency:'p-currency',notes:'p-notes',err:'p-err',add:'p-add'};
 async function addTx(kind, F){
   var btn=$(F.add); var err=$(F.err); err.textContent='';
-  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim(),
+  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim()||$(F.category).value.trim(),
     category:$(F.category).value.trim(),creditor_person_id:Number($(F.creditor).value),
     debtor_person_id:Number($(F.debtor).value),amount_minor:toMinor($(F.amount).value),
     currency_code:$(F.currency).value,notes:$(F.notes).value.trim()}];
@@ -1310,7 +1310,7 @@ function renderReceiptLog(id){
   if(!r){ btn.hidden=true; state.textContent='Save the card first — then it can be logged.'; return }
   btn.hidden=false;
   if(r.transaction_id){ state.textContent='Logged as entry #'+r.transaction_id+'.'; btn.innerHTML='<span aria-hidden="true">&#128279;</span> Unlink from the entry' }
-  else { state.textContent='Not entered yet. Logging it opens the Add expense page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
+  else { state.textContent='Not entered yet. Logging it opens the Create debt page with this title filled in, and the card moves across to Added when that entry saves.'; btn.innerHTML='<span aria-hidden="true">&#129534;</span> Log this in Transactions' }
 }
 function startReceiptLog(id){
   var r=null, i;

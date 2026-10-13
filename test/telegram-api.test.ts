@@ -711,7 +711,7 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     assert.match(menu.text, /Menu trip/, 'the menu names the trip');
     assert.match(menu.text, /work for a day/);
     assert.equal(grid.length, 3, 'three rows of sections, two per row');
-    assert.deepEqual(grid[0].map((button) => button.text), ['➕ Add expense', '↩️ Record a payment']);
+    assert.deepEqual(grid[0].map((button) => button.text), ['➕ Create debt', '↩️ Record a payment']);
     assert.deepEqual(grid[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
     assert.ok(grid.flat().every((button) => button.url !== ORIGIN), 'no button opens the public root');
     const menuLabels = grid.flat().map((button) => button.text).join(' | ');

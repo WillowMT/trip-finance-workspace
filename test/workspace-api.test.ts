@@ -811,6 +811,11 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
+    assert.match(page, /id="tab-add"[^>]*>\s*<span[^>]*>➕<\/span> Create debt</, 'the drawer says Create debt');
+    assert.ok(!page.includes('Add expense'), 'no Add expense wording is left');
+    assert.ok(!page.includes('Add debt'), 'the page says Create debt, not Add debt');
+    assert.match(page, /id="t-creditor"><option value="\d+" selected>/, 'the creditor selector opens on the first person');
+    assert.match(page, /id="t-debtor"><option value="\d+">[^<]*<\/option><option value="\d+" selected>/, 'the debtor selector opens on a different person, so validation can pass untouched');
     assert.match(page, /function paintTab\(/, 'the page paints a section without waiting for state');
     assert.match(page, /paintTab\(tab\);\s*\n\s*if\(!stateReady\)/, 'the section swap is not gated behind the state fetch');    assert.match(page, /Maximum payment/);
     assert.match(page, /data-pl-max/, 'each currency offers a Max button');
