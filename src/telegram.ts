@@ -696,7 +696,13 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
   }
   const now = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   const currencies = new Set(balances.map((balance) => balance.currency_code)).size;
-  await sendPhoto(env, chatId, renderDebtSummaryPng(workspace.name, `GENERATED ${now}`, [...groups.values()]), `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`);
+  const sent = await sendPhoto(env, chatId, renderDebtSummaryPng(workspace.name, `GENERATED ${now}`, [...groups.values()]), `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`);
+  if (!sent.ok) {
+    // The callback spinner has already been acknowledged. Do not swallow a rejected upload: give the
+    // requester a usable answer and preserve only a non-sensitive diagnostic in Worker logs.
+    console.error('telegram debt summary photo rejected', sent.error_code, sent.description);
+    await sendMessage(env, chatId, '⚠️ The debt summary image could not be sent. Please send /start for a fresh menu and try once more.');
+  }
 }
 
 /**
