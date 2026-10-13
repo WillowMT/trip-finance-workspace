@@ -981,15 +981,11 @@ function renderPerson(){
        one mattered; these two lines only ever show what is actually still outstanding. */
     var owedTo=Math.max((t.paid_for_minor||0)-(t.settled_in_minor||0),0);
     var owes=Math.max((t.covered_for_them_minor||0)-(t.settled_out_minor||0),0);
-    /* who, in plain words: a number on its own still leaves the reader asking "to whom?" */
-    var owing=[], owedBy=[];
-    for(var w=0;w<allPairs.length;w++){ var x=allPairs[w]; if(x.currency_code!==t.currency_code||!x.net_minor){continue}
-      if(t.net_minor<0&&x.net_minor<0){ owing.push(x.counterparty) } else if(t.net_minor>0&&x.net_minor>0){ owedBy.push(x.counterparty) } }
-    var who=t.net_minor<0?(owing.length?('to '+owing.join(', ')):'to someone'):(t.net_minor>0?(owedBy.length?('by '+owedBy.join(', ')):'by someone'):'everyone is settled up');
+    /* This is a net, not a claim against one person. The relationship rows below name who owes whom. */
     html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
-      esc(meName)+' '+(t.net_minor>0?'is owed':(t.net_minor<0?'owes':'owes nothing'))+'</span>'+
+      esc(meName)+(t.net_minor?'\\'s net balance':' is settled up')+'</span>'+
       (t.net_minor?'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span>':'')+
-      '</div><p class="meta">'+esc(who)+'</p>'+
+      '</div>'+ 
       (owedTo||owes?pmSides('Owed to '+esc(meName),owedTo,'pos',esc(meName)+' owes',owes,'neg',t.currency_code):'')+
       '</div>';
   }
