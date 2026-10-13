@@ -688,6 +688,17 @@ function renderBackups(){
     list.appendChild(row);
   }
 }
+/* Theme: read and written on this device only, keyed like the digest's seen-marker. The head script has
+   already applied the saved choice before the first paint; these helpers only exist for a later tap. */
+function themeChoice(){ try{ return localStorage.getItem('tfw_theme')==='dark'?'dark':'light' }catch(e){ return 'light' } }
+function setTheme(t){
+  t=(t==='dark')?'dark':'light';
+  try{ localStorage.setItem('tfw_theme',t) }catch(e){}
+  document.documentElement.setAttribute('data-theme',t);
+  var m=document.querySelector('meta[name="theme-color"]');
+  if(m){ m.setAttribute('content',t==='dark'?'#0b0b0d':'#f4f4f5') }
+  toast(t==='dark'?'Dark theme':'Light theme');
+}
 function renderSettings(){
   var pbox=$('s-people'); pbox.innerHTML='';
   for(var i=0;i<people.length;i++){var p=people[i];
@@ -707,6 +718,7 @@ function renderSettings(){
     cbox.appendChild(cel);
   }
   $('s-name').value=(me&&me.name)||'';
+  if($('s-theme')){ $('s-theme').value=themeChoice(); $('s-theme').onchange=function(){ setTheme(this.value) } }
   if($('s-auto-offset')){ $('s-auto-offset').checked=!((settings&&settings.auto_offset)===0) }
   renderBackups();
   renderTelegram();

@@ -713,6 +713,7 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     assert.equal(grid.length, 3, 'three rows of sections, two per row');
     assert.deepEqual(grid[0].map((button) => button.text), ['➕ Create debt', '↩️ Record a payment']);
     assert.deepEqual(grid[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
+    assert.deepEqual(grid[2].map((button) => button.text), ['⚖️ View debts and analytics'], 'the reading row names what the page holds');
     assert.ok(grid.flat().every((button) => button.url !== ORIGIN), 'no button opens the public root');
     const menuLabels = grid.flat().map((button) => button.text).join(' | ');
     assert.ok(!/Audit|Setup|Ranking|Receipts|Bulk|new trip/i.test(menuLabels), `audit, setup, ranking, receipts and bulk import stay out of the chat menu: ${menuLabels}`);

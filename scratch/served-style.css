@@ -11,18 +11,19 @@
   --dur:.15s; --ease:cubic-bezier(.2,.7,.2,1); --maxw:680px;
   --rank-bar-min:6%; --rank-row-main-basis:12rem;
 }
-@media (prefers-color-scheme:dark){
-  :root{
-    --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a; --line-strong:#3f3f46;
-    --brand:#3b82f6; --brand-hover:#2f6fe0; --ok:#4ade80; --bad:#f87171; --surface:#27272a; --hover:#212124; --shadow:none;
-  }
+/* Dark is opt-in, chosen in Settings - not a copy of the phone's setting. Light is what a visitor gets
+   with no saved choice, so the palette has to be a property of the page, not of the operating system. */
+html[data-theme="dark"]{
+  --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a; --line-strong:#3f3f46;
+  --brand:#3b82f6; --brand-hover:#2f6fe0; --ok:#4ade80; --bad:#f87171; --surface:#27272a; --hover:#212124; --shadow:none;
 }
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0}
 /* mobile: pinch-zoom and double-tap zoom are off, and controls stay at 16px so focusing a field cannot zoom the page */
 *{touch-action:pan-x pan-y;-webkit-tap-highlight-color:transparent;}
 @media (max-width:600px){:where(input,select,textarea){font-size:16px}}
-:root{color-scheme:light dark}
+:root{color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:var(--maxw);margin:0 auto;padding:0 var(--sp-6) 96px}
 header{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--line);padding:var(--sp-5) var(--sp-6) var(--sp-3);margin:0 calc(var(--sp-6) * -1) var(--sp-6)}
@@ -57,9 +58,7 @@ select{
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2371717a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right var(--sp-5) center;background-size:12px 8px;
 }
-@media (prefers-color-scheme:dark){
-  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23a1a1aa' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
-}
+html[data-theme="dark"] select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23a1a1aa' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
 option{background:var(--card);color:var(--ink)}
 select::-ms-expand{display:none}
 textarea{min-height:var(--ctl-area);padding:var(--sp-4) var(--sp-5);line-height:1.5;resize:vertical}

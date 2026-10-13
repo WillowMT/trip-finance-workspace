@@ -55,7 +55,12 @@ export const NAV_SECTIONS: { tab: string; label: string }[] = [
  *  Ranking, Receipts and Bulk & import are deliberately left out — those are pages you reach from the
  *  app's own drawer, not from a chat. */
 const MENU_TABS = new Set(['add', 'pay', 'split', 'ledger', 'balances']);
-export const MENU_SECTIONS: { tab: string; label: string }[] = NAV_SECTIONS.filter((section) => MENU_TABS.has(section.tab));
+/** Chat-only wording. The website keeps calling that page Balances; a chat button has to say what the
+ *  tap gets you, so the inline button promises debts and analytics. */
+const CHAT_LABELS: Record<string, string> = { balances: '⚖️ View debts and analytics' };
+export const MENU_SECTIONS: { tab: string; label: string }[] = NAV_SECTIONS
+  .filter((section) => MENU_TABS.has(section.tab))
+  .map((section) => ({ tab: section.tab, label: CHAT_LABELS[section.tab] ?? section.label }));
 
 /** How long a chat keeps hearing about changes once it is linked. */
 export const WEBHOOK_PATH = '/api/telegram/webhook';

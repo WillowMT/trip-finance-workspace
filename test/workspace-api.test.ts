@@ -811,6 +811,11 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
+    assert.match(page, /html\[data-theme="dark"\]\{/, 'the dark palette is opt-in, not tied to the phone setting');
+    assert.ok(!page.includes('prefers-color-scheme'), 'no palette follows the operating system any more');
+    assert.match(page, /id="s-theme"/, 'Settings carries the theme choice');
+    const headEnd = page.indexOf('<style>');
+    assert.ok(page.slice(0, headEnd).includes('tfw_theme'), 'the theme is applied before the stylesheet, so no flash');
     assert.match(page, /id="tab-add"[^>]*>\s*<span[^>]*>➕<\/span> Create debt</, 'the drawer says Create debt');
     assert.ok(!page.includes('Add expense'), 'no Add expense wording is left');
     assert.ok(!page.includes('Add debt'), 'the page says Create debt, not Add debt');

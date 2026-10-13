@@ -15,18 +15,19 @@ const CSS = `/* ── tokens: every colour, size and space comes from here ─�
   --dur:.15s; --ease:cubic-bezier(.2,.7,.2,1); --maxw:680px;
   --rank-bar-min:6%; --rank-row-main-basis:12rem;
 }
-@media (prefers-color-scheme:dark){
-  :root{
-    --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a; --line-strong:#3f3f46;
-    --brand:#3b82f6; --brand-hover:#2f6fe0; --ok:#4ade80; --bad:#f87171; --surface:#27272a; --hover:#212124; --shadow:none;
-  }
+/* Dark is opt-in, chosen in Settings - not a copy of the phone's setting. Light is what a visitor gets
+   with no saved choice, so the palette has to be a property of the page, not of the operating system. */
+html[data-theme="dark"]{
+  --bg:#0b0b0d; --card:#18181b; --ink:#fafafa; --muted:#a1a1aa; --line:#27272a; --line-strong:#3f3f46;
+  --brand:#3b82f6; --brand-hover:#2f6fe0; --ok:#4ade80; --bad:#f87171; --surface:#27272a; --hover:#212124; --shadow:none;
 }
 *,*::before,*::after{box-sizing:border-box}
 html,body{margin:0}
 /* mobile: pinch-zoom and double-tap zoom are off, and controls stay at 16px so focusing a field cannot zoom the page */
 *{touch-action:pan-x pan-y;-webkit-tap-highlight-color:transparent;}
 @media (max-width:600px){:where(input,select,textarea){font-size:16px}}
-:root{color-scheme:light dark}
+:root{color-scheme:light}
+html[data-theme="dark"]{color-scheme:dark}
 body{background:var(--bg);color:var(--ink);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;-webkit-text-size-adjust:100%}
 main{max-width:var(--maxw);margin:0 auto;padding:0 var(--sp-6) 96px}
 header{position:sticky;top:0;z-index:10;background:var(--bg);border-bottom:1px solid var(--line);padding:var(--sp-5) var(--sp-6) var(--sp-3);margin:0 calc(var(--sp-6) * -1) var(--sp-6)}
@@ -61,9 +62,7 @@ select{
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%2371717a' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right var(--sp-5) center;background-size:12px 8px;
 }
-@media (prefers-color-scheme:dark){
-  select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23a1a1aa' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
-}
+html[data-theme="dark"] select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath d='M1 1.5 6 6.5l5-5' fill='none' stroke='%23a1a1aa' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")}
 option{background:var(--card);color:var(--ink)}
 select::-ms-expand{display:none}
 textarea{min-height:var(--ctl-area);padding:var(--sp-4) var(--sp-5);line-height:1.5;resize:vertical}
@@ -349,7 +348,7 @@ const page = (title: string, head: string, body: string, script = '', manifest =
 <html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0b0b0d">
+<meta name="theme-color" content="#f4f4f5">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -357,6 +356,14 @@ const page = (title: string, head: string, body: string, script = '', manifest =
 ${manifest ? '<link rel="manifest" href="' + manifest + '">' : ''}
 <meta name="color-scheme" content="light dark">
 <title>${esc(title)}</title>
+<script>/* The theme is a property of this device, not of the trip: the same link can be open on two phones
+  and one wanting light must not force the other. Light is the default, so a visitor with no saved choice
+  gets light even when the phone itself is dark. This runs before the stylesheet, so the first paint is
+  already the chosen palette and switching never flashes the other one. */
+  (function(){var t='light';try{if(localStorage.getItem('tfw_theme')==='dark'){t='dark'}}catch(e){}
+    document.documentElement.setAttribute('data-theme',t);
+    var m=document.querySelector('meta[name="theme-color"]');
+    if(m){m.setAttribute('content',t==='dark'?'#0b0b0d':'#f4f4f5')}})();</script>
 <style>${CSS}</style>
 </head><body>
 ${body}
@@ -1090,6 +1097,17 @@ function renderBackups(){
     list.appendChild(row);
   }
 }
+/* Theme: read and written on this device only, keyed like the digest's seen-marker. The head script has
+   already applied the saved choice before the first paint; these helpers only exist for a later tap. */
+function themeChoice(){ try{ return localStorage.getItem('tfw_theme')==='dark'?'dark':'light' }catch(e){ return 'light' } }
+function setTheme(t){
+  t=(t==='dark')?'dark':'light';
+  try{ localStorage.setItem('tfw_theme',t) }catch(e){}
+  document.documentElement.setAttribute('data-theme',t);
+  var m=document.querySelector('meta[name="theme-color"]');
+  if(m){ m.setAttribute('content',t==='dark'?'#0b0b0d':'#f4f4f5') }
+  toast(t==='dark'?'Dark theme':'Light theme');
+}
 function renderSettings(){
   var pbox=$('s-people'); pbox.innerHTML='';
   for(var i=0;i<people.length;i++){var p=people[i];
@@ -1109,6 +1127,7 @@ function renderSettings(){
     cbox.appendChild(cel);
   }
   $('s-name').value=(me&&me.name)||'';
+  if($('s-theme')){ $('s-theme').value=themeChoice(); $('s-theme').onchange=function(){ setTheme(this.value) } }
   if($('s-auto-offset')){ $('s-auto-offset').checked=!((settings&&settings.auto_offset)===0) }
   renderBackups();
   renderTelegram();
@@ -2232,6 +2251,13 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="settings" hidden>
   <div class="card"><h2><span aria-hidden="true">🧳</span> Trip</h2>
+    <label class="hint stack">Theme
+      <select id="s-theme">
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+      </select>
+    </label>
+    <div class="hint">Saved on this device only — a shared trip link can look different on someone else's phone.</div>
     <div class="inline"><div class="field flush"><label>Trip name</label><input id="s-name" readonly></div></div>
     <div class="btns"><button class="ghost" type="button" id="s-rename" onclick="(function(){var v=prompt('Trip name',document.getElementById('s-name').value);if(v&&v.trim()){fetch(location.pathname.replace(/\\/+$/,'')+'/api',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({name:v.trim()})}).then(function(){location.reload()})}})()"><span aria-hidden="true">✏️</span> Rename trip</button></div>
   </div>
