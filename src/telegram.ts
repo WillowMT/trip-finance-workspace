@@ -322,6 +322,37 @@ export const BOT_COMMANDS: { command: string; description: string }[] = [
 
 let commandsRegistered = false;
 
+let webhookUpdatesChecked = false;
+
+/**
+ * Telegram only forwards update types listed at setWebhook time. Older registrations listed
+ * "message" alone, so inline-button taps (callback queries) were dropped before they ever reached
+ * us. This runs once per isolate after an authenticated update: it checks the live registration and
+ * widens it when callback queries are missing. Both calls use the bot token bound to this Worker,
+ * so no credential ever leaves the runtime.
+ */
+export async function ensureWebhookAcceptsCallbacks(env: TelegramEnv, request: Request): Promise<void> {
+  if (webhookUpdatesChecked || !telegramConfigured(env)) return;
+  webhookUpdatesChecked = true;
+  try {
+    const info = await callApi<{ allowed_updates?: string[]; url?: string }>(env, 'getWebhookInfo', {});
+    if (!info.ok) return;
+    const allowed = info.result?.allowed_updates ?? [];
+    if (allowed.includes('callback_query')) return;
+    const url = `${new URL(request.url).origin}/api/telegram/webhook`;
+    await callApi(env, 'setWebhook', {
+      url,
+      secret_token: webhookSecret(env),
+      allowed_updates: ['message', 'callback_query'],
+      drop_pending_updates: false,
+    });
+  } catch {
+    // A failed widening attempt must never break update handling; the next isolate retries.
+    webhookUpdatesChecked = false;
+  }
+}
+
+
 /**
  * Publishes BOT_COMMANDS to Telegram. Idempotent — `setMyCommands` replaces the list rather than adding
  * to it — so it is safe on every deploy and every cold start. Called once per isolate on the first
@@ -963,6 +994,7 @@ export async function handleTelegramWebhook(request: Request, env: TelegramEnv):
   // Publishing the command menu is idempotent and per isolate, so a deploy never leaves the chat menu
   // offering a command the code no longer answers.
   if (!commandsRegistered) await syncBotCommands(env).catch(() => {});
+  if (update.callback_query) await ensureWebhookAcceptsCallbacks(env, request).catch(() => {});
   try {
     if (update.callback_query) await handleCallbackQuery(env, update);
     else await handleCommand(env, update, publicRoot(env, request));
