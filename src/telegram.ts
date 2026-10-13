@@ -16,6 +16,8 @@
  * endpoint refuses every request.
  */
 
+import { renderDebtSummaryPng } from './summary-png';
+
 export type TelegramEnv = {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN?: string;
@@ -306,6 +308,23 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
     };
   }
   return { ok: true, result: body.result as T };
+}
+
+async function sendPhoto(env: TelegramEnv, chatId: string, png: Uint8Array, caption: string): Promise<ApiResult<{ message_id?: number }>> {
+  const token = botToken(env);
+  if (!token) return { ok: false, error_code: 0, description: 'Telegram is not configured', retry_after: 0 };
+  const form = new FormData();
+  form.set('chat_id', chatId);
+  form.set('caption', caption);
+  form.set('photo', new Blob([png.buffer as ArrayBuffer], { type: 'image/png' }), 'debt-summary.png');
+  try {
+    const response = await fetch(`${telegramApiBase(env)}/bot${token}/sendPhoto`, { method: 'POST', body: form });
+    const body = await response.json() as ApiEnvelope<unknown>;
+    if (!body || body.ok !== true) return { ok: false, error_code: Number(body?.error_code ?? response.status), description: redact(String(body?.description ?? 'Telegram rejected the image')), retry_after: Number(body?.parameters?.retry_after ?? 0) || 0 };
+    return { ok: true, result: body.result as { message_id?: number } };
+  } catch {
+    return { ok: false, error_code: 0, description: 'Telegram was unreachable', retry_after: 0 };
+  }
 }
 
 /**
@@ -638,10 +657,46 @@ async function verifiedSummaryConnection(env: TelegramEnv, data: string, chatId:
   ).bind(connectionId, chatId).first<{ id: number; workspace_id: number }>();
 }
 
-/** Task 3 replaces this deliberate seam with the renderer/sendPhoto flow. */
+type SummaryBalance = { debtor_id: number; creditor_id: number; currency_code: string; outstanding: number; debtor: string; creditor: string };
+
+/** Reads the ledger at tap time, nets reciprocal obligations and sends exactly one PNG to this verified chat. */
 async function handleDebtSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
-  void connection;
-  await sendMessage(env, chatId, '📊 Summary is being prepared.');
+  const workspace = await env.DB.prepare('SELECT name FROM workspaces WHERE id = ? AND is_active = 1').bind(connection.workspace_id).first<{ name: string }>();
+  if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
+  const rows = await env.DB.prepare(
+    `SELECT t.debtor_person_id AS debtor_id, t.creditor_person_id AS creditor_id, t.currency_code,
+            SUM(CASE WHEN t.entry_kind = 'payment' THEN -t.amount_minor ELSE t.amount_minor END) AS outstanding,
+            d.display_name AS debtor, c.display_name AS creditor
+       FROM transactions t
+       JOIN workspace_people d ON d.id = t.debtor_person_id
+       JOIN workspace_people c ON c.id = t.creditor_person_id
+      WHERE t.workspace_id = ? AND t.is_deleted = 0
+      GROUP BY t.debtor_person_id, t.creditor_person_id, t.currency_code
+      HAVING outstanding <> 0`,
+  ).bind(connection.workspace_id).all<SummaryBalance>();
+  const directional = new Map<string, SummaryBalance>();
+  for (const row of rows.results) directional.set(`${row.debtor_id}:${row.creditor_id}:${row.currency_code}`, row);
+  const balances: SummaryBalance[] = [];
+  const seen = new Set<string>();
+  for (const row of directional.values()) {
+    const pair = row.debtor_id < row.creditor_id ? `${row.debtor_id}:${row.creditor_id}:${row.currency_code}` : `${row.creditor_id}:${row.debtor_id}:${row.currency_code}`;
+    if (seen.has(pair)) continue;
+    seen.add(pair);
+    const reverse = directional.get(`${row.creditor_id}:${row.debtor_id}:${row.currency_code}`);
+    const amount = row.outstanding - (reverse?.outstanding ?? 0);
+    if (amount > 0) balances.push({ ...row, outstanding: amount });
+    else if (amount < 0) balances.push(reverse ? { ...reverse, outstanding: -amount } : { ...row, debtor_id: row.creditor_id, creditor_id: row.debtor_id, debtor: row.creditor, creditor: row.debtor, outstanding: -amount });
+  }
+  if (!balances.length) { await sendMessage(env, chatId, `✅ ${workspace.name} is all settled.`); return; }
+  const groups = new Map<string, { debtor: string; lines: string[] }>();
+  for (const balance of balances.sort((a,b) => a.debtor.localeCompare(b.debtor) || a.currency_code.localeCompare(b.currency_code) || a.creditor.localeCompare(b.creditor))) {
+    const group = groups.get(balance.debtor) ?? { debtor: balance.debtor, lines: [] };
+    group.lines.push(`${balance.debtor} OWES ${balance.creditor} - ${money(balance.outstanding, balance.currency_code)}`);
+    groups.set(balance.debtor, group);
+  }
+  const now = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
+  const currencies = new Set(balances.map((balance) => balance.currency_code)).size;
+  await sendPhoto(env, chatId, renderDebtSummaryPng(workspace.name, `GENERATED ${now}`, [...groups.values()]), `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`);
 }
 
 /**

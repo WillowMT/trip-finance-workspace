@@ -951,7 +951,7 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   });
 });
 
-test('routes an authenticated Summary callback to the temporary summary handler', async () => {
+test('routes an authenticated Summary callback to one current PNG', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
@@ -993,10 +993,12 @@ test('routes an authenticated Summary callback to the temporary summary handler'
 
     const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
     assert.equal(submitted.response.status, 200);
-    await waitFor(() => bot.messages.some((message) => message.text === '📊 Summary is being prepared.'), 'the Summary callback should reach the temporary handler');
+    await waitFor(() => bot.photos.length === 1, 'the Summary callback should send one current PNG');
     await waitFor(() => bot.callbackAnswers.length === 1, 'the Summary callback should be acknowledged');
-    assert.equal(bot.photos.length, 0, 'PNG rendering belongs to Task 3');
-    assert.equal(bot.lastText(), '📊 Summary is being prepared.');
+    assert.equal(bot.messages.some((message) => message.text === '📊 Summary is being prepared.'), false, 'the image is sent directly, with no placeholder message');
+    assert.equal(bot.photos[0].chat_id, String(chatId), 'the image goes only to the requesting linked chat');
+    assert.deepEqual(bot.photos[0].bytes.slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10], 'the upload is a PNG');
+    assert.equal(bot.photos[0].caption, '📊 Summary trip — 2 outstanding lines across 2 currencies');
     assert.equal(bot.callbackAnswers.length, 1);
     assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
 
