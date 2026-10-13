@@ -33,6 +33,8 @@ export const PAIRING_TTL_MS = 10 * 60 * 1000;
  * servers and read by everyone in the chat, so they expire rather than becoming a permanent way in.
  */
 export const NAV_TTL_MS = 24 * 60 * 60 * 1000;
+/** Summary callbacks are signed, self-contained menu actions rather than stored capabilities. */
+export const SUMMARY_CALLBACK_TTL_MS = 15 * 60 * 1000;
 /** A chat following more trips than this gets the first few buttons here and the rest in the browser. */
 const MAX_MENU_TRIPS = 3;
 
@@ -139,7 +141,10 @@ type ApiEnvelope<T> = { ok?: boolean; result?: T; error_code?: number; descripti
 
 type TelegramChat = { id: number | string; type?: string; title?: string; first_name?: string; last_name?: string; username?: string };
 type TelegramUser = { id: number; is_bot?: boolean; first_name?: string; username?: string };
-type TelegramUpdate = { message?: { chat?: TelegramChat; from?: TelegramUser; text?: string } };
+type TelegramUpdate = {
+  message?: { chat?: TelegramChat; from?: TelegramUser; text?: string };
+  callback_query?: { id?: string; from?: TelegramUser; message?: { chat?: TelegramChat }; data?: string };
+};
 
 const NO_DECIMAL_CURRENCIES = ['BIF', 'CLP', 'DJF', 'GNF', 'HUF', 'ISK', 'JPY', 'KMF', 'KRW', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF'];
 
@@ -345,6 +350,10 @@ async function sendMessage(env: TelegramEnv, chatId: string, text: string, reply
   const payload: Json = { chat_id: chatId, text, link_preview_options: { is_disabled: true } };
   if (replyMarkup) payload.reply_markup = replyMarkup;
   return callApi<{ message_id?: number }>(env, 'sendMessage', payload);
+}
+
+async function answerCallbackQuery(env: TelegramEnv, callbackQueryId: string): Promise<ApiResult<boolean>> {
+  return callApi<boolean>(env, 'answerCallbackQuery', { callback_query_id: callbackQueryId });
 }
 
 // ---------------------------------------------------------------------------- connections
@@ -562,6 +571,56 @@ function shortTripName(name: string): string {
   return trimmed.length > 18 ? `${trimmed.slice(0, 17)}…` : trimmed;
 }
 
+function base64Url(bytes: Uint8Array): string {
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function summaryCallbackSignature(secret: string, payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
+  // 96 bits keeps the complete signed action far below Telegram's 64-byte callback_data limit.
+  return base64Url(new Uint8Array(signature).slice(0, 12));
+}
+
+/** `ds:<connection id base36>:<expiry seconds base36>:<truncated HMAC>` — no workspace URL capability. */
+async function summaryCallbackData(env: TelegramEnv, connectionId: number): Promise<string | null> {
+  const secret = webhookSecret(env);
+  if (!secret || !Number.isSafeInteger(connectionId) || connectionId <= 0) return null;
+  const payload = `ds:${connectionId.toString(36)}:${Math.floor((Date.now() + SUMMARY_CALLBACK_TTL_MS) / 1000).toString(36)}`;
+  const data = `${payload}:${await summaryCallbackSignature(secret, payload)}`;
+  return data.length <= 64 ? data : null;
+}
+
+async function verifiedSummaryConnection(env: TelegramEnv, data: string, chatId: string): Promise<{ id: number; workspace_id: number } | null> {
+  const match = data.match(/^ds:([0-9a-z]+):([0-9a-z]+):([A-Za-z0-9_-]{16})$/);
+  if (!match || data.length > 64) return null;
+  const [, idText, expiryText, signature] = match;
+  const connectionId = Number.parseInt(idText, 36);
+  const expirySeconds = Number.parseInt(expiryText, 36);
+  if (!Number.isSafeInteger(connectionId) || connectionId <= 0 || !Number.isSafeInteger(expirySeconds) || expirySeconds * 1000 <= Date.now()) return null;
+  const payload = `ds:${idText}:${expiryText}`;
+  if (!sameSecret(signature, await summaryCallbackSignature(webhookSecret(env), payload))) return null;
+  return await env.DB.prepare(
+    `SELECT c.id, c.workspace_id
+       FROM telegram_connections c JOIN workspaces w ON w.id = c.workspace_id
+      WHERE c.id = ? AND c.chat_id = ? AND c.enabled = 1 AND w.is_active = 1`,
+  ).bind(connectionId, chatId).first<{ id: number; workspace_id: number }>();
+}
+
+/** Task 3 replaces this deliberate seam with the renderer/sendPhoto flow. */
+async function handleDebtSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
+  void connection;
+  await sendMessage(env, chatId, '📊 Summary is being prepared.');
+}
+
 /**
  * /start in a chat that follows a trip: a grid of buttons, one per section of the portal, each opening
  * that part of the trip in the browser. A chat with no trip yet gets the plain welcome instead.
@@ -594,7 +653,7 @@ async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Pr
           '',
           'The buttons work for a day — send /start again for a fresh menu.',
         ];
-  const buttons: { text: string; url: string }[][] = [];
+  const buttons: { text: string; url?: string; callback_data?: string }[][] = [];
   for (const pass of passes) {
     const suffix = passes.length > 1 ? ` · ${shortTripName(pass.trip.name)}` : '';
     const row: { text: string; url: string }[] = [];
@@ -603,6 +662,8 @@ async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Pr
       if (row.length === 2) buttons.push(row.splice(0, 2));
     }
     if (row.length) buttons.push(row);
+    const callbackData = await summaryCallbackData(env, pass.trip.connectionId);
+    if (callbackData) buttons.push([{ text: '📊 Send debt summary', callback_data: callbackData }]);
   }
   await sendMessage(env, chatId, lines.join('\n'), { inline_keyboard: buttons });
 }
@@ -792,6 +853,23 @@ async function handleCommand(env: TelegramEnv, update: TelegramUpdate, root: str
   return handleStart(env, update, root);
 }
 
+/** Callback data is authenticated before D1 is consulted, then bound again to the source chat. */
+async function handleCallbackQuery(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
+  const callback = update.callback_query;
+  const chat = callback?.message?.chat;
+  const chatId = chat?.id;
+  if (!callback?.id || chatId === undefined || chatId === null) return;
+  await answerCallbackQuery(env, callback.id).catch(() => {});
+  const connection = typeof callback.data === 'string'
+    ? await verifiedSummaryConnection(env, callback.data, String(chatId))
+    : null;
+  if (!connection) {
+    await sendMessage(env, String(chatId), '⚠️ This summary request is not available. Send /start for a fresh menu.');
+    return;
+  }
+  await handleDebtSummary(env, connection, String(chatId));
+}
+
 // ---------------------------------------------------------------------------- webhook
 
 function jsonResponse(body: Json, status = 200): Response {
@@ -814,12 +892,13 @@ export async function handleTelegramWebhook(request: Request, env: TelegramEnv):
     return jsonResponse({ error: 'Invalid update' }, 400);
   }
   if (!update || typeof update !== 'object') return jsonResponse({ error: 'Invalid update' }, 400);
-  const chatId = update.message?.chat?.id;
+  const chatId = update.message?.chat?.id ?? update.callback_query?.message?.chat?.id;
   // Publishing the command menu is idempotent and per isolate, so a deploy never leaves the chat menu
   // offering a command the code no longer answers.
   if (!commandsRegistered) await syncBotCommands(env).catch(() => {});
   try {
-    await handleCommand(env, update, publicRoot(env, request));
+    if (update.callback_query) await handleCallbackQuery(env, update);
+    else await handleCommand(env, update, publicRoot(env, request));
   } catch {
     // Our own bookkeeping must never turn into an endless Telegram retry loop, but the person on the
     // other end is still owed an answer.

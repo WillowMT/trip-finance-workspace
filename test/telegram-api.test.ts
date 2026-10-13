@@ -927,7 +927,7 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   });
 });
 
-test('sends a current debt summary image after its Summary callback', async () => {
+test('routes an authenticated Summary callback to the temporary summary handler', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
@@ -959,12 +959,10 @@ test('sends a current debt summary image after its Summary callback', async () =
 
     const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
     assert.equal(submitted.response.status, 200);
-    await waitFor(() => bot.photos.length === 1, 'the Summary callback should send one image');
+    await waitFor(() => bot.messages.some((message) => message.text === '📊 Summary is being prepared.'), 'the Summary callback should reach the temporary handler');
     await waitFor(() => bot.callbackAnswers.length === 1, 'the Summary callback should be acknowledged');
-    assert.equal(bot.photos.length, 1);
-    assert.equal(bot.photos[0].chat_id, String(chatId));
-    assert.deepEqual(bot.photos[0].bytes.slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10]);
-    assert.equal(bot.photos[0].caption, '📊 Summary trip — 2 outstanding lines across 2 currencies');
+    assert.equal(bot.photos.length, 0, 'PNG rendering belongs to Task 3');
+    assert.equal(bot.lastText(), '📊 Summary is being prepared.');
     assert.equal(bot.callbackAnswers.length, 1);
     assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
   });
