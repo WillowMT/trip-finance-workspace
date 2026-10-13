@@ -679,6 +679,7 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
   }
   const currencies = new Set(balances.map((balance) => balance.currency_code)).size;
   const lines = [...groups.values()].flatMap((group) => [`${group.debtor}:`, ...group.lines.map((line) => `• ${line.replace(/^.*? OWES /, 'owes ')}`)]);
+  console.log(`[summary-diag] sending text summary to chat=${chatId} lines=${balances.length}`);
   await sendMessage(env, chatId, [
     `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`,
     '',
@@ -928,6 +929,7 @@ async function handleCallbackQuery(env: TelegramEnv, update: TelegramUpdate): Pr
   const connection = typeof callback.data === 'string'
     ? await verifiedSummaryConnection(env, callback.data, String(chatId))
     : null;
+  console.log(`[summary-diag] callback chat=${chatId} data_len=${typeof callback.data === 'string' ? callback.data.length : -1} validated=${connection ? 'yes' : 'no'}`);
   if (!connection) {
     await sendMessage(env, String(chatId), '⚠️ This summary request is not available. Send /start for a fresh menu.');
     return;
