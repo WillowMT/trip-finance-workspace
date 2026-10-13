@@ -16,7 +16,6 @@
  * endpoint refuses every request.
  */
 
-import { renderDebtSummaryPng } from './summary-png';
 
 export type TelegramEnv = {
   DB: D1Database;
@@ -310,22 +309,6 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
   return { ok: true, result: body.result as T };
 }
 
-async function sendPhoto(env: TelegramEnv, chatId: string, png: Uint8Array, caption: string): Promise<ApiResult<{ message_id?: number }>> {
-  const token = botToken(env);
-  if (!token) return { ok: false, error_code: 0, description: 'Telegram is not configured', retry_after: 0 };
-  const form = new FormData();
-  form.set('chat_id', chatId);
-  form.set('caption', caption);
-  form.set('photo', new Blob([png.buffer as ArrayBuffer], { type: 'image/png' }), 'debt-summary.png');
-  try {
-    const response = await fetch(`${telegramApiBase(env)}/bot${token}/sendPhoto`, { method: 'POST', body: form });
-    const body = await response.json() as ApiEnvelope<unknown>;
-    if (!body || body.ok !== true) return { ok: false, error_code: Number(body?.error_code ?? response.status), description: redact(String(body?.description ?? 'Telegram rejected the image')), retry_after: Number(body?.parameters?.retry_after ?? 0) || 0 };
-    return { ok: true, result: body.result as { message_id?: number } };
-  } catch {
-    return { ok: false, error_code: 0, description: 'Telegram was unreachable', retry_after: 0 };
-  }
-}
 
 /**
  * The command menu Telegram shows when someone opens the chat. Keep it to commands the webhook really
@@ -694,15 +677,13 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
     group.lines.push(`${balance.debtor} OWES ${balance.creditor} - ${money(balance.outstanding, balance.currency_code)}`);
     groups.set(balance.debtor, group);
   }
-  const now = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date());
   const currencies = new Set(balances.map((balance) => balance.currency_code)).size;
-  const sent = await sendPhoto(env, chatId, renderDebtSummaryPng(workspace.name, `GENERATED ${now}`, [...groups.values()]), `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`);
-  if (!sent.ok) {
-    // The callback spinner has already been acknowledged. Do not swallow a rejected upload: give the
-    // requester a usable answer and preserve only a non-sensitive diagnostic in Worker logs.
-    console.error('telegram debt summary photo rejected', sent.error_code, sent.description);
-    await sendMessage(env, chatId, '⚠️ The debt summary image could not be sent. Please send /start for a fresh menu and try once more.');
-  }
+  const lines = [...groups.values()].flatMap((group) => [`${group.debtor}:`, ...group.lines.map((line) => `• ${line.replace(/^.*? OWES /, 'owes ')}`)]);
+  await sendMessage(env, chatId, [
+    `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`,
+    '',
+    ...lines,
+  ].join('\n'));
 }
 
 /**

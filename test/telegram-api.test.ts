@@ -951,7 +951,7 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   });
 });
 
-test('routes an authenticated Summary callback to one current PNG', async () => {
+test('routes an authenticated Summary callback to one current text summary', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
@@ -993,12 +993,13 @@ test('routes an authenticated Summary callback to one current PNG', async () => 
 
     const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
     assert.equal(submitted.response.status, 200);
-    await waitFor(() => bot.photos.length === 1, 'the Summary callback should send one current PNG');
+    await waitFor(() => bot.messages.some((message) => message.text.includes('2 outstanding lines across 2 currencies')), 'the Summary callback should send one current text summary');
     await waitFor(() => bot.callbackAnswers.length === 1, 'the Summary callback should be acknowledged');
-    assert.equal(bot.messages.some((message) => message.text === '📊 Summary is being prepared.'), false, 'the image is sent directly, with no placeholder message');
-    assert.equal(bot.photos[0].chat_id, String(chatId), 'the image goes only to the requesting linked chat');
-    assert.deepEqual(bot.photos[0].bytes.slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10], 'the upload is a PNG');
-    assert.equal(bot.photos[0].caption, '📊 Summary trip — 2 outstanding lines across 2 currencies');
+    const summaryMessage = bot.messages.find((message) => message.text.includes('2 outstanding lines across 2 currencies'))!;
+    assert.match(summaryMessage.text, /📊 Summary trip — 2 outstanding lines across 2 currencies/, 'the summary leads with trip and counts');
+    assert.match(summaryMessage.text, /owes Ada - USD 38\.00/, 'USD lines are netted');
+    assert.match(summaryMessage.text, /owes Lin - MYR 33\.00/, 'MYR stays a separate line');
+    assert.equal(summaryMessage.text.includes('/w/'), false, 'the summary text carries no workspace link');
     assert.equal(bot.callbackAnswers.length, 1);
     assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
 
