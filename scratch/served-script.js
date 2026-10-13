@@ -187,7 +187,10 @@ async function payLimits(){
   var txs=(r.data&&r.data.transactions)||[], owe={}, i, t;
   for(i=0;i<txs.length;i++){
     t=txs[i];
-    if(t.is_deleted||Number(t.payer_person_id)!==d||Number(t.payee_person_id)!==c){ continue }
+    /* A row names the creditor (who is owed) and the debtor (who owes); payments are stored the same
+       way and signedMinor() already flips them negative. payer_person_id/payee_person_id exist only
+       on split *inputs* and never on a stored row, so matching on them silently matched nothing. */
+    if(t.is_deleted||Number(t.creditor_person_id)!==c||Number(t.debtor_person_id)!==d){ continue }
     owe[t.currency_code]=(owe[t.currency_code]||0)+signedMinor(t);
   }
   var out='', top=0, codes=[];
