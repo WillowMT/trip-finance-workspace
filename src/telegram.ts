@@ -51,11 +51,11 @@ export const NAV_SECTIONS: { tab: string; label: string }[] = [
   { tab: 'settings', label: '⚙️ Setup' },
 ];
 
-/** What the /start menu offers as buttons: the everyday surfaces only. Audit and Setup are deliberately
- *  left out of the chat menu — they are workshop pages you reach from the app's own drawer. */
-export const MENU_SECTIONS: { tab: string; label: string }[] = NAV_SECTIONS.filter(
-  (section) => section.tab !== 'audit' && section.tab !== 'settings',
-);
+/** What the /start menu offers as buttons: add a record, read the ledger, check balances. Audit, Setup,
+ *  Ranking, Receipts and Bulk & import are deliberately left out — those are pages you reach from the
+ *  app's own drawer, not from a chat. */
+const MENU_TABS = new Set(['add', 'pay', 'split', 'ledger', 'balances']);
+export const MENU_SECTIONS: { tab: string; label: string }[] = NAV_SECTIONS.filter((section) => MENU_TABS.has(section.tab));
 
 /** How long a chat keeps hearing about changes once it is linked. */
 export const WEBHOOK_PATH = '/api/telegram/webhook';

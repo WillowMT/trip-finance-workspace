@@ -58,10 +58,10 @@ two can never drift). It closes on a pick, on the backdrop, on ✕, and on Esc; 
 `NAV_SECTIONS` in `src/telegram.ts` is the app's ten sections in the app's order, two per row, and `/go/<pass>/<section>`
 validates against it, so adding a page to the list is all it takes to make it addressable from Telegram.
 
-**The chat menu is a subset of that list.** `MENU_SECTIONS` filters out `audit` and `settings` — Willow
-does not want Audit or Setup offered in the chat, and every button now opens a section of a trip the
-chat follows — no app-root row at all. `NAV_SECTIONS` stays complete so section passes for the two
-workshop pages still resolve for anyone who has such a link.
+**The chat menu is a subset of that list.** `MENU_SECTIONS` keeps `add`, `pay`, `split`, `ledger` and
+`balances`: Willow wants audit, setup, ranking, receipts and bulk import out of the chat, and every
+button opens a section of a trip the chat follows — no app-root row at all. `NAV_SECTIONS` stays
+complete so section passes for the other pages still resolve for anyone who has such a link.
 
 ## Follow-up: the label beside the ☰ said "Add expen e"
 

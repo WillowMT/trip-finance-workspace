@@ -96,8 +96,7 @@ chat has no use for, reachable from the app's own drawer.
 ```
 ➕ Add expense    ↩️ Record a payment
 ✂️ Split a bill   📒 Transactions
-⚖️ Balances       🏆 Ranking
-🧾 Receipts       📥 Bulk & import
+⚖️ Balances
 ```
 
 - A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid
