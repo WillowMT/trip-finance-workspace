@@ -577,37 +577,60 @@ function base64Url(bytes: Uint8Array): string {
   return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function summaryCallbackSignature(secret: string, payload: string): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(secret),
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const signature = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(payload));
-  // 96 bits keeps the complete signed action far below Telegram's 64-byte callback_data limit.
-  return base64Url(new Uint8Array(signature).slice(0, 12));
+const SUMMARY_CALLBACK_PREFIX = 'ds2.';
+const SUMMARY_CALLBACK_AAD = new TextEncoder().encode('trip-finance-summary-v1');
+
+/** The webhook secret derives an AES-GCM key, so callback data is opaque and authenticated without D1 state. */
+async function summaryCallbackKey(secret: string): Promise<CryptoKey> {
+  const material = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
+  return crypto.subtle.importKey('raw', material, { name: 'AES-GCM' }, false, ['encrypt', 'decrypt']);
 }
 
-/** `ds:<connection id base36>:<expiry seconds base36>:<truncated HMAC>` — no workspace URL capability. */
+function fromBase64Url(value: string): Uint8Array | null {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) return null;
+  try {
+    const padded = value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (value.length % 4)) % 4);
+    return Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+  } catch {
+    return null;
+  }
+}
+
+/** An opaque AEAD packet: 12-byte nonce plus encrypted 32-bit connection id and expiry. */
 async function summaryCallbackData(env: TelegramEnv, connectionId: number): Promise<string | null> {
   const secret = webhookSecret(env);
-  if (!secret || !Number.isSafeInteger(connectionId) || connectionId <= 0) return null;
-  const payload = `ds:${connectionId.toString(36)}:${Math.floor((Date.now() + SUMMARY_CALLBACK_TTL_MS) / 1000).toString(36)}`;
-  const data = `${payload}:${await summaryCallbackSignature(secret, payload)}`;
+  if (!secret || !Number.isSafeInteger(connectionId) || connectionId <= 0 || connectionId > 0xffff_ffff) return null;
+  const expirySeconds = Math.floor((Date.now() + SUMMARY_CALLBACK_TTL_MS) / 1000);
+  if (!Number.isSafeInteger(expirySeconds) || expirySeconds > 0xffff_ffff) return null;
+  const plaintext = new Uint8Array(8);
+  const view = new DataView(plaintext.buffer);
+  view.setUint32(0, connectionId);
+  view.setUint32(4, expirySeconds);
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: SUMMARY_CALLBACK_AAD }, await summaryCallbackKey(secret), plaintext));
+  const data = `${SUMMARY_CALLBACK_PREFIX}${base64Url(new Uint8Array([...nonce, ...ciphertext]))}`;
   return data.length <= 64 ? data : null;
 }
 
 async function verifiedSummaryConnection(env: TelegramEnv, data: string, chatId: string): Promise<{ id: number; workspace_id: number } | null> {
-  const match = data.match(/^ds:([0-9a-z]+):([0-9a-z]+):([A-Za-z0-9_-]{16})$/);
-  if (!match || data.length > 64) return null;
-  const [, idText, expiryText, signature] = match;
-  const connectionId = Number.parseInt(idText, 36);
-  const expirySeconds = Number.parseInt(expiryText, 36);
-  if (!Number.isSafeInteger(connectionId) || connectionId <= 0 || !Number.isSafeInteger(expirySeconds) || expirySeconds * 1000 <= Date.now()) return null;
-  const payload = `ds:${idText}:${expiryText}`;
-  if (!sameSecret(signature, await summaryCallbackSignature(webhookSecret(env), payload))) return null;
+  if (!data.startsWith(SUMMARY_CALLBACK_PREFIX) || data.length > 64) return null;
+  const packet = fromBase64Url(data.slice(SUMMARY_CALLBACK_PREFIX.length));
+  // AES-GCM includes a 16-byte tag, therefore this fixed payload is always exactly 36 bytes.
+  if (!packet || packet.length !== 36) return null;
+  let plaintext: ArrayBuffer;
+  try {
+    plaintext = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: packet.slice(0, 12), additionalData: SUMMARY_CALLBACK_AAD },
+      await summaryCallbackKey(webhookSecret(env)),
+      packet.slice(12),
+    );
+  } catch {
+    return null;
+  }
+  const view = new DataView(plaintext);
+  const connectionId = view.getUint32(0);
+  const expirySeconds = view.getUint32(4);
+  if (connectionId <= 0 || expirySeconds * 1000 <= Date.now()) return null;
   return await env.DB.prepare(
     `SELECT c.id, c.workspace_id
        FROM telegram_connections c JOIN workspaces w ON w.id = c.workspace_id

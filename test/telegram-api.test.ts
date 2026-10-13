@@ -5,7 +5,7 @@ import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { Buffer } from 'node:buffer';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createCipheriv, createHash } from 'node:crypto';
 import test from 'node:test';
 
 const root = new URL('..', import.meta.url).pathname;
@@ -297,6 +297,19 @@ function sha256(value: string): string {
   return createHash('sha256').update(value, 'utf8').digest('hex');
 }
 
+/** Builds an expired opaque summary token with the test webhook secret, matching the public callback protocol. */
+function expiredSummaryCallback(connectionId: number): string {
+  const key = createHash('sha256').update(WEBHOOK_SECRET, 'utf8').digest();
+  const nonce = Buffer.alloc(12, 7);
+  const plain = Buffer.alloc(8);
+  plain.writeUInt32BE(connectionId, 0);
+  plain.writeUInt32BE(Math.floor(Date.now() / 1000) - 1, 4);
+  const cipher = createCipheriv('aes-256-gcm', key, nonce);
+  cipher.setAAD(Buffer.from('trip-finance-summary-v1', 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(plain), cipher.final(), cipher.getAuthTag()]);
+  return `ds2.${Buffer.concat([nonce, ciphertext]).toString('base64url')}`;
+}
+
 /** The chat a connection row points at: chat ids are 64-bit, so they are stored and read as text. */
 function connectionRows(query: Harness['query'], workspaceId: number): { id: number; chat_id: string; chat_type: string; enabled: number }[] {
   return query(`SELECT id, chat_id, chat_type, enabled FROM telegram_connections WHERE workspace_id = ${workspaceId} ORDER BY id`) as { id: number; chat_id: string; chat_type: string; enabled: number }[];
@@ -374,6 +387,11 @@ test('one chat can follow several trips, a repeat connect is not a duplicate, an
     const secondToken = await mintPairing(request, second);
     const secondReply = await startInPrivate({ request, query, bot }, secondToken.token, chatId);
     assert.match(secondReply, /connected to “Trip two”/);
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/start' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'a multi-trip menu should be sent');
+    const multiTripGrid = (bot.messages[0].reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard;
+    assert.equal(multiTripGrid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary').length, 2, 'one full-width Summary row is present for each linked trip');
 
     // Re-connecting the first trip reuses the row and says so.
     const againToken = await mintPairing(request, first);
@@ -791,22 +809,26 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     await waitFor(() => bot.messages.length === 1, 'a menu should be sent');
 
     const menu = bot.messages[0];
-    const grid = (menu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard;
+    const grid = (menu.reply_markup as { inline_keyboard: { text: string; url?: string; callback_data?: string }[][] }).inline_keyboard;
+    const navigationRows = grid.filter((row) => row.every((button) => button.url));
+    const summaryRows = grid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary');
     assert.match(menu.text, /Menu trip/, 'the menu names the trip');
     assert.match(menu.text, /work for a day/);
-    assert.equal(grid.length, 3, 'three rows of sections, two per row');
-    assert.deepEqual(grid[0].map((button) => button.text), ['➕ Create debt', '↩️ Record a payment']);
-    assert.deepEqual(grid[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
-    assert.deepEqual(grid[2].map((button) => button.text), ['⚖️ View debts and analytics'], 'the reading row names what the page holds');
-    assert.ok(grid.flat().every((button) => button.url !== ORIGIN), 'no button opens the public root');
+    assert.equal(navigationRows.length, 3, 'three rows of sections, two per row');
+    assert.equal(summaryRows.length, 1, 'each linked trip gets one full-width Summary row');
+    assert.deepEqual(navigationRows[0].map((button) => button.text), ['➕ Create debt', '↩️ Record a payment']);
+    assert.deepEqual(navigationRows[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
+    assert.deepEqual(navigationRows[2].map((button) => button.text), ['⚖️ View debts and analytics'], 'the reading row names what the page holds');
+    assert.ok(navigationRows.flat().every((button) => button.url !== ORIGIN), 'no button opens the public root');
     const menuLabels = grid.flat().map((button) => button.text).join(' | ');
     assert.ok(!/Audit|Setup|Ranking|Receipts|Bulk|new trip/i.test(menuLabels), `audit, setup, ranking, receipts and bulk import stay out of the chat menu: ${menuLabels}`);
     assert.ok(!menu.text.includes(secret) && !menu.text.includes('/w/'), 'the menu never carries the trip link');
-    for (const row of grid) {
+    for (const row of navigationRows) {
       for (const button of row) {
+        assert.ok(button.url, `a navigation button must have a URL: ${button.text}`);
         assert.ok(!button.url.includes('/w/'), `a menu button must not carry a capability URL: ${button.text}`);
         assert.ok(!button.url.includes(secret), 'no button carries the capability secret');
-        if (button.url !== ORIGIN) assert.match(button.url, new RegExp(`^${ORIGIN}/go/[A-Za-z0-9_-]{20,}/(add|pay|split|ledger|balances|ranking|receipts|tools|audit|settings)$`));
+        assert.match(button.url, new RegExp(`^${ORIGIN}/go/[A-Za-z0-9_-]{20,}/(add|pay|split|ledger|balances|ranking|receipts|tools|audit|settings)$`));
       }
     }
 
@@ -860,7 +882,9 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     await waitFor(() => bot.messages.length === 1, 'a group menu should be sent');
     const groupMenu = bot.messages[0];
     assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
-    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 3, 'the group gets the same grid');
+    const groupGrid = (groupMenu.reply_markup as { inline_keyboard: { text: string; url?: string; callback_data?: string }[][] }).inline_keyboard;
+    assert.equal(groupGrid.filter((row) => row.every((button) => button.url)).length, 3, 'the group gets the same navigation rows');
+    assert.equal(groupGrid.filter((row) => row.length === 1 && row[0].text === '📊 Send debt summary').length, 1, 'the group gets one Summary row per linked trip');
     assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
   });
 });
@@ -931,6 +955,9 @@ test('routes an authenticated Summary callback to the temporary summary handler'
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
+    // A multi-digit id makes a plaintext decimal/base36 leak detectable without random-token coincidences.
+    query("DELETE FROM sqlite_sequence WHERE name = 'telegram_connections'");
+    query("INSERT INTO sqlite_sequence(name, seq) VALUES ('telegram_connections', 1234566)");
     query(`INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (${workspaceId}, 'MYR', 0)`);
     const chatId = 101;
     const chat = PRIVATE_CHAT(chatId);
@@ -955,7 +982,14 @@ test('routes an authenticated Summary callback to the temporary summary handler'
     const buttons = ((menu.reply_markup as { inline_keyboard: { text: string; callback_data?: string }[][] }).inline_keyboard).flat();
     const summary = buttons.find((button) => button.text === '📊 Send debt summary');
     const callbackData = summary?.callback_data;
+    const connectionId = connectionRows(query, workspaceId)[0].id;
     assert.ok(callbackData, 'the menu should offer a Summary callback');
+    assert.ok(callbackData.length < 64, 'Telegram callback_data stays below its 64-byte limit');
+    assert.equal(callbackData.includes('/w/'), false, 'callback_data never carries a workspace path');
+    assert.equal(callbackData.includes(secret), false, 'callback_data never carries the workspace secret');
+    assert.equal(callbackData.includes(WEBHOOK_SECRET), false, 'callback_data never carries the webhook secret');
+    assert.equal(callbackData.includes(String(connectionId)), false, 'callback_data never exposes the decimal connection id');
+    assert.equal(callbackData.includes(connectionId.toString(36)), false, 'callback_data never exposes the base36 connection id');
 
     const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
     assert.equal(submitted.response.status, 200);
@@ -965,5 +999,26 @@ test('routes an authenticated Summary callback to the temporary summary handler'
     assert.equal(bot.lastText(), '📊 Summary is being prepared.');
     assert.equal(bot.callbackAnswers.length, 1);
     assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
+
+    const rejected = async (data: string, callbackId: string, sourceChat = chat) => {
+      const photosBefore = bot.photos.length;
+      const messagesBefore = bot.messages.length;
+      const answerBefore = bot.callbackAnswers.length;
+      const result = await sendCallbackQuery({ request, query, bot }, sourceChat, data, callbackId);
+      assert.equal(result.response.status, 200);
+      await waitFor(() => bot.messages.length === messagesBefore + 1, `${callbackId} should receive recovery guidance`);
+      await waitFor(() => bot.callbackAnswers.length === answerBefore + 1, `${callbackId} should still be acknowledged`);
+      assert.equal(bot.photos.length, photosBefore, `${callbackId} must not produce a photo`);
+      assert.match(bot.lastText(), /^⚠️ .*fresh menu/, `${callbackId} gets emoji recovery guidance`);
+    };
+
+    await rejected(callbackData, 'summary-wrong-chat', PRIVATE_CHAT(chatId + 1));
+    const altered = `${callbackData.slice(0, -1)}${callbackData.endsWith('A') ? 'B' : 'A'}`;
+    await rejected(altered, 'summary-altered');
+    query(`UPDATE telegram_connections SET enabled = 0 WHERE id = ${connectionId}`);
+    await rejected(callbackData, 'summary-disabled');
+    query(`UPDATE telegram_connections SET enabled = 1 WHERE id = ${connectionId}`);
+    await rejected('ds2.not-a-valid-packet', 'summary-malformed');
+    await rejected(expiredSummaryCallback(connectionId), 'summary-expired');
   });
 });
