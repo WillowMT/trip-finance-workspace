@@ -599,7 +599,6 @@ async function sendStartMenu(env: TelegramEnv, chatId: string, root: string): Pr
     }
     if (row.length) buttons.push(row);
   }
-  buttons.push([{ text: '🌐 All trips', url: root }]);
   await sendMessage(env, chatId, lines.join('\n'), { inline_keyboard: buttons });
 }
 

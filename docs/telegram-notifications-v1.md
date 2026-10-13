@@ -98,7 +98,6 @@ chat has no use for, reachable from the app's own drawer.
 ✂️ Split a bill   📒 Transactions
 ⚖️ Balances       🏆 Ranking
 🧾 Receipts       📥 Bulk & import
-🌐 All trips
 ```
 
 - A chat that follows **nothing** still gets the plain welcome and its single public-root button; the grid

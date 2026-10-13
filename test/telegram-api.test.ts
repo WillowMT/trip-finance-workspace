@@ -710,11 +710,10 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     const grid = (menu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard;
     assert.match(menu.text, /Menu trip/, 'the menu names the trip');
     assert.match(menu.text, /work for a day/);
-    assert.equal(grid.length, 5, 'four rows of sections plus the app root');
+    assert.equal(grid.length, 4, 'four rows of sections, two per row');
     assert.deepEqual(grid[0].map((button) => button.text), ['➕ Add expense', '↩️ Record a payment']);
     assert.deepEqual(grid[1].map((button) => button.text), ['✂️ Split a bill', '📒 Transactions'], 'writing and reading surfaces sit in the app order');
-    assert.equal(grid[4][0].url, ORIGIN, 'the last button opens the public app root');
-    assert.equal(grid[4][0].text, '🌐 All trips', 'the app root is offered without a new-trip pitch');
+    assert.ok(grid.flat().every((button) => button.url !== ORIGIN), 'no button opens the public root');
     const menuLabels = grid.flat().map((button) => button.text).join(' | ');
     assert.ok(!/Audit|Setup|new trip/i.test(menuLabels), `audit, setup and new trips stay out of the chat menu: ${menuLabels}`);
     assert.ok(!menu.text.includes(secret) && !menu.text.includes('/w/'), 'the menu never carries the trip link');
@@ -776,7 +775,7 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     await waitFor(() => bot.messages.length === 1, 'a group menu should be sent');
     const groupMenu = bot.messages[0];
     assert.match(groupMenu.text, /Group menu trip/, 'the group menu names its trip');
-    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 5, 'the group gets the same grid');
+    assert.equal((groupMenu.reply_markup as { inline_keyboard: { text: string; url: string }[][] }).inline_keyboard.length, 4, 'the group gets the same grid');
     assert.equal(Number((query(`SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id = (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`) as { count: number }[])[0].count), 1);
   });
 });
