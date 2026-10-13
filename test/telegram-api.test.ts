@@ -21,10 +21,15 @@ const WEBHOOK_SECRET = 'fake-webhook-secret-0123456789abcdef';
 const BOT_USERNAME = 'trip_finance_test_bot';
 
 type BotCall = { method: string; token: string; payload: Record<string, unknown> };
-type BotPhoto = { chat_id: string; bytes: number[] };
+type BotPhoto = { chat_id: string; bytes: number[]; caption?: string };
 type CallbackAnswer = { callback_query_id: string; text?: string };
 
-function multipartPayload(bytes: Buffer, contentType: string): { fields: Record<string, string>; photo: number[] } {
+/**
+ * Decode only the small FormData fixture produced in this test file. This is deliberately not a
+ * general multipart parser: production only needs the fake Bot API to inspect its own generated
+ * test requests, not to accept arbitrary client uploads.
+ */
+function generatedFormDataFixture(bytes: Buffer, contentType: string): { fields: Record<string, string>; photo: number[] } {
   const match = contentType.match(/boundary=(?:"([^"]+)"|([^;\s]+))/i);
   const boundary = match?.[1] ?? match?.[2];
   if (!boundary) return { fields: {}, photo: [] };
@@ -36,7 +41,7 @@ function multipartPayload(bytes: Buffer, contentType: string): { fields: Record<
     if (divider < 0 || !name) continue;
     const value = part.slice(divider + 4).replace(/\r\n$/, '');
     if (name === 'photo') photo = [...Buffer.from(value, 'latin1')];
-    else fields[name] = value;
+    else fields[name] = Buffer.from(value, 'latin1').toString('utf8');
   }
   return { fields, photo };
 }
@@ -72,7 +77,7 @@ class FakeBot {
         let payload: Record<string, unknown> = {};
         let photo: number[] = [];
         if (contentType.startsWith('multipart/form-data')) {
-          const multipart = multipartPayload(bytes, contentType);
+          const multipart = generatedFormDataFixture(bytes, contentType);
           payload = multipart.fields;
           photo = multipart.photo;
         } else {
@@ -108,7 +113,7 @@ class FakeBot {
           return;
         }
         if (method === 'sendPhoto') {
-          this.photos.push({ chat_id: String(payload.chat_id ?? ''), bytes: photo });
+          this.photos.push({ chat_id: String(payload.chat_id ?? ''), bytes: photo, caption: typeof payload.caption === 'string' ? payload.caption : undefined });
           reply({ ok: true, result: { message_id: this.photos.length } });
           return;
         }
@@ -147,10 +152,15 @@ test('FakeBot captures multipart photos and callback acknowledgements', async ()
   try {
     const form = new FormData();
     form.set('chat_id', '101');
+    form.set('caption', '📊 Summary trip — 2 outstanding lines across 2 currencies');
     form.set('photo', new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], { type: 'image/png' }), 'summary.png');
     const photo = await fetch(`http://127.0.0.1:${bot.port}/bot${BOT_TOKEN}/sendPhoto`, { method: 'POST', body: form });
     assert.equal(photo.status, 200);
-    assert.deepEqual(bot.photos, [{ chat_id: '101', bytes: [137, 80, 78, 71, 13, 10, 26, 10] }]);
+    assert.deepEqual(bot.photos, [{
+      chat_id: '101',
+      caption: '📊 Summary trip — 2 outstanding lines across 2 currencies',
+      bytes: [137, 80, 78, 71, 13, 10, 26, 10],
+    }]);
 
     const callback = await fetch(`http://127.0.0.1:${bot.port}/bot${BOT_TOKEN}/answerCallbackQuery`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ callback_query_id: 'callback-101' }),
@@ -239,15 +249,16 @@ async function sendUpdate(harness: Harness, update: UpdateInit, secretHeader: st
   });
 }
 
-async function sendCallbackQuery(harness: Harness, chat: UpdateInit['chat'], data: string, from = { id: 4242, first_name: 'Willow' }): Promise<Response> {
-  return harness.request('/api/telegram/webhook', {
+async function sendCallbackQuery(harness: Harness, chat: UpdateInit['chat'], data: string, callbackId: string, from = { id: 4242, first_name: 'Willow' }): Promise<{ response: Response; callbackId: string }> {
+  const response = await harness.request('/api/telegram/webhook', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': WEBHOOK_SECRET },
     body: JSON.stringify({
       update_id: Math.floor(Math.random() * 1_000_000),
-      callback_query: { id: `callback-${Math.random()}`, from, message: { message_id: Math.floor(Math.random() * 1000), chat }, data },
+      callback_query: { id: callbackId, from, message: { message_id: Math.floor(Math.random() * 1000), chat }, data },
     }),
   });
+  return { response, callbackId };
 }
 
 const PRIVATE_CHAT = (id: number, name = 'Willow') => ({ id, type: 'private', first_name: name });
@@ -946,10 +957,15 @@ test('sends a current debt summary image after its Summary callback', async () =
     const callbackData = summary?.callback_data;
     assert.ok(callbackData, 'the menu should offer a Summary callback');
 
-    assert.equal((await sendCallbackQuery({ request, query, bot }, chat, callbackData)).status, 200);
+    const submitted = await sendCallbackQuery({ request, query, bot }, chat, callbackData, 'summary-callback-101');
+    assert.equal(submitted.response.status, 200);
+    await waitFor(() => bot.photos.length === 1, 'the Summary callback should send one image');
+    await waitFor(() => bot.callbackAnswers.length === 1, 'the Summary callback should be acknowledged');
     assert.equal(bot.photos.length, 1);
     assert.equal(bot.photos[0].chat_id, String(chatId));
     assert.deepEqual(bot.photos[0].bytes.slice(0, 8), [137, 80, 78, 71, 13, 10, 26, 10]);
+    assert.equal(bot.photos[0].caption, '📊 Summary trip — 2 outstanding lines across 2 currencies');
     assert.equal(bot.callbackAnswers.length, 1);
+    assert.equal(bot.callbackAnswers[0].callback_query_id, submitted.callbackId);
   });
 });
