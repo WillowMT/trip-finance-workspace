@@ -652,8 +652,8 @@ test('the balance-by-person view says who owes whom instead of leaning on colour
     assert.ok(html.includes('Green means the money is owed to '), 'green is defined in words');
     assert.ok(html.includes(' owes it.</p>'), 'and so is red');
     assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
-    assert.ok(html.includes("fronted for others") && html.includes("Covered for '+meName"), 'the tiles name the person instead of saying "them"');
-    assert.ok(html.includes("+esc(meName)+' fronted '") && html.includes("+esc(pr.counterparty)+' covered '"), 'the meta line names both people too');
+    assert.ok(html.includes("'Others paid for '+esc(meName)") && html.includes("+esc(meName)+' paid them back'"), 'the summary lines name the person instead of saying "them"');
+    assert.ok(html.includes("pairLine(pr,meName)") && !html.includes("+esc(pr.counterparty)+' covered '"), 'the pair row is one plain line, not a run-on of figures');
     assert.ok(!html.includes('owed to them'), 'no pronoun-only net phrasing survives');
     assert.ok(!html.includes("kpi('Covered for them'"), 'nor the ambiguous tile label');
   });
@@ -811,6 +811,9 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
+    assert.match(page, /Where this comes from/, 'the popup leads with a sentence and folds the figures away');
+    assert.match(page, /Who owes whom/, 'the pair list says what it lists');
+    assert.ok(!page.includes('fronted for others'), 'the fronted/covered jargon is gone from the popup');
     assert.match(page, /html\[data-theme="dark"\]\{/, 'the dark palette is opt-in, not tied to the phone setting');
     assert.ok(!page.includes('prefers-color-scheme'), 'no palette follows the operating system any more');
     assert.match(page, /id="s-theme"/, 'Settings carries the theme choice');
@@ -829,9 +832,9 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /setAttribute\('aria-haspopup','dialog'\)/, 'the served card only marks itself as a dialog opener in script');
     assert.match(page, /person-card/);
     assert.match(page, /people\/'\+pmOpenId\+'\/summary/, 'the popup reads the per-person summary endpoint');
-    assert.match(page, /What \'\+esc\(meName\)\+\' paid for/, 'the popup names the paid-for breakdown');
-    assert.match(page, /What was paid for \'\+esc\(meName\)/, 'the popup names the covered-for-person breakdown');
-    assert.match(page, /Payments &amp; offsets/, 'the popup includes settlement and offset history');
+    assert.match(page, /Records \'\+esc\(meName\)\+\' paid for/, 'the popup names the paid-for breakdown');
+    assert.match(page, /Records others paid for \'\+esc\(meName\)/, 'the popup names the covered-for-person breakdown');
+    assert.match(page, /Repayments and offsets/, 'the popup includes settlement and offset history');
     assert.match(page, /<details class="pm-breakdown"><summary>/, 'person breakdowns use collapsed disclosures by default');
     assert.doesNotMatch(page, /<details class="pm-breakdown" open>/, 'person breakdowns do not open by default');
 

@@ -2,7 +2,15 @@ import { KEEP_BACKUPS } from './backups';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
-const CSS = `/* ── tokens: every colour, size and space comes from here ───────────────── */
+const CSS = `/* person popup: one headline per currency, with the four figures behind it folded away */
+.pm-why{margin:var(--sp-6) 0}
+.pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
+.pm-why-top .amt{font-size:var(--fs-xl);font-weight:800;font-variant-numeric:tabular-nums}
+.pm-line{display:flex;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-3) 0;border-bottom:1px solid var(--line)}
+.pm-line:last-child{border-bottom:0}
+.pm-line-val{font-variant-numeric:tabular-nums;font-weight:600}
+/* ── tokens: every colour, size and space comes from here ───────────────── */
 :root{
   --bg:#f4f4f5; --card:#ffffff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7; --line-strong:#d4d4d8;
   --brand:#2563eb; --brand-ink:#ffffff; --brand-hover:#1d4ed8; --ok:#15803d; --bad:#dc2626;
@@ -928,23 +936,34 @@ function closePerson(){
   var id=pmOpenId; pmOpenId=null; pmData=null;
   var card=document.querySelector('[data-person="'+id+'"]'); if(card){ try{card.focus()}catch(e){} }
 }
+function pmLine(label,value){ return '<div class="pm-line"><span>'+label+'</span><span class="pm-line-val">'+esc(value)+'</span></div>' }
 function renderPerson(){
   var d=pmData||{}, p=d.person||{}, body=$('pm-body'), title=$('pm-title');
   if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
   var totals=d.totals||[], records=d.records||{}, html='';
-  var chips='';
   var meName=p.display_name||'this person';
-  for(var i=0;i<totals.length;i++){ var t0=totals[i]; chips+=netChip(t0.net_minor,t0.currency_code,meName) }
-  html+='<div class="pm-nets">'+(chips||'<span class="empty">Nothing outstanding — settled up.</span>')+'</div>';
-  html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
+  /* One plain sentence per currency, then the four figures it comes from folded away. The popup used to
+     open as a wall of equal-weight numbers (fronted, covered, net, settled) with nothing saying which of
+     them answers the question the popup exists for: who owes whom, and how much. */
+  var allPairs=d.counterparties||[];
   for(var c=0;c<totals.length;c++){ var t=totals[c];
-    html+='<h3 class="mt-14">'+esc(t.currency_code)+'</h3><div class="kpi-grid">'+
-      kpi(meName+' fronted for others',money(t.paid_for_minor,t.currency_code))+
-      kpi('Covered for '+meName,money(t.covered_for_them_minor,t.currency_code))+
-      kpi('Net for '+meName,signedMoney(t.net_minor,t.currency_code),(t.net_minor>0?'pos':(t.net_minor<0?'neg':'')))+
-      kpi('Settled — paid / received',money(t.settled_out_minor,t.currency_code)+' / '+money(t.settled_in_minor,t.currency_code))+
-      '</div>';
+    /* who, in plain words: a number on its own still leaves the reader asking "to whom?" */
+    var owing=[], owedBy=[];
+    for(var w=0;w<allPairs.length;w++){ var x=allPairs[w]; if(x.currency_code!==t.currency_code||!x.net_minor){continue}
+      if(t.net_minor<0&&x.net_minor<0){ owing.push(x.counterparty) } else if(t.net_minor>0&&x.net_minor>0){ owedBy.push(x.counterparty) } }
+    var who=t.net_minor<0?(owing.length?('to '+owing.join(', ')):'to someone'):(t.net_minor>0?(owedBy.length?('by '+owedBy.join(', ')):'by someone'):'everyone is settled up');
+    html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
+      esc(meName)+' '+(t.net_minor>0?'is owed':(t.net_minor<0?'owes':'owes nothing'))+'</span>'+
+      (t.net_minor?'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span>':'')+
+      '</div><p class="meta">'+esc(who)+'</p>'+
+      '<details class="pm-breakdown"><summary>Where this comes from <span class="chip">'+esc(t.currency_code)+'</span></summary><div class="pm-breakdown-body">'+
+        pmLine('Others paid for '+esc(meName),money(t.covered_for_them_minor,t.currency_code))+
+        pmLine(esc(meName)+' paid them back',money(t.settled_out_minor,t.currency_code))+
+        pmLine(esc(meName)+' paid for others',money(t.paid_for_minor,t.currency_code))+
+        pmLine(esc(meName)+' was paid back',money(t.settled_in_minor,t.currency_code))+
+      '</div></details></div>';
   }
+  html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
   var pairs=d.counterparties||[];
   var bk=d.breakdown||{};
   /* full-history breakdowns, deliberately separate from Recent activity: a repayment from
@@ -956,21 +975,20 @@ function renderPerson(){
     /* Keep full-history detail available without making a person popup overwhelming on open. */
     return '<details class="pm-breakdown"><summary>'+label+'</summary><div class="pm-breakdown-body">'+content+'</div></details>';
   }
-  html+=bkSection('What '+esc(meName)+' paid for',bk.paid_for);
-  html+=bkSection('What was paid for '+esc(meName),bk.covered_for_them);
-  html+=bkSection('Payments &amp; offsets',bk.settlements);
-  html+='<h3 class="mt-16">Balances by person</h3><p class="hint">Each line names who owes whom. Green means the money is owed to '+esc(meName)+'; red means '+esc(meName)+' owes it.</p>';
+  html+=bkSection('Records '+esc(meName)+' paid for',bk.paid_for);
+  html+=bkSection('Records others paid for '+esc(meName),bk.covered_for_them);
+  html+=bkSection('Repayments and offsets',bk.settlements);
+  html+='<h3 class="mt-16">Who owes whom</h3><p class="hint">Green is money owed to '+esc(meName)+'. Red is money '+esc(meName)+' owes. Tap a line for the records behind it.</p>';
   if(!pairs.length){ html+='<div class="empty">No counterparties yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id; var recs=pairRecords(pr.counterparty_id);
-    var settled=(pr.settled_out_minor||0)+(pr.settled_in_minor||0);
     html+='<div class="pair"><button class="pair-head" type="button" data-pair="'+esc(key)+'" aria-expanded="false">'+
       '<span class="p-main">'+pairLine(pr,meName)+
-      '<span class="meta">'+esc(pr.currency_code)+' · '+pr.records+' active record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+' · '+esc(meName)+' fronted '+esc(money(pr.paid_for_minor,pr.currency_code))+' · '+esc(pr.counterparty)+' covered '+esc(money(pr.covered_minor,pr.currency_code))+(settled?' · settled '+esc(money(settled,pr.currency_code)):'')+'</span></span>'+
+      '<span class="meta">'+pr.records+' record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+'</span></span>'+
       '<span class="p-open">View records</span></button>'+
       '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+(recs.length?recs.map(recRow).join(''):'<div class="empty">No records in the latest window.</div>')+'</div></div>';
   }
   var recs2=d.recent||[];
-  html+='<h3 class="mt-16">Recent activity</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
+  html+='<h3 class="mt-16">Latest records</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
   if((records.total||0)>recs2.length){ html+='<p class="hint">Showing the latest '+recs2.length+' of '+records.total+' records.</p>' }
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
