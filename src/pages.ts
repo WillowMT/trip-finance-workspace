@@ -1006,10 +1006,6 @@ function renderPerson(){
     for(var a=0;a<totals.length;a++){ var at=totals[a]; out.push('<span class="pm-analytics-amount '+cls+'">'+esc(money(at[field]||0,at.currency_code))+'</span>') }
     return out.join('');
   }
-  html+='<section class="pm-analytics" aria-labelledby="pm-analytics-title"><h3 class="pm-analytics-title" id="pm-analytics-title">Analytics</h3><div class="pm-analytics-grid">'+
-    '<div class="pm-analytics-card in"><span class="pm-analytics-label">'+esc(meName)+' paid for others</span>'+analyticsAmounts('paid_for_minor','pos')+'</div>'+
-    '<div class="pm-analytics-card out"><span class="pm-analytics-label">Others paid for '+esc(meName)+'</span>'+analyticsAmounts('covered_for_them_minor','neg')+'</div>'+
-    '</div></section>';
   html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
   var pairs=d.counterparties||[];
   var bk=d.breakdown||{};
@@ -1039,6 +1035,13 @@ function renderPerson(){
       '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+detail+'</div></div>';
   }
   html+='</section>';
+  /* Analytics is deliberately after the relationship answer: these are lifetime activity totals,
+     not a second way of reading the current net. settled_in means repayments received by this person. */
+  html+='<section class="pm-analytics" aria-labelledby="pm-analytics-title"><h3 class="pm-analytics-title" id="pm-analytics-title">Analytics</h3><div class="pm-analytics-grid">'+
+    '<div class="pm-analytics-card out"><span class="pm-analytics-label">Their expenses</span>'+analyticsAmounts('covered_for_them_minor','neg')+'</div>'+
+    '<div class="pm-analytics-card in"><span class="pm-analytics-label">What they paid for</span>'+analyticsAmounts('paid_for_minor','pos')+'</div>'+
+    '<div class="pm-analytics-card in"><span class="pm-analytics-label">They were paid for</span>'+analyticsAmounts('settled_in_minor','pos')+'</div>'+
+    '</div></section>';
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];
