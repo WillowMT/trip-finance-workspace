@@ -811,7 +811,8 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
-    assert.match(page, /Where this comes from/, 'the popup leads with a sentence and folds the figures away');
+    assert.match(page, /Owed to '\+esc\(meName\)/, 'the summary states what is owed to them as its own line');
+    assert.match(page, /esc\(meName\)\+' owes/, 'and what they owe, so the subtraction is visible');
     assert.match(page, /Who owes whom/, 'the pair list says what it lists');
     assert.ok(!page.includes('fronted for others'), 'the fronted/covered jargon is gone from the popup');
     assert.match(page, /html\[data-theme="dark"\]\{/, 'the dark palette is opt-in, not tied to the phone setting');
@@ -832,11 +833,11 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /setAttribute\('aria-haspopup','dialog'\)/, 'the served card only marks itself as a dialog opener in script');
     assert.match(page, /person-card/);
     assert.match(page, /people\/'\+pmOpenId\+'\/summary/, 'the popup reads the per-person summary endpoint');
-    assert.match(page, /Records \'\+esc\(meName\)\+\' paid for/, 'the popup names the paid-for breakdown');
-    assert.match(page, /Records others paid for \'\+esc\(meName\)/, 'the popup names the covered-for-person breakdown');
-    assert.match(page, /Repayments and offsets/, 'the popup includes settlement and offset history');
-    assert.match(page, /<details class="pm-breakdown"><summary>/, 'person breakdowns use collapsed disclosures by default');
-    assert.doesNotMatch(page, /<details class="pm-breakdown" open>/, 'person breakdowns do not open by default');
+    assert.match(page, /function recsForPair\(pr\)/, 'a relationship expands from the full history, not the 25-row window');
+    assert.ok(!page.includes('Latest records'), 'the duplicated recent-activity list is gone');
+    assert.ok(!page.includes('<details class="pm-breakdown"'), 'the popup opens without stacked disclosures');
+    assert.match(page, /class="p-caret"/, 'a relationship row carries a chevron affordance');
+    assert.match(page, /function pmSides\(/, 'owed-to and owes render as one reusable pair of rows');
 
     const other = await createWorkspace(request);
     assert.equal((await request(`/w/${other}/api/people/${ada.id}/summary`)).status, 404, 'people are workspace-scoped');

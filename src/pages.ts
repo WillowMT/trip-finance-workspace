@@ -2,7 +2,7 @@ import { KEEP_BACKUPS } from './backups';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
-const CSS = `/* person popup: one headline per currency, with the four figures behind it folded away */
+<style>/* person popup: one headline per currency, then what is owed to them and what they owe */
 .pm-why{margin:var(--sp-6) 0}
 .pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
 .pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
@@ -10,6 +10,14 @@ const CSS = `/* person popup: one headline per currency, with the four figures b
 .pm-line{display:flex;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-3) 0;border-bottom:1px solid var(--line)}
 .pm-line:last-child{border-bottom:0}
 .pm-line-val{font-variant-numeric:tabular-nums;font-weight:600}
+/* the two numbers the net is made of: green comes to this person, red leaves them */
+.pm-sides{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin-top:var(--sp-4)}
+.pm-sides-in{margin-top:0;margin-bottom:var(--sp-4)}
+.pm-side{flex:1 1 148px;min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pm-side .s-label{font-size:var(--fs-sm);font-weight:600;color:var(--muted);min-width:0;overflow-wrap:anywhere}
+/* a relationship row is a button, so it has to look like one: chevron, no repeated label */
+.pair-head .p-caret{flex:0 0 auto;width:7px;height:7px;margin-left:auto;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
+.pair-head[aria-expanded="true"] .p-caret{transform:rotate(-135deg)}
 /* ── tokens: every colour, size and space comes from here ───────────────── */
 :root{
   --bg:#f4f4f5; --card:#ffffff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7; --line-strong:#d4d4d8;
@@ -899,12 +907,16 @@ function kpi(label,value,cls){
   /* a tile holding a billion-đồng figure spans the row, so the number is never split mid-group */
   var wide=String(value).length>16?' wide':'';
   return '<div class="kpi'+wide+'"><div class="k-label">'+esc(label)+'</div><div class="k-value '+(cls||'')+'">'+esc(value)+'</div></div>' }
-function recRow(t){
-  var dir=t.direction, label=dir==='paid_for'?'fronted for '+t.counterparty:dir==='covered_for_them'?'covered by '+t.counterparty:dir==='settled_out'?'paid '+t.counterparty:'received from '+t.counterparty;
-  var cls=dir==='paid_for'?'pos':(dir==='covered_for_them'?'neg':'');
+function recRow(t,me){
+  /* Inside a relationship the counterparty is already the heading, so the row only says what kind of
+     record it is: a debt one of them paid, or a repayment. Green came to this person, red left. */
+  var kind=t.entry_kind==='payment'?'repayment':(t.entry_kind==='offset'?'offset':'debt');
+  var mine=t.direction==='paid_for'||t.direction==='settled_out';
+  var label=(mine?(me||'they'):'they')+(t.direction==='paid_for'||t.direction==='covered_for_them'?' paid':' paid back');
+  var cls=(t.direction==='covered_for_them'||t.direction==='settled_in')?'pos':'neg';
   var arch=(t.is_deleted===1);
   return '<div class="rec'+(arch?' is-arch':'')+'"><span class="r-main"><span class="r-head"><span class="r-topic">'+esc(t.topic)+'</span>'+(arch?'<span class="tag-arch">archived</span>':'')+'</span>'+
-    '<span class="r-meta">'+esc(t.occurred_on)+' · '+esc(t.entry_kind)+(t.category?' · '+esc(t.category):'')+' · '+esc(label)+'</span></span>'+
+    '<span class="r-meta">'+esc(t.occurred_on)+' · '+esc(kind)+(t.category?' · '+esc(t.category):'')+' · '+esc(label)+'</span></span>'+
     '<span class="r-amt '+cls+'">'+esc(money(Math.abs(t.amount_minor),t.currency_code))+'</span>'+
     (arch?'<span class="r-act"><button class="mini ghost" type="button" data-txrestore="'+t.id+'">↩ Restore</button></span>':'')+'</div>';
 }
@@ -914,12 +926,12 @@ function pairLine(pr,me){
   var amt=(owesMe||meOwes)?' <span class="amt '+(owesMe?'pos':'neg')+'">'+esc(money(Math.abs(pr.net_minor),pr.currency_code))+'</span>':'';
   return '<span class="who">'+esc(line)+amt+'</span>';
 }
-function pairRecords(id){ var out=[], recs=(pmData&&pmData.recent)||[]; for(var i=0;i<recs.length;i++){ if(recs[i].counterparty_id===id){ out.push(recs[i]) } } return out }
+
 function togglePair(key){
   var el=$('pm-pair-'+key); if(!el){return}
   el.hidden=!el.hidden;
   var head=document.querySelector('[data-pair="'+key+'"]');
-  if(head){ head.setAttribute('aria-expanded',String(!el.hidden)); var tag=head.querySelector('.p-open'); if(tag){ tag.textContent=el.hidden?'View records':'Hide records' } }
+  if(head){ head.setAttribute('aria-expanded',String(!el.hidden)) }
 }
 async function openPerson(id){
   var modal=$('person-modal'); if(!modal){return}
@@ -936,7 +948,23 @@ function closePerson(){
   var id=pmOpenId; pmOpenId=null; pmData=null;
   var card=document.querySelector('[data-person="'+id+'"]'); if(card){ try{card.focus()}catch(e){} }
 }
-function pmLine(label,value){ return '<div class="pm-line"><span>'+label+'</span><span class="pm-line-val">'+esc(value)+'</span></div>' }
+function pmSides(inLabel,inAmt,inCls,outLabel,outAmt,outCls,code,compact){
+  /* green is money coming to this person, red is money leaving them; the same pair drives every
+     row, so a reader needs one habit, not a legend. Inside a relationship a zero side is noise and
+     drops out; in the summary both sides stay, because "owed minus owes" is the whole point. */
+  function side(label,amt,cls){
+    return '<div class="pm-side"><span class="s-label">'+label+'</span>'+
+      '<span class="amt '+((amt?cls:'zero'))+'">'+esc(money(amt,code))+'</span></div>';
+  }
+  if(compact){
+    var out=[];
+    if(inAmt){ out.push(side(inLabel,inAmt,inCls)) }
+    if(outAmt){ out.push(side(outLabel,outAmt,outCls)) }
+    if(!out.length){ return '<div class="pm-sides pm-sides-in"><p class="meta">Nothing outstanding here any more.</p></div>' }
+    return '<div class="pm-sides pm-sides-in">'+out.join('')+'</div>';
+  }
+  return '<div class="pm-sides">'+side(inLabel,inAmt,inCls)+side(outLabel,outAmt,outCls)+'</div>';
+}
 function renderPerson(){
   var d=pmData||{}, p=d.person||{}, body=$('pm-body'), title=$('pm-title');
   if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
@@ -947,6 +975,12 @@ function renderPerson(){
      them answers the question the popup exists for: who owes whom, and how much. */
   var allPairs=d.counterparties||[];
   for(var c=0;c<totals.length;c++){ var t=totals[c];
+    /* Still-owed / still-owes are the gross figures net of repayments, so subtracting them gives
+       exactly the net the server sent: paid_for - settled_in - covered + settled_out. The old panel
+       showed gross fronted/covered/settled as four equal tiles and left the reader to work out which
+       one mattered; these two lines only ever show what is actually still outstanding. */
+    var owedTo=Math.max((t.paid_for_minor||0)-(t.settled_in_minor||0),0);
+    var owes=Math.max((t.covered_for_them_minor||0)-(t.settled_out_minor||0),0);
     /* who, in plain words: a number on its own still leaves the reader asking "to whom?" */
     var owing=[], owedBy=[];
     for(var w=0;w<allPairs.length;w++){ var x=allPairs[w]; if(x.currency_code!==t.currency_code||!x.net_minor){continue}
@@ -956,40 +990,37 @@ function renderPerson(){
       esc(meName)+' '+(t.net_minor>0?'is owed':(t.net_minor<0?'owes':'owes nothing'))+'</span>'+
       (t.net_minor?'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span>':'')+
       '</div><p class="meta">'+esc(who)+'</p>'+
-      '<details class="pm-breakdown"><summary>Where this comes from <span class="chip">'+esc(t.currency_code)+'</span></summary><div class="pm-breakdown-body">'+
-        pmLine('Others paid for '+esc(meName),money(t.covered_for_them_minor,t.currency_code))+
-        pmLine(esc(meName)+' paid them back',money(t.settled_out_minor,t.currency_code))+
-        pmLine(esc(meName)+' paid for others',money(t.paid_for_minor,t.currency_code))+
-        pmLine(esc(meName)+' was paid back',money(t.settled_in_minor,t.currency_code))+
-      '</div></details></div>';
+      (owedTo||owes?pmSides('Owed to '+esc(meName),owedTo,'pos',esc(meName)+' owes',owes,'neg',t.currency_code):'')+
+      '</div>';
   }
   html+='<p class="meta">'+(records.active||0)+' active record'+((records.active===1)?'':'s')+((records.archived||0)?' · '+records.archived+' archived':'')+'</p>';
   var pairs=d.counterparties||[];
   var bk=d.breakdown||{};
-  /* full-history breakdowns, deliberately separate from Recent activity: a repayment from
-     weeks ago must still show here even when it has scrolled out of the 25-row window */
-  function bkSection(title,rows){
-    var count=(rows&&rows.length)||0;
-    var label=title+' <span class="chip">'+count+' record'+(count===1?'':'s')+'</span>';
-    var content=count?rows.map(recRow).join(''):'<div class="empty">Nothing here yet.</div>';
-    /* Keep full-history detail available without making a person popup overwhelming on open. */
-    return '<details class="pm-breakdown"><summary>'+label+'</summary><div class="pm-breakdown-body">'+content+'</div></details>';
+  /* Every relationship expands into the rows that produced it. This reads the full per-person
+     history rather than the 25-row Recent activity window, so a repayment from weeks ago is never
+     silently missing from the row that reports it. */
+  var history=[].concat(bk.paid_for||[],bk.covered_for_them||[],bk.settlements||[]);
+  function recsForPair(pr){
+    var out=[];
+    for(var i=0;i<history.length;i++){ var r0=history[i];
+      if(r0.counterparty_id===pr.counterparty_id&&r0.currency_code===pr.currency_code){ out.push(r0) } }
+    out.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return b.id-a.id } return a.occurred_on<b.occurred_on?1:-1 });
+    return out;
   }
-  html+=bkSection('Records '+esc(meName)+' paid for',bk.paid_for);
-  html+=bkSection('Records others paid for '+esc(meName),bk.covered_for_them);
-  html+=bkSection('Repayments and offsets',bk.settlements);
-  html+='<h3 class="mt-16">Who owes whom</h3><p class="hint">Green is money owed to '+esc(meName)+'. Red is money '+esc(meName)+' owes. Tap a line for the records behind it.</p>';
-  if(!pairs.length){ html+='<div class="empty">No counterparties yet.</div>' }
-  for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id; var recs=pairRecords(pr.counterparty_id);
+  html+='<h3 class="mt-16">Who owes whom</h3>';
+  if(!pairs.length){ html+='<div class="empty">Nothing outstanding with anyone yet.</div>' }
+  for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id;
+    var pairOwedTo=Math.max((pr.paid_for_minor||0)-(pr.settled_in_minor||0),0);
+    var pairOwes=Math.max((pr.covered_minor||0)-(pr.settled_out_minor||0),0);
+    var recs=recsForPair(pr);
+    var detail=pmSides('Still owed to '+esc(meName),pairOwedTo,'pos',esc(meName)+' still owes',pairOwes,'neg',pr.currency_code,true)+
+      (recs.length?recs.map(function(r0){ return recRow(r0,meName) }).join(''):'<div class="empty">No records for this pair.</div>');
     html+='<div class="pair"><button class="pair-head" type="button" data-pair="'+esc(key)+'" aria-expanded="false">'+
       '<span class="p-main">'+pairLine(pr,meName)+
       '<span class="meta">'+pr.records+' record'+(pr.records===1?'':'s')+(pr.archived_records?' · '+pr.archived_records+' archived':'')+'</span></span>'+
-      '<span class="p-open">View records</span></button>'+
-      '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+(recs.length?recs.map(recRow).join(''):'<div class="empty">No records in the latest window.</div>')+'</div></div>';
+      '<span class="p-caret" aria-hidden="true"></span></button>'+
+      '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+detail+'</div></div>';
   }
-  var recs2=d.recent||[];
-  html+='<h3 class="mt-16">Latest records</h3>'+(recs2.length?recs2.map(recRow).join(''):'<div class="empty">No records yet.</div>');
-  if((records.total||0)>recs2.length){ html+='<p class="hint">Showing the latest '+recs2.length+' of '+records.total+' records.</p>' }
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];

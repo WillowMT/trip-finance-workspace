@@ -6,6 +6,14 @@
 .pm-line{display:flex;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-3) 0;border-bottom:1px solid var(--line)}
 .pm-line:last-child{border-bottom:0}
 .pm-line-val{font-variant-numeric:tabular-nums;font-weight:600}
+/* the two numbers the net is made of: green comes to this person, red leaves them */
+.pm-sides{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin-top:var(--sp-4)}
+.pm-sides-in{margin-top:0;margin-bottom:var(--sp-4)}
+.pm-side{flex:1 1 148px;min-width:0;display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg)}
+.pm-side .s-label{font-size:var(--fs-sm);font-weight:600;color:var(--muted);min-width:0;overflow-wrap:anywhere}
+/* a relationship row is a button, so it has to look like one: chevron, no repeated label */
+.pair-head .p-caret{flex:0 0 auto;width:7px;height:7px;margin-left:auto;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
+.pair-head[aria-expanded="true"] .p-caret{transform:rotate(-135deg)}
 /* ── tokens: every colour, size and space comes from here ───────────────── */
 :root{
   --bg:#f4f4f5; --card:#ffffff; --ink:#18181b; --muted:#71717a; --line:#e4e4e7; --line-strong:#d4d4d8;
