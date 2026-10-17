@@ -1307,7 +1307,7 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
     assert.match(html, /function startSettlePayment\(/, 'which prefills a repayment and opens the review sheet');
-    assert.match(html, /'Group settlement'/, 'the prefilled topic says what the payment is');
+    assert.match(html, /'Payment'/, 'the payment form is prefilled as a payment');
     assert.doesNotMatch(html, /function settlePlan[\s\S]{0,4000}?env\.DB/, 'the plan is computed in the page, not written by the plan itself');
   });
 });
