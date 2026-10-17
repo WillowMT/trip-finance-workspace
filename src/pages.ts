@@ -75,7 +75,8 @@ input,select,textarea,button{font:inherit;color:var(--ink)}
 :where(input:not([type=checkbox]):not([type=radio]),select,textarea):hover{border-color:var(--line-strong)}
 :where(input:not([type=checkbox]):not([type=radio]),select,textarea):disabled{opacity:.6;cursor:not-allowed;background-color:var(--surface)}
 :where(input,textarea)[readonly]{background-color:var(--surface);color:var(--muted);cursor:not-allowed}
-:where(input,select,textarea)[aria-invalid=true]{border-color:var(--bad)}
+:where(input,select,textarea)[aria-invalid=true]{border-color:var(--bad);background-color:color-mix(in srgb,var(--bad) 6%,var(--card));box-shadow:0 0 0 3px color-mix(in srgb,var(--bad) 16%,transparent)}
+:where(input,select,textarea)[aria-invalid=true]:focus-visible{outline-color:var(--bad)}
 ::placeholder{color:var(--muted);opacity:.85}
 select{
   appearance:none;-webkit-appearance:none;cursor:pointer;padding-right:calc(var(--sp-5) + 22px);
@@ -155,8 +156,13 @@ body.nav-open .drawer{transform:none;visibility:visible}
 /* a data card that opens on demand — the summary row is the whole title */
 details.card.fold{padding:0}
 details.card.fold > summary{display:flex;align-items:center;gap:var(--sp-3);cursor:pointer;list-style:none;padding:var(--sp-6);border-radius:var(--r-xl)}
+/* Reset the global section-heading margin inside a one-line accordion summary.
+   Keep the title, optional count, and chevron on a common visual centreline. */
+details.card.fold > summary h2{display:flex;align-items:center;gap:var(--sp-3);min-width:0;flex:0 1 auto;margin:0;line-height:1.2}
+details.card.fold > summary h2 > [aria-hidden=true]{display:inline-flex;align-items:center;justify-content:center;flex:0 0 1.25em;width:1.25em;line-height:1}
+details.card.fold > summary .fold-count{align-self:center;line-height:1.2}
 details.card.fold > summary::-webkit-details-marker{display:none}
-details.card.fold > summary::after{content:'▾';margin-left:auto;color:var(--muted);font-size:var(--fs-md);transition:transform var(--dur) var(--ease)}
+details.card.fold > summary::after{content:'▾';display:flex;align-items:center;justify-content:center;align-self:center;margin-left:auto;min-width:1.25em;color:var(--muted);font-size:var(--fs-md);line-height:1;transition:transform var(--dur) var(--ease)}
 details.card.fold[open] > summary::after{transform:rotate(180deg)}
 details.card.fold > summary:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
@@ -761,7 +767,7 @@ async function delTx(id,btn){
    least it can: who moved what to whom, the amount in the ledger's own colours, and one
    plain sentence. Nothing reaches the API until Confirm is pressed - Back, Escape and a
    backdrop tap all leave the form exactly as it was. */
-var reviewAction=null, reviewBusy=false, reviewOpener=null;
+var reviewAction=null, reviewBusy=false, reviewOpener=null, reviewCountdown=0;
 function reviewRows(items){
   var html='';
   for(var i=0;i<items.length;i++){ if(items[i][1]){ html+='<div class="k">'+esc(items[i][0])+'</div><div class="v">'+items[i][1]+'</div>' } }
@@ -807,13 +813,23 @@ function openReview(build,action,btn){
   var t=$('rv-title'), c=$('rv-confirm');
   if(t){ t.textContent=build.title }
   $('rv-body').innerHTML=build.body;
-  if(c){ c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> '+esc(build.confirm); c.disabled=false }
+  var countdown=++reviewCountdown;
+  if(c){
+    c.disabled=true;
+    c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> Review (2)';
+    setTimeout(function(){
+      if(countdown===reviewCountdown&&!m.hidden&&c){ c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> Review (1)' }
+    },1000);
+    setTimeout(function(){
+      if(countdown===reviewCountdown&&!m.hidden&&c){ c.innerHTML='<span aria-hidden="true">'+esc(build.icon)+'</span> '+esc(build.confirm); c.disabled=false }
+    },2000);
+  }
   m.hidden=false;
   var back=$('rv-back'); if(back&&back.focus){ try{ back.focus() }catch(err){} }
 }
 function closeReview(){
   var m=$('review-modal'); if(!m||m.hidden){return}
-  m.hidden=true; reviewAction=null; reviewBusy=false;
+  m.hidden=true; reviewAction=null; reviewBusy=false; reviewCountdown++;
   /* backing out of the sheet must not leave a receipt link armed for whatever is typed next */
   logReceiptId=null;
   if(reviewOpener&&reviewOpener.focus){ try{ reviewOpener.focus() }catch(err){} }
@@ -836,14 +852,22 @@ var TX_FORM={date:'t-date',topic:'t-topic',category:'t-category',creditor:'t-cre
 var PAY_FORM={date:'p-date',topic:'p-topic',category:'p-category',creditor:'p-creditor',debtor:'p-debtor',amount:'p-amount',currency:'p-currency',notes:'p-notes',err:'p-err',add:'p-add'};
 async function addTx(kind, F){
   var btn=$(F.add); var err=$(F.err); err.textContent='';
-  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim()||$(F.category).value.trim(),
+  clearTxInvalid(F);
+  var rows=[{occurred_on:$(F.date).value,entry_kind:kind,topic:$(F.topic).value.trim(),
     category:$(F.category).value.trim(),creditor_person_id:Number($(F.creditor).value),
     debtor_person_id:Number($(F.debtor).value),amount_minor:toMinor($(F.amount).value),
     currency_code:$(F.currency).value,notes:$(F.notes).value.trim()}];
   var problem=validateRows(rows);
-  if(problem){ err.textContent=problem; return }
+  if(problem){ markTxInvalid(F,rows[0]); err.textContent=problem; return }
   /* nothing is written until the review sheet is confirmed */
   openReview(txReview(rows), function(){ return postRows(rows,btn,err) }, btn);
+}
+function clearTxInvalid(F){
+  $(F.amount).removeAttribute('aria-invalid'); $(F.topic).removeAttribute('aria-invalid');
+}
+function markTxInvalid(F,row){
+  if(!row.amount_minor){ $(F.amount).setAttribute('aria-invalid','true') }
+  if(!row.topic){ $(F.topic).setAttribute('aria-invalid','true') }
 }
 function validateRows(rows){
   if(!rows.length){return 'Nothing to add.'}
