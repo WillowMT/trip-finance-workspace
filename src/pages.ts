@@ -2,11 +2,12 @@ import { KEEP_BACKUPS } from './backups';
 
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
-const CSS = `/* person popup: one headline per currency, then what is owed to them and what they owe */
+const CSS = `/* person popup: one group-settlement action per currency, with direct records available on demand */
 .pm-why{margin:var(--sp-6) 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
 .pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);border-bottom:1px solid var(--line)}
 .pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
 .pm-why-top .amt{font-size:var(--fs-xl);font-weight:800;font-variant-numeric:tabular-nums}
+.pm-why-explanation{margin:0;padding:var(--sp-4) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
 .pm-why .pm-sides{gap:0;margin:0;flex-wrap:nowrap}
 .pm-why .pm-side{flex:1 1 50%;padding:var(--sp-4);background:transparent;border:0;border-radius:0}
 .pm-why .pm-side+.pm-side{border-left:1px solid var(--line)}
@@ -222,17 +223,22 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .pair-head .who .amt{margin-left:var(--sp-2);font-size:var(--fs-md)}
 .pair-head .p-open{margin-left:auto;flex:0 0 auto;color:var(--muted);font-size:var(--fs-xs);font-weight:700;white-space:nowrap}
 .pair-head .meta{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px;overflow-wrap:anywhere}
-.pair-detail{border-left:2px solid var(--line);margin:0 0 var(--sp-4) 3px;padding:2px 0 2px var(--sp-5)}
-.rec{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-2) 0;font-size:var(--fs-sm)}
-.rec .r-main{flex:1 1 auto;min-width:0;display:block}
+/* Expanded relationship history stays in the same column as its header: no orphaned left rail,
+   one quiet summary surface, then a ledger-like list with amounts in a single aligned column. */
+.pair-detail{margin:0;padding:var(--sp-5) var(--sp-5) var(--sp-4);background:var(--card)}
+.pair-detail .pm-sides{margin:0 0 var(--sp-3)}
+.pair-detail .pm-side{flex-basis:100%;padding:var(--sp-3) var(--sp-4);border-radius:var(--r-md)}
+.rec{display:grid;grid-template-columns:minmax(0,1fr) max-content max-content;align-items:center;column-gap:var(--sp-5);row-gap:var(--sp-2);padding:var(--sp-4) 0;border-top:1px solid var(--line);font-size:var(--fs-sm)}
+.rec .r-main{grid-column:1;min-width:0;display:block}
 .rec .r-main>span{display:block}
 .rec .r-head{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap;min-width:0}
 .rec .r-topic{min-width:0;overflow-wrap:anywhere}
 .rec .r-head .tag-arch{margin-left:0}
 .rec.is-arch .r-topic{color:var(--muted)}
 .rec .r-meta{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:1px;line-height:1.3}
-.rec .r-amt{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
-.rec .r-act{margin-left:auto;flex:0 0 auto}
+.rec .r-amt{grid-column:2;justify-self:end;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.rec .r-act{grid-column:3;justify-self:end;white-space:nowrap}
+@media(max-width:420px){.pair-detail{padding:0 var(--sp-4) var(--sp-3)}.rec{grid-template-columns:minmax(0,1fr) max-content}.rec .r-act{grid-column:1 / -1;justify-self:end}}
 .split-sum{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
 .split-sum:last-child{border-bottom:0}
 .split-sum .who{font-weight:600;font-size:var(--fs-base)}
@@ -1908,6 +1914,9 @@ function init(){
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab); if(tab==='pay'){ payLimits() } } } });
   if($('t-add')){ $('t-add').onclick=function(){ addTx('debt',TX_FORM) } }
   if($('p-add')){ $('p-add').onclick=function(){ addTx('payment',PAY_FORM) } }
+  [TX_FORM,PAY_FORM].forEach(function(F){
+    [F.amount,F.topic].forEach(function(id){ var field=$(id); if(field){ field.addEventListener('input',function(){ this.removeAttribute('aria-invalid') }) } });
+  });
   if($('p-swap')){ $('p-swap').onclick=function(){ var a=$('p-creditor'),b=$('p-debtor'); var tmp=a.value; a.value=b.value; b.value=tmp } }
   if($('p-debtor')){ $('p-debtor').onchange=payLimits }
   if($('p-creditor')){ $('p-creditor').onchange=payLimits }
@@ -2253,7 +2262,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 
 <section id="balances" hidden>
   <div class="card"><h2><span aria-hidden="true">💸</span> Group settlement</h2><p class="hint">The shortest list of payments that clears every balance, so nobody has to chase a chain of transfers. Grouped per currency, and an archived person still counts while they hold a balance.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People and history</h2><p class="hint">Open a person for their settlement details and history, including who they owe or are owed by and every record behind it.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People and history</h2><p class="hint">Open a person for their group-settlement status, with an optional ledger trail and history.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
   <div class="card"><h2><span aria-hidden="true">🤝</span> Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>

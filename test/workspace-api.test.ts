@@ -811,9 +811,15 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
-    assert.match(page, /Owed to '\+esc\(meName\)/, 'the summary states what is owed to them as its own line');
-    assert.match(page, /esc\(meName\)\+' owes/, 'and what they owe, so the subtraction is visible');
-    assert.match(page, /Who owes whom/, 'the pair list says what it lists');
+    assert.match(page, /No group payment required/, 'a zero net balance is explicitly settled in the group payment plan');
+    assert.match(page, /Receive[\s\S]*in the group settlement/, 'a positive net balance leads with the payment action');
+    assert.match(page, /Pay[\s\S]*in the group settlement/, 'a negative net balance leads with the payment action');
+    assert.match(page, /Direct ledger balances below cancel within the group\. No payment is required from this person in the group settlement\./, 'zero-net people get the direct-ledger explanation');
+    assert.match(page, /<details class="pm-ledger-trail">/, 'pairwise records are an optional ledger trail');
+    assert.match(page, /Ledger trail and original pairwise balances/, 'the ledger disclosure is clearly labelled');
+    assert.match(page, /These show the direct expense and repayment record\. They are not necessarily payments required by the group settlement\./, 'the ledger trail explains why it differs from the settlement plan');
+    assert.ok(!/<h3[^>]*>Who owes whom<\/h3>/.test(page), 'the old direct pairwise heading is not shown');
+    assert.ok(!page.includes("Owed to '+esc(meName)"), 'gross owed-to figures are not presented as the primary summary');
     assert.ok(!page.includes('fronted for others'), 'the fronted/covered jargon is gone from the popup');
     assert.match(page, /html\[data-theme="dark"\]\{/, 'the dark palette is opt-in, not tied to the phone setting');
     assert.ok(!page.includes('prefers-color-scheme'), 'no palette follows the operating system any more');
@@ -1307,7 +1313,7 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.match(html, /counts\[t\.debtor_person_id\]=\(counts\[t\.debtor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its debtor');
     assert.match(html, /if\(t\.is_deleted\)\{continue\}/, 'archived transactions stay out of card counts');
     assert.match(html, /count\+' record'\+\(count===1\?'':'s'\)/, 'person cards pluralize their non-monetary record count');
-    assert.match(html, /Open settlement details and history/, 'person cards retain their neutral detail action');
+    assert.match(html, /Open group-settlement status, optional ledger trail, and history/, 'person cards lead with group-settlement status and retain optional detail access');
     assert.doesNotMatch(html, /className='person-card[\s\S]{0,700}p-nets/, 'main person cards do not expose many per-person money chips');
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
