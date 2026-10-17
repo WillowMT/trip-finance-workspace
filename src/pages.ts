@@ -928,12 +928,24 @@ function kpi(label,value,cls){
   /* a tile holding a billion-đồng figure spans the row, so the number is never split mid-group */
   var wide=String(value).length>16?' wide':'';
   return '<div class="kpi'+wide+'"><div class="k-label">'+esc(label)+'</div><div class="k-value '+(cls||'')+'">'+esc(value)+'</div></div>' }
-function recRow(t,me){
+function recRow(t,me,withPerson){
   /* Inside a relationship the counterparty is already the heading, so the row only says what kind of
-     record it is: a debt one of them paid, or a repayment. Green came to this person, red left. */
+     record it is: a debt one of them paid, or a repayment. Green came to this person, red left.
+     The analytics cards have no such heading, so there every row names both people outright: a bare
+     "they paid" leaves the reader unable to tell who "they" is. */
   var kind=t.entry_kind==='payment'?'repayment':(t.entry_kind==='offset'?'offset':'debt');
   var mine=t.direction==='paid_for'||t.direction==='settled_out';
-  var label=(mine?(me||'they'):'they')+(t.direction==='paid_for'||t.direction==='covered_for_them'?' paid':' paid back');
+  var meName=me||'this person';
+  var other=t.counterparty||'someone';
+  var label;
+  if(withPerson){
+    if(t.direction==='paid_for'){ label=meName+' paid for '+other }
+    else if(t.direction==='covered_for_them'){ label=other+' paid for '+meName }
+    else if(t.direction==='settled_in'){ label=other+' paid '+meName+' back' }
+    else { label=meName+' paid '+other+' back' }
+  } else {
+    label=(mine?meName:other)+(t.direction==='paid_for'||t.direction==='covered_for_them'?' paid':' paid back');
+  }
   var cls=(t.direction==='covered_for_them'||t.direction==='settled_in')?'pos':'neg';
   var arch=(t.is_deleted===1);
   return '<div class="rec'+(arch?' is-arch':'')+'"><span class="r-main"><span class="r-head"><span class="r-topic">'+esc(t.topic)+'</span>'+(arch?'<span class="tag-arch">archived</span>':'')+'</span>'+
@@ -1041,12 +1053,12 @@ function renderPerson(){
       '<span class="p-caret" aria-hidden="true"></span></button>'+
       '<div class="pair-detail" id="pm-pair-'+esc(key)+'" hidden>'+detail+'</div></div>';
   }
-  html+='</section>';
+  html+='</section></details>';
   /* Analytics is deliberately after the relationship answer: these are lifetime activity totals,
      not a second way of reading the current net. settled_in means repayments received by this person. */
   function analyticsCard(key,label,field,cls,rows,empty){
     var n=rows.length, plural=n===1?'':'s';
-    var detail=n?rows.map(function(r0){ return recRow(r0,meName) }).join(''):'<div class="empty">'+esc(empty)+'</div>';
+    var detail=n?rows.map(function(r0){ return recRow(r0,meName,true) }).join(''):'<div class="empty">'+esc(empty)+'</div>';
     return '<div class="analytics-item '+cls+'"><button class="pm-analytics-card" type="button" data-analytics="'+key+'" aria-expanded="false">'+
       '<span class="pm-analytics-main"><span class="pm-analytics-label">'+esc(label)+'</span><span class="pm-analytics-count">'+n+' record'+plural+'</span></span>'+
       '<span class="pm-analytics-amounts">'+analyticsAmounts(field,cls==='in'?'pos':'neg')+'</span><span class="p-caret" aria-hidden="true"></span></button>'+

@@ -820,6 +820,10 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /These show the direct expense and repayment record\. They are not necessarily payments required by the group settlement\./, 'the ledger trail explains why it differs from the settlement plan');
     assert.ok(!/<h3[^>]*>Who owes whom<\/h3>/.test(page), 'the old direct pairwise heading is not shown');
     assert.ok(!page.includes("Owed to '+esc(meName)"), 'gross owed-to figures are not presented as the primary summary');
+    assert.match(page, /rows\.map\(function\(r0\)\{ return recRow\(r0,meName,true\) \}\)/, 'analytics cards render rows that name the counterparty');
+    assert.match(page, /label=other\+' paid for '\+meName/, 'a debt someone else fronted names who paid');
+    assert.match(page, /label=other\+' paid '\+meName\+' back'/, 'an incoming repayment names who paid it');
+    assert.match(page, /label=meName\+' paid for '\+other/, 'a debt this person fronted names who it was for');
     assert.ok(!page.includes('fronted for others'), 'the fronted/covered jargon is gone from the popup');
     assert.match(page, /html\[data-theme="dark"\]\{/, 'the dark palette is opt-in, not tied to the phone setting');
     assert.ok(!page.includes('prefers-color-scheme'), 'no palette follows the operating system any more');
