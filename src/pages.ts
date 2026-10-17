@@ -3,8 +3,8 @@ import { KEEP_BACKUPS } from './backups';
 const esc = (value: unknown) => String(value ?? '').replace(/[&<>"']/g, (c: string) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c] ?? c));
 
 const CSS = `/* person popup: one group-settlement action per currency, with direct records available on demand */
-.pm-why{margin:var(--sp-6) 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
-.pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-5);padding:var(--sp-5);border-bottom:1px solid var(--line)}
+.pm-why{margin:var(--sp-4) 0;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-why-top{display:flex;align-items:baseline;justify-content:space-between;gap:var(--sp-4);padding:var(--sp-4) var(--sp-5);border-bottom:1px solid var(--line)}
 .pm-why-top .who{font-weight:700;font-size:var(--fs-lg)}
 .pm-why-top .amt{font-size:var(--fs-xl);font-weight:800;font-variant-numeric:tabular-nums}
 .pm-why-explanation{margin:0;padding:var(--sp-4) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
@@ -217,11 +217,19 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .pm-analytics-card .p-caret{flex:0 0 auto;width:7px;height:7px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
 .pm-analytics-card[aria-expanded="true"] .p-caret{transform:rotate(-135deg)}
 @media(max-width:420px){.pm-analytics-card{padding:var(--sp-4)}.analytics-detail{padding:0 var(--sp-4) var(--sp-3)}}
-.pm-ledger-trail{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
-.pm-ledger-trail>summary{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-5);font-weight:700;cursor:pointer;list-style:none}
-.pm-ledger-trail>summary::-webkit-details-marker{display:none}
-.pm-ledger-trail>summary::after{content:'▾';margin-left:auto;color:var(--muted);transition:transform var(--dur) var(--ease)}
-.pm-ledger-trail[open]>summary::after{transform:rotate(180deg)}
+/* activity and the original direct records are reference material, so both fold away under one
+   plain label instead of stacking more open panels under the action */
+.pm-more{margin-top:var(--sp-4);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-more>summary{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-4) var(--sp-5);font-weight:700;cursor:pointer;list-style:none}
+.pm-more>summary::-webkit-details-marker{display:none}
+.pm-more>summary::after{content:'';flex:0 0 auto;width:7px;height:7px;margin-left:auto;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
+.pm-more[open]>summary::after{transform:rotate(225deg)}
+.pm-more .pm-analytics{margin:0;padding:0 var(--sp-4) var(--sp-4)}
+.pm-more .pm-relations{padding:0 var(--sp-4) var(--sp-4)}
+.pm-more .pm-ledger-trail-hint{margin:0;padding:0 var(--sp-5) var(--sp-3)}
+/* phones: the folded sections and the action line lose one step of padding so a person's drawer
+   fits without a scroll for the common case */
+@media(max-width:420px){.pm-more>summary{padding:var(--sp-3) var(--sp-4)}.pm-more .pm-analytics{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-relations{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-ledger-trail-hint{padding:0 var(--sp-4) var(--sp-3)}.pm-why-top{padding:var(--sp-3) var(--sp-4)}}
 .pm-ledger-trail-hint{margin:0;padding:0 var(--sp-5) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
 .pair{border-top:1px solid var(--line)}
@@ -274,7 +282,7 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .kpi-grid > *,.kpi,.total{min-width:0}
 .kpi{padding:var(--sp-4);min-width:0}
 .kpi .k-label{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;line-height:1.25}
-.person-card{display:flex;align-items:center;gap:var(--sp-5);width:100%;text-align:left;background:transparent;color:inherit;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-5);margin-bottom:var(--sp-3);font:inherit;cursor:pointer;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
+.person-card{display:flex;align-items:center;gap:var(--sp-4);width:100%;text-align:left;background:transparent;color:inherit;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-2);font:inherit;cursor:pointer;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
 .person-card:hover{background:transparent;border-color:var(--brand)}
 .person-card.archived{opacity:.6}
 .person-card .avatar{flex:0 0 var(--avatar);width:var(--avatar);height:var(--avatar);border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface);color:var(--brand);font-weight:800;font-size:var(--fs-sm)}
@@ -912,7 +920,7 @@ async function loadBalances(){
     el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
       '<span class="meta">'+count+' record'+(count===1?'':'s')+'</span>'+
-      '<span class="meta">Open group-settlement status, optional ledger trail, and history</span></span>'+
+      '</span>'+
       '<span class="chev" aria-hidden="true">›</span>';
     box.appendChild(el);
   }
@@ -922,7 +930,9 @@ async function loadBalances(){
   if(!o.ok){ ob.innerHTML='<div class="err">'+esc(o.error)+'</div>'; return }
   var sug=(o.data&&o.data.suggestions)||[];
   ob.innerHTML='';
-  if(!sug.length){ ob.innerHTML='<div class="empty">No reciprocal balances to offset.</div>'; return }
+  /* nothing to offset means the whole offsets card is noise: it is only shown when it has a row */
+  var oc=$('offset-card'); if(oc){ oc.hidden=!sug.length }
+  if(!sug.length){ ob.innerHTML=''; return }
   for(var k=0;k<sug.length;k++){var s=sug[k];
     var row=document.createElement('div'); row.className='row';
     row.innerHTML='<div><div class="who">'+esc(name(s.first_person_id))+' ↔ '+esc(name(s.second_person_id))+'</div><div class="meta">offsettable '+esc(money(s.offset_amount_minor,s.currency_code))+'</div></div>'+
@@ -1037,11 +1047,18 @@ function renderPerson(){
      necessarily the payment this person needs to make after the whole group is settled together. */
   var allPairs=d.counterparties||[];
   for(var c=0;c<totals.length;c++){ var t=totals[c];
-    var action=t.net_minor>0?'Receive':(t.net_minor<0?'Pay':'');
+    /* Name the counterparty of this person's own plan line, so the drawer reads like a request
+       ("Pay USD 66 to Willow") instead of describing the settlement in the abstract. */
+    var partners=t.net_minor?settlePartners(t.currency_code,p.id):[], partnerNames=[];
+    for(var q=0;q<partners.length;q++){ partnerNames.push(name(partners[q])) }
+    var amountText=esc(money(Math.abs(t.net_minor),t.currency_code).replace(/\.00$/,''));
+    var act=(t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+amountText+'</span>';
+    /* with no plan line for this currency there is no name to give, so point at the card instead */
+    var dir=t.net_minor?((t.net_minor>0?' from ':' to ')+esc(partnerNames.length?partnerNames.join(' and '):'Settle Up')):'';
     html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
-      (action?esc(action)+' <span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span> in the group settlement':'No group payment required')+
+      (t.net_minor?act+dir:'No payment needed')+
       '</span></div>'+
-      (!t.net_minor&&allPairs.length?'<p class="pm-why-explanation">Direct ledger balances below cancel within the group. No payment is required from this person in the group settlement.</p>':'')+
+      (!t.net_minor&&allPairs.length?'<p class="pm-why-explanation">The direct records below cancel out inside the group, so no payment is needed.</p>':'')+
       '</div>';
   }
   function analyticsAmounts(field,cls){
@@ -1063,7 +1080,7 @@ function renderPerson(){
     out.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return b.id-a.id } return a.occurred_on<b.occurred_on?1:-1 });
     return out;
   }
-  html+='<details class="pm-ledger-trail"><summary>Ledger trail and original pairwise balances</summary><p class="pm-ledger-trail-hint">These show the direct expense and repayment record. They are not necessarily payments required by the group settlement.</p><section class="pm-relations">';
+  html+='<details class="pm-more"><summary>Original balances</summary><p class="pm-ledger-trail-hint">Direct records between people. Not always a payment you owe.</p><section class="pm-relations">';
   if(!pairs.length){ html+='<div class="empty pm-relations-empty">Nothing outstanding with anyone yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id;
     var pairOwedTo=Math.max((pr.paid_for_minor||0)-(pr.settled_in_minor||0),0);
@@ -1089,13 +1106,13 @@ function renderPerson(){
       '<div class="analytics-detail" id="pm-analytics-'+key+'" hidden>'+detail+'</div></div>';
   }
   var expenses=bk.covered_for_them||[], paidFor=bk.paid_for||[], paidBack=(bk.settlements||[]).filter(function(r0){ return r0.direction==='settled_in' });
-  html+='<section class="pm-analytics" aria-labelledby="pm-analytics-title"><h3 class="pm-analytics-title" id="pm-analytics-title">Analytics</h3><div class="pm-analytics-grid">'+
+  html+='<details class="pm-more"><summary>Activity</summary><section class="pm-analytics"><div class="pm-analytics-grid">'+
     analyticsCard('expenses','Their expenses','covered_for_them_minor','out',expenses,'Nothing was paid for them yet.')+
     analyticsCard('paid-for','What they paid for','paid_for_minor','in',paidFor,'They have not paid for anyone yet.')+
     analyticsCard('paid-back','They were paid for','settled_in_minor','in',paidBack,'Nobody has paid them back yet.')+
-    '</div></section>';
+    '</div></section></details>';
   var sug=d.suggestions||[];
-  if(sug.length){ html+='<h3 class="mt-16">Settle up</h3>';
+  if(sug.length){ html+='<h3 class="mt-16">Offset these</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];
       html+='<div class="row"><div><div class="who">'+esc(g.counterparty)+' ↔ '+esc((p.emoji?p.emoji+' ':'')+(p.display_name||''))+'</div><div class="meta">offsettable '+esc(money(g.offset_amount_minor,g.currency_code))+'</div></div>'+
         '<button class="mini" type="button" data-off="'+p.id+':'+g.counterparty_id+':'+esc(g.currency_code)+'">Offset</button></div>';
@@ -1700,17 +1717,33 @@ function settlePlanFor(rows,code){
   for(k in by){ if(by.hasOwnProperty(k)&&by[k]!==0){ nets.push({id:Number(k),net_minor:by[k]}) } }
   return settlePlan(nets);
 }
+/* A person's drawer has to say who the payment is with, and only the plan knows that. renderSettle
+   fills this index on every balances load; it is display-only and never feeds a write. One person
+   can sit on several plan lines (a debtor paying two creditors), so this keeps every partner
+   instead of the last one written. */
+var settleIndex=null;
+function settleAdd(code,id,other){
+  var key=code+':'+id, e=settleIndex[key]||(settleIndex[key]={others:[]});
+  if(e.others.indexOf(other)<0){ e.others.push(other) }
+}
+function settlePartners(code,id){
+  var e=settleIndex&&settleIndex[code+':'+id];
+  return e?e.others:[];
+}
 function renderSettle(rows){
   var box=$('settle-list'); if(!box){return}
   var by=netsByCurrency(rows), codes=Object.keys(by).sort(), html='', c, i, k;
+  settleIndex={};
   for(c=0;c<codes.length;c++){
     var code=codes[c], plan=settlePlanFor(rows,code), owed=0;
     for(k=0;k<plan.length;k++){ owed+=plan[k].amount_minor }
     if(!plan.length){ continue }
-    html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed · clears in '+plan.length+(plan.length===1?' payment':' payments')+'</span></div>';
+    html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed</span></div>';
     for(i=0;i<plan.length;i++){
       var p=plan[i];
-      html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div><div class="meta">repayment · '+esc(code)+'</div></div>'+
+      settleAdd(code,p.from_person_id,p.to_person_id);
+      settleAdd(code,p.to_person_id,p.from_person_id);
+      html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div></div>'+
         '<div class="row-side"><div class="amt">'+esc(money(p.amount_minor,code))+'</div>'+
         '<button class="mini" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div></div>';
     }
@@ -2293,9 +2326,9 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 </section>
 
 <section id="balances" hidden>
-  <div class="card"><h2><span aria-hidden="true">💸</span> Group settlement</h2><p class="hint">The shortest list of payments that clears every balance, so nobody has to chase a chain of transfers. Grouped per currency, and an archived person still counts while they hold a balance.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People and history</h2><p class="hint">Open a person for their group-settlement status, with an optional ledger trail and history.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2><span aria-hidden="true">🤝</span> Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
+  <div class="card"><h2><span aria-hidden="true">💸</span> Settle Up</h2><p class="hint">Who pays whom, and how much. Tap Record to log it.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><div id="balance-people"><div class="empty">Loading…</div></div></div>
+  <div class="card" id="offset-card" hidden><h2><span aria-hidden="true">🤝</span> Offset balances</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>
 

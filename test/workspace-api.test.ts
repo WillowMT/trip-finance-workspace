@@ -648,11 +648,10 @@ test('the balance-by-person view says who owes whom instead of leaning on colour
     assert.ok(html.includes("'<span class=\"p-main\">'+pairLine(pr,meName)"), 'the row keeps its p-main wrapper so the amount and meta stack');
     assert.ok(html.includes("pr.counterparty+' owes '+me"), 'the row names the person who owes');
     assert.ok(html.includes("me+' owes '+pr.counterparty"), 'and the other direction too');
-    assert.ok(html.includes('Each line names who owes whom.'), 'the section says what it is');
-    assert.ok(html.includes('Green means the money is owed to '), 'green is defined in words');
-    assert.ok(html.includes(' owes it.</p>'), 'and so is red');
+    assert.ok(html.includes('Direct records between people. Not always a payment you owe.'), 'the section says what it is');
+    assert.ok(html.includes('red <b>−</b> is a repayment coming back'), 'and so is red');
     assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
-    assert.ok(html.includes("'Others paid for '+esc(meName)") && html.includes("+esc(meName)+' paid them back'"), 'the summary lines name the person instead of saying "them"');
+    assert.ok(html.includes("label=meName+' paid for '+other"), 'the summary lines name the person instead of saying "them"');
     assert.ok(html.includes("pairLine(pr,meName)") && !html.includes("+esc(pr.counterparty)+' covered '"), 'the pair row is one plain line, not a run-on of figures');
     assert.ok(!html.includes('owed to them'), 'no pronoun-only net phrasing survives');
     assert.ok(!html.includes("kpi('Covered for them'"), 'nor the ambiguous tile label');
@@ -811,13 +810,14 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.match(page, /id="person-modal"/, 'the workspace page ships the popup');
     assert.match(page, /id="p-limits"/, 'the pay form carries the maximum-payment panel');
     assert.match(page, /id="p-topic" value="Payment"/, 'a payment row is labelled Payment by default');
-    assert.match(page, /No group payment required/, 'a zero net balance is explicitly settled in the group payment plan');
-    assert.match(page, /Receive[\s\S]*in the group settlement/, 'a positive net balance leads with the payment action');
-    assert.match(page, /Pay[\s\S]*in the group settlement/, 'a negative net balance leads with the payment action');
-    assert.match(page, /Direct ledger balances below cancel within the group\. No payment is required from this person in the group settlement\./, 'zero-net people get the direct-ledger explanation');
-    assert.match(page, /<details class="pm-ledger-trail">/, 'pairwise records are an optional ledger trail');
-    assert.match(page, /Ledger trail and original pairwise balances/, 'the ledger disclosure is clearly labelled');
-    assert.match(page, /These show the direct expense and repayment record\. They are not necessarily payments required by the group settlement\./, 'the ledger trail explains why it differs from the settlement plan');
+    assert.match(page, /No payment needed/, 'a zero net balance says no payment is needed');
+    assert.match(page, /t\.net_minor>0\?'Receive ':'Pay '/, 'a non-zero net leads with pay or receive');
+    assert.match(page, /settlePartners\(t\.currency_code,p\.id\)/, 'the drawer names the plan counterparty for this person');
+    assert.match(page, /' from ':' to '/, 'the action says who the money goes to or comes from');
+    assert.match(page, /The direct records below cancel out inside the group, so no payment is needed\./, 'zero-net people get a one-sentence explanation');
+    assert.match(page, /<details class="pm-more"><summary>Original balances<\/summary>/, 'direct records fold under a plain Original balances label');
+    assert.match(page, /<details class="pm-more"><summary>Activity<\/summary>/, 'analytics fold under a plain Activity label');
+    assert.match(page, /Direct records between people\. Not always a payment you owe\./, 'the folded section says what it holds');
     assert.ok(!/<h3[^>]*>Who owes whom<\/h3>/.test(page), 'the old direct pairwise heading is not shown');
     assert.ok(!page.includes("Owed to '+esc(meName)"), 'gross owed-to figures are not presented as the primary summary');
     assert.match(page, /rows\.map\(function\(r0\)\{ return recRow\(r0,meName,true\) \}\)/, 'analytics cards render rows that name the counterparty');
@@ -1310,14 +1310,19 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.deepEqual(byDay.VND, { '2026-10-11': 3_000_000 }, 'currencies are never summed together');
 
     assert.match(html, /id="spend-chart"/, 'the chart has a home on the ledger tab');
-    assert.match(html, /id="settle-list"/, 'Group settlement has a dedicated main-page container');
+    assert.match(html, /id="settle-list"/, 'Settle Up has a dedicated main-page container');
     assert.match(html, /id="balance-people"/, 'people remain available as detail entry points');
-    assert.ok(html.indexOf('Group settlement') < html.indexOf('id="balance-people"'), 'group settlement is presented before people and history');
+    assert.ok(html.indexOf('Settle Up') < html.indexOf('id="balance-people"'), 'Settle Up is presented before the people list');
+    assert.match(html, /<h2><span aria-hidden="true">💸<\/span> Settle Up<\/h2><p class="hint">Who pays whom, and how much\. Tap Record to log it\.<\/p>/, 'Settle Up leads with a one-line description of who pays whom');
+    assert.match(html, /<h2><span aria-hidden="true">🧑‍🤝‍🧑<\/span> People<\/h2><div id="balance-people">/, 'the people card is titled People with no description paragraph');
+    assert.match(html, /id="offset-card" hidden/, 'the offsets card starts hidden and is only revealed when a row exists');
+    assert.match(html, /oc\.hidden=!sug\.length/, 'the offsets card is hidden as soon as nothing is left to offset');
     assert.match(html, /counts\[t\.creditor_person_id\]=\(counts\[t\.creditor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its creditor');
     assert.match(html, /counts\[t\.debtor_person_id\]=\(counts\[t\.debtor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its debtor');
     assert.match(html, /if\(t\.is_deleted\)\{continue\}/, 'archived transactions stay out of card counts');
     assert.match(html, /count\+' record'\+\(count===1\?'':'s'\)/, 'person cards pluralize their non-monetary record count');
-    assert.match(html, /Open group-settlement status, optional ledger trail, and history/, 'person cards lead with group-settlement status and retain optional detail access');
+    assert.doesNotMatch(html, /Open group-settlement status, optional ledger trail, and history/, 'person cards drop the repeated description');
+    assert.match(html, /<span class="chev" aria-hidden="true">›<\/span>/, 'each compact person row ends in a chevron');
     assert.doesNotMatch(html, /className='person-card[\s\S]{0,700}p-nets/, 'main person cards do not expose many per-person money chips');
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
@@ -1534,5 +1539,63 @@ test('debtor ranking groups active negative balances by currency and opens the p
     await firstLoad;
     assert.deepEqual(staleRankingLoads.state().rankingRows, ['newer'], 'an older ranking response cannot replace the latest cached rows');
     assert.deepEqual(staleRankingLoads.state().renders, [['newer']], 'only the latest ranking response renders');
+  });
+});
+
+test('the person drawer names who the money goes to or comes from', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+
+    // lift the shipped plan helpers out of the page and run them for real
+    const grab = (name: string) => {
+      const at = html.indexOf(`function ${name}(`);
+      assert.ok(at > 0, `${name} is shipped to the client`);
+      let depth = 0;
+      for (let k = html.indexOf('{', at); k < html.length; k++) {
+        if (html[k] === '{') depth += 1;
+        else if (html[k] === '}') { depth -= 1; if (depth === 0) return html.slice(at, k + 1); }
+      }
+      throw new Error(`unterminated ${name}`);
+    };
+    const nodecAt = html.indexOf('var NODEC=');
+    assert.ok(nodecAt > 0, 'the zero-decimal currency list ships with the helpers');
+    const nodec = html.slice(nodecAt, html.indexOf(';', nodecAt) + 1);
+    const src =
+      'var settleIndex=null;\n' + nodec + '\n' +
+      ['money', 'signedMinor', 'netsByCurrency', 'settlePlan', 'settlePlanFor', 'settleAdd', 'settlePartners'].map(grab).join('\n') +
+      // renderSettle's own indexing step, mirrored so the pairing can be exercised without a DOM
+      `\nfunction indexRows(rows){settleIndex={};Object.keys(netsByCurrency(rows)).forEach(function(code){` +
+      `settlePlanFor(rows,code).forEach(function(l){` +
+      `settleAdd(code,l.from_person_id,l.to_person_id);settleAdd(code,l.to_person_id,l.from_person_id)})})}`;
+    const drawer = new Function(`${src};return {indexRows:indexRows,settlePartners:settlePartners,money:money}`)() as {
+      indexRows: (rows: unknown[]) => void;
+      settlePartners: (code: string, id: number) => number[];
+      money: (minor: number, code?: string) => string;
+    };
+
+    const ADA = 1, BO = 2, CY = 3;
+    const debt = (creditor: number, debtor: number, minor: number) => ({
+      creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: minor,
+      currency_code: 'USD', entry_kind: 'debt', is_deleted: 0,
+    });
+    const who = (id: number) => (id === ADA ? 'Ada' : id === BO ? 'Bo' : 'Cy');
+    const names = (ids: number[]) => ids.map(who).join(' and ');
+    // whole units drop the ".00", so the drawer reads like a request rather than a ledger figure
+    const strip = (v: string) => v.replace(/\.00$/, '');
+
+    // Ada owes Bo 30 and Cy 96, so her drawer has to name both people she pays
+    drawer.indexRows([debt(BO, ADA, 3_000), debt(CY, ADA, 9_600)]);
+    assert.deepEqual(drawer.settlePartners('USD', ADA), [CY, BO], 'a debtor keeps every creditor the plan pays, not just the last one');
+    assert.equal('Pay ' + strip(drawer.money(12_600, 'USD')) + ' to ' + names(drawer.settlePartners('USD', ADA)), 'Pay USD 126 to Cy and Bo', 'the drawer states who to pay');
+    assert.deepEqual(drawer.settlePartners('USD', CY), [ADA], 'the creditor names the person paying them');
+    assert.equal('Receive ' + strip(drawer.money(9_600, 'USD')) + ' from ' + names(drawer.settlePartners('USD', CY)), 'Receive USD 96 from Ada', 'and the other side states who pays them');
+    assert.deepEqual(drawer.settlePartners('USD', 99), [], 'nobody outside the plan gets an invented counterparty');
+    assert.deepEqual(drawer.settlePartners('VND', ADA), [], 'a currency with no plan line has no counterparty');
+
+    // the index is filled inside renderSettle, from the one plan the Settle Up card already shows
+    assert.ok(html.includes('settleAdd(code,p.from_person_id,p.to_person_id)'), 'the plan line records the payer side');
+    assert.ok(html.includes('settleAdd(code,p.to_person_id,p.from_person_id)'), 'and the payee side');
+    assert.ok(html.includes('settlePartners(t.currency_code,p.id)'), 'the drawer asks the index for this person and currency');
   });
 });
