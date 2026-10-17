@@ -1303,6 +1303,11 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.match(html, /id="settle-list"/, 'Group settlement has a dedicated main-page container');
     assert.match(html, /id="balance-people"/, 'people remain available as detail entry points');
     assert.ok(html.indexOf('Group settlement') < html.indexOf('id="balance-people"'), 'group settlement is presented before people and history');
+    assert.match(html, /counts\[t\.creditor_person_id\]=\(counts\[t\.creditor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its creditor');
+    assert.match(html, /counts\[t\.debtor_person_id\]=\(counts\[t\.debtor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its debtor');
+    assert.match(html, /if\(t\.is_deleted\)\{continue\}/, 'archived transactions stay out of card counts');
+    assert.match(html, /count\+' record'\+\(count===1\?'':'s'\)/, 'person cards pluralize their non-monetary record count');
+    assert.match(html, /Open settlement details and history/, 'person cards retain their neutral detail action');
     assert.doesNotMatch(html, /className='person-card[\s\S]{0,700}p-nets/, 'main person cards do not expose many per-person money chips');
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');

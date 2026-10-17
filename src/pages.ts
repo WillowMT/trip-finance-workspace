@@ -864,15 +864,20 @@ async function loadBalances(){
   var box=$('balance-people'); box.innerHTML='<div class="empty">Loading…</div>';
   var r=await call('/transactions');
   if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
-  var txs=(r.data&&r.data.transactions)||[];
+  var txs=(r.data&&r.data.transactions)||[], counts={};
+  for(var i=0;i<txs.length;i++){ var t=txs[i]; if(t.is_deleted){continue}
+    counts[t.creditor_person_id]=(counts[t.creditor_person_id]||0)+1;
+    counts[t.debtor_person_id]=(counts[t.debtor_person_id]||0)+1;
+  }
   box.innerHTML='';
   var order=people.slice().sort(function(a,b){ return (a.is_archived?1:0)-(b.is_archived?1:0) || String(a.display_name).localeCompare(String(b.display_name)) });
   if(!order.length){ box.innerHTML='<div class="empty">No people yet — add them in Settings.</div>'; return }
-  for(var j=0;j<order.length;j++){ var p=order[j];
+  for(var j=0;j<order.length;j++){ var p=order[j], count=counts[p.id]||0;
     var el=document.createElement('button'); el.type='button';
     el.className='person-card'+(p.is_archived?' archived':''); el.setAttribute('data-person',p.id); el.setAttribute('aria-haspopup','dialog');
     el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
+      '<span class="meta">'+count+' record'+(count===1?'':'s')+'</span>'+
       '<span class="meta">Open settlement details and history</span></span>'+
       '<span class="chev" aria-hidden="true">›</span>';
     box.appendChild(el);
