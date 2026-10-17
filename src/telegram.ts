@@ -317,7 +317,7 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
  */
 export const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'start', description: 'Open the trip menu, or connect a trip' },
-  { command: 'summary', description: 'Show who owes what in the connected trip' },
+  { command: 'summary', description: 'Show the payments that settle the connected trip' },
   { command: 'disconnect', description: 'Stop trip notifications in this chat' },
 ];
 
@@ -607,8 +607,54 @@ function shortTripName(name: string): string {
 
 
 type SummaryBalance = { debtor_id: number; creditor_id: number; currency_code: string; outstanding: number; debtor: string; creditor: string };
+type SettlementPayment = { from: string; to: string; amount_minor: number; currency_code: string };
 
-/** /summary replies with the current outstanding debts of every trip this chat follows, as text. */
+/**
+ * The smallest set of payments that clears every balance, mirroring the Settle Up card: net each
+ * person per currency, then pair the biggest debtor with the biggest creditor until nothing is
+ * left. Pairwise debts can chain through a middleman (/summary used to print that chain), so this
+ * is what a chat needs to act on.
+ */
+function settlementPayments(rows: SummaryBalance[]): SettlementPayment[] {
+  const nets = new Map<string, { name: string; currency_code: string; net: number }>();
+  const bump = (id: number, name: string, currency_code: string, delta: number) => {
+    const key = `${currency_code}:${id}`;
+    const entry = nets.get(key) ?? { name, currency_code, net: 0 };
+    entry.net += delta;
+    entry.name = name;
+    nets.set(key, entry);
+  };
+  for (const row of rows) {
+    bump(row.creditor_id, row.creditor, row.currency_code, row.outstanding);
+    bump(row.debtor_id, row.debtor, row.currency_code, -row.outstanding);
+  }
+  const byCurrency = new Map<string, { name: string; net: number }[]>();
+  for (const entry of nets.values()) {
+    if (!entry.net) continue;
+    const people = byCurrency.get(entry.currency_code) ?? [];
+    people.push({ name: entry.name, net: entry.net });
+    byCurrency.set(entry.currency_code, people);
+  }
+  const payments: SettlementPayment[] = [];
+  for (const [currency_code, people] of byCurrency) {
+    const creditors = people.filter((person) => person.net > 0).sort((a, b) => b.net - a.net);
+    const debtors = people.filter((person) => person.net < 0).sort((a, b) => a.net - b.net);
+    let debtor = 0;
+    let creditor = 0;
+    while (debtor < debtors.length && creditor < creditors.length) {
+      const amount = Math.min(-debtors[debtor].net, creditors[creditor].net);
+      if (amount > 0) payments.push({ from: debtors[debtor].name, to: creditors[creditor].name, amount_minor: amount, currency_code });
+      debtors[debtor].net += amount;
+      creditors[creditor].net -= amount;
+      if (!debtors[debtor].net) debtor += 1;
+      if (!creditors[creditor].net) creditor += 1;
+    }
+  }
+  return payments.sort((a, b) =>
+    a.currency_code.localeCompare(b.currency_code) || b.amount_minor - a.amount_minor || a.from.localeCompare(b.from));
+}
+
+/** /summary replies with the payments that would settle every trip this chat follows, as text. */
 async function handleSummaryCommand(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
   const chat = update.message?.chat;
   if (!chat || chat.id === undefined || chat.id === null) return;
@@ -638,33 +684,13 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
       GROUP BY t.debtor_person_id, t.creditor_person_id, t.currency_code
       HAVING outstanding <> 0`,
   ).bind(connection.workspace_id).all<SummaryBalance>();
-  const directional = new Map<string, SummaryBalance>();
-  for (const row of rows.results) directional.set(`${row.debtor_id}:${row.creditor_id}:${row.currency_code}`, row);
-  const balances: SummaryBalance[] = [];
-  const seen = new Set<string>();
-  for (const row of directional.values()) {
-    const pair = row.debtor_id < row.creditor_id ? `${row.debtor_id}:${row.creditor_id}:${row.currency_code}` : `${row.creditor_id}:${row.debtor_id}:${row.currency_code}`;
-    if (seen.has(pair)) continue;
-    seen.add(pair);
-    const reverse = directional.get(`${row.creditor_id}:${row.debtor_id}:${row.currency_code}`);
-    const amount = row.outstanding - (reverse?.outstanding ?? 0);
-    if (amount > 0) balances.push({ ...row, outstanding: amount });
-    else if (amount < 0) balances.push(reverse ? { ...reverse, outstanding: -amount } : { ...row, debtor_id: row.creditor_id, creditor_id: row.debtor_id, debtor: row.creditor, creditor: row.debtor, outstanding: -amount });
-  }
-  if (!balances.length) { await sendMessage(env, chatId, `✅ ${workspace.name} is all settled.`); return; }
-  const groups = new Map<string, { debtor: string; lines: string[] }>();
-  for (const balance of balances.sort((a,b) => a.debtor.localeCompare(b.debtor) || a.currency_code.localeCompare(b.currency_code) || a.creditor.localeCompare(b.creditor))) {
-    const group = groups.get(balance.debtor) ?? { debtor: balance.debtor, lines: [] };
-    group.lines.push(`${balance.debtor} OWES ${balance.creditor} - ${money(balance.outstanding, balance.currency_code)}`);
-    groups.set(balance.debtor, group);
-  }
-  const currencies = new Set(balances.map((balance) => balance.currency_code)).size;
-  const lines = [...groups.values()].flatMap((group) => [`${group.debtor}:`, ...group.lines.map((line) => `• ${line.replace(/^.*? OWES /, 'owes ')}`)]);
-  console.log(`[summary-diag] sending text summary to chat=${chatId} lines=${balances.length}`);
+  const payments = settlementPayments(rows.results);
+  if (!payments.length) { await sendMessage(env, chatId, `✅ ${workspace.name} is all settled.`); return; }
+  console.log(`[summary-diag] sending settlement summary to chat=${chatId} payments=${payments.length}`);
   await sendMessage(env, chatId, [
-    `📊 ${workspace.name} — ${balances.length} outstanding ${balances.length === 1 ? 'line' : 'lines'} across ${currencies} ${currencies === 1 ? 'currency' : 'currencies'}`,
+    `📊 ${workspace.name} — ${payments.length} payment${payments.length === 1 ? '' : 's'} to settle`,
     '',
-    ...lines,
+    ...payments.map((payment) => `• ${payment.from} pays ${payment.to} — ${money(payment.amount_minor, payment.currency_code)}`),
   ].join('\n'));
 }
 

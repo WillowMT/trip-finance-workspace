@@ -947,7 +947,7 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   });
 });
 
-test('/summary replies with the current outstanding debts as text', async () => {
+test('/summary replies with the payments that settle the trip', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Summary trip');
     const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Summary trip'`)[0].id);
@@ -969,11 +969,11 @@ test('/summary replies with the current outstanding debts as text', async () => 
 
     bot.messages.length = 0;
     assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/summary' })).status, 200);
-    await waitFor(() => bot.messages.some((message) => message.text.includes('2 outstanding lines across 2 currencies')), '/summary should reply with the current text summary');
-    const summaryMessage = bot.messages.find((message) => message.text.includes('2 outstanding lines across 2 currencies'))!;
-    assert.match(summaryMessage.text, /📊 Summary trip — 2 outstanding lines across 2 currencies/, 'the summary leads with trip and counts');
-    assert.match(summaryMessage.text, /owes Ada - USD 38\.00/, 'USD lines are netted');
-    assert.match(summaryMessage.text, /owes Lin - MYR 33\.00/, 'MYR stays a separate line');
+    await waitFor(() => bot.messages.some((message) => message.text.includes('2 payments to settle')), '/summary should reply with the settlement payments');
+    const summaryMessage = bot.messages.find((message) => message.text.includes('2 payments to settle'))!;
+    assert.match(summaryMessage.text, /📊 Summary trip — 2 payments to settle/, 'the summary leads with the trip and how many payments clear it');
+    assert.match(summaryMessage.text, /Lin pays Ada — USD 38\.00/, 'USD settles as a named payer, payee and amount');
+    assert.match(summaryMessage.text, /Ada pays Lin — MYR 33\.00/, 'MYR settles as its own payment');
     assert.equal(summaryMessage.text.includes('/w/'), false, 'the summary text carries no workspace link');
 
     // Settling everything flips the reply to the all-settled message.
@@ -996,5 +996,41 @@ test('/summary replies with the current outstanding debts as text', async () => 
     assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(999), text: '/summary' })).status, 200);
     await waitFor(() => bot.messages.length === 1, 'an unconnected chat should get guidance');
     assert.match(bot.messages[0].text, /not connected to any trip/);
+  });
+});
+
+test('/summary hands back the payments, not the chain of pairwise debts', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Chain trip');
+    const chatId = 102;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
+    const [ada, lin] = state.people;
+    const created = await (await request(`/w/${secret}/api/people`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ display_name: 'Bo', emoji: '🐻' }),
+    })).json() as { person: { id: number } };
+    const bo = created.person;
+
+    const write = (creditor: number, debtor: number, amount: number) => request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-15', entry_kind: 'debt', topic: 'Chain fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: 'USD' }),
+    });
+    // Bo covers Ada, Lin covers Bo: exact cancellation means no money has to pass through Bo
+    assert.equal((await write(bo.id, ada.id, 1_000)).status, 201);
+    assert.equal((await write(lin.id, bo.id, 1_000)).status, 201);
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/summary' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('to settle')), '/summary should reply with settlement payments');
+    const text = bot.messages.find((message) => message.text.includes('to settle'))!.text;
+    assert.match(text, /1 payment to settle/, 'the chain collapses to a single payment');
+    assert.match(text, /Ada pays Lin — USD 10\.00/, 'the middleman is dropped from the payment list');
+    assert.equal(text.includes('pays Bo'), false, 'nobody is asked to pay the person who only passed money through');
+    assert.equal(text.includes('Bo pays'), false, 'and that person owes nothing either');
   });
 });
