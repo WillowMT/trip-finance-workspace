@@ -1300,7 +1300,10 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.deepEqual(byDay.VND, { '2026-10-11': 3_000_000 }, 'currencies are never summed together');
 
     assert.match(html, /id="spend-chart"/, 'the chart has a home on the ledger tab');
-    assert.match(html, /id="settle-list"/, 'and the plan has one on the balances tab');
+    assert.match(html, /id="settle-list"/, 'Group settlement has a dedicated main-page container');
+    assert.match(html, /id="balance-people"/, 'people remain available as detail entry points');
+    assert.ok(html.indexOf('Group settlement') < html.indexOf('id="balance-people"'), 'group settlement is presented before people and history');
+    assert.doesNotMatch(html, /className='person-card[\s\S]{0,700}p-nets/, 'main person cards do not expose many per-person money chips');
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
     assert.match(html, /function startSettlePayment\(/, 'which prefills a repayment and opens the review sheet');

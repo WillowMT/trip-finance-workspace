@@ -861,37 +861,19 @@ async function postRows(rows,btn,err){
 }
 /* ---------------- balances ---------------- */
 async function loadBalances(){
-  var box=$('bal-list'); box.innerHTML='<div class="empty">Loading…</div>';
+  var box=$('balance-people'); box.innerHTML='<div class="empty">Loading…</div>';
   var r=await call('/transactions');
   if(!r.ok){ box.innerHTML='<div class="err">'+esc(r.error)+'</div>'; return }
   var txs=(r.data&&r.data.transactions)||[];
-  var credits={}, debits={}, counts={};
-  for(var i=0;i<txs.length;i++){var t=txs[i]; if(t.is_deleted){continue}
-    var sd=signedMinor(t);
-    credits[t.creditor_person_id]=credits[t.creditor_person_id]||{}; credits[t.creditor_person_id][t.currency_code]=(credits[t.creditor_person_id][t.currency_code]||0)+sd;
-    debits[t.debtor_person_id]=debits[t.debtor_person_id]||{}; debits[t.debtor_person_id][t.currency_code]=(debits[t.debtor_person_id][t.currency_code]||0)-sd;
-    counts[t.creditor_person_id]=(counts[t.creditor_person_id]||0)+1; counts[t.debtor_person_id]=(counts[t.debtor_person_id]||0)+1;
-  }
   box.innerHTML='';
   var order=people.slice().sort(function(a,b){ return (a.is_archived?1:0)-(b.is_archived?1:0) || String(a.display_name).localeCompare(String(b.display_name)) });
   if(!order.length){ box.innerHTML='<div class="empty">No people yet — add them in Settings.</div>'; return }
   for(var j=0;j<order.length;j++){ var p=order[j];
-    var mineC=credits[p.id]||{}, mineD=debits[p.id]||{}, seen={}, codes=[];
-    var ka=Object.keys(mineC), kb=Object.keys(mineD);
-    for(var x=0;x<ka.length;x++){ if(!seen[ka[x]]){seen[ka[x]]=1;codes.push(ka[x])} }
-    for(var y=0;y<kb.length;y++){ if(!seen[kb[y]]){seen[kb[y]]=1;codes.push(kb[y])} }
-    codes.sort();
-    var chips='';
-    for(var z=0;z<codes.length;z++){ var v=(mineC[codes[z]]||0)+(mineD[codes[z]]||0); if(v===0){continue}
-      chips+=netChip(v,codes[z],p.display_name);
-    }
-    var n=counts[p.id]||0;
     var el=document.createElement('button'); el.type='button';
     el.className='person-card'+(p.is_archived?' archived':''); el.setAttribute('data-person',p.id); el.setAttribute('aria-haspopup','dialog');
     el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
-      '<span class="meta">'+n+' record'+(n===1?'':'s')+'</span>'+
-      '<span class="p-nets">'+(chips||'<span class="meta">nothing outstanding</span>')+'</span></span>'+
+      '<span class="meta">Open settlement details and history</span></span>'+
       '<span class="chev" aria-hidden="true">›</span>';
     box.appendChild(el);
   }
@@ -2265,8 +2247,8 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 </section>
 
 <section id="balances" hidden>
-  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><p class="hint">Tap a person for their full picture — what they fronted, what was covered for them, who they owe or are owed by, and every record behind it.</p><div id="bal-list"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2><span aria-hidden="true">💸</span> Who pays whom</h2><p class="hint">The shortest list of payments that clears every balance, so nobody has to chase a chain of transfers. Grouped per currency, and an archived person still counts while they hold a balance.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">💸</span> Group settlement</h2><p class="hint">The shortest list of payments that clears every balance, so nobody has to chase a chain of transfers. Grouped per currency, and an archived person still counts while they hold a balance.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People and history</h2><p class="hint">Open a person for their settlement details and history, including who they owe or are owed by and every record behind it.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
   <div class="card"><h2><span aria-hidden="true">🤝</span> Settle up (offsets)</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>
