@@ -211,8 +211,12 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .pm-analytics-card .p-caret{flex:0 0 auto;width:7px;height:7px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(45deg);transition:transform var(--dur) var(--ease)}
 .pm-analytics-card[aria-expanded="true"] .p-caret{transform:rotate(-135deg)}
 @media(max-width:420px){.pm-analytics-card{padding:var(--sp-4)}.analytics-detail{padding:0 var(--sp-4) var(--sp-3)}}
-.pm-relations{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
-.pm-relations-title{margin:0;padding:var(--sp-5) var(--sp-5) var(--sp-3);font-size:var(--fs-sm);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.pm-ledger-trail{margin-top:var(--sp-6);background:var(--surface);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-ledger-trail>summary{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-5);font-weight:700;cursor:pointer;list-style:none}
+.pm-ledger-trail>summary::-webkit-details-marker{display:none}
+.pm-ledger-trail>summary::after{content:'▾';margin-left:auto;color:var(--muted);transition:transform var(--dur) var(--ease)}
+.pm-ledger-trail[open]>summary::after{transform:rotate(180deg)}
+.pm-ledger-trail-hint{margin:0;padding:0 var(--sp-5) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
 .pair{border-top:1px solid var(--line)}
 .pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:0;padding:var(--sp-5);color:inherit;font:inherit;text-align:left;cursor:pointer}
@@ -884,7 +888,7 @@ async function loadBalances(){
     el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
       '<span class="meta">'+count+' record'+(count===1?'':'s')+'</span>'+
-      '<span class="meta">Open settlement details and history</span></span>'+
+      '<span class="meta">Open group-settlement status, optional ledger trail, and history</span></span>'+
       '<span class="chev" aria-hidden="true">›</span>';
     box.appendChild(el);
   }
@@ -993,23 +997,15 @@ function renderPerson(){
   if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
   var totals=d.totals||[], records=d.records||{}, html='';
   var meName=p.display_name||'this person';
-  /* One plain sentence per currency, then the four figures it comes from folded away. The popup used to
-     open as a wall of equal-weight numbers (fronted, covered, net, settled) with nothing saying which of
-     them answers the question the popup exists for: who owes whom, and how much. */
+  /* Lead with the group-wide payment plan. Direct pair balances remain useful evidence, but are not
+     necessarily the payment this person needs to make after the whole group is settled together. */
   var allPairs=d.counterparties||[];
   for(var c=0;c<totals.length;c++){ var t=totals[c];
-    /* Still-owed / still-owes are the gross figures net of repayments, so subtracting them gives
-       exactly the net the server sent: paid_for - settled_in - covered + settled_out. The old panel
-       showed gross fronted/covered/settled as four equal tiles and left the reader to work out which
-       one mattered; these two lines only ever show what is actually still outstanding. */
-    var owedTo=Math.max((t.paid_for_minor||0)-(t.settled_in_minor||0),0);
-    var owes=Math.max((t.covered_for_them_minor||0)-(t.settled_out_minor||0),0);
-    /* This is a net, not a claim against one person. The relationship rows below name who owes whom. */
+    var action=t.net_minor>0?'Receive':(t.net_minor<0?'Pay':'');
     html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
-      esc(meName)+(t.net_minor?'\\'s net balance':' is settled up')+'</span>'+
-      (t.net_minor?'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span>':'')+
-      '</div>'+ 
-      (owedTo||owes?pmSides('Owed to '+esc(meName),owedTo,'pos',esc(meName)+' owes',owes,'neg',t.currency_code):'')+
+      (action?esc(action)+' <span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+esc(money(Math.abs(t.net_minor),t.currency_code))+'</span> in the group settlement':'No group payment required')+
+      '</span></div>'+
+      (!t.net_minor&&allPairs.length?'<p class="pm-why-explanation">Direct ledger balances below cancel within the group. No payment is required from this person in the group settlement.</p>':'')+
       '</div>';
   }
   function analyticsAmounts(field,cls){
@@ -1031,7 +1027,7 @@ function renderPerson(){
     out.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return b.id-a.id } return a.occurred_on<b.occurred_on?1:-1 });
     return out;
   }
-  html+='<section class="pm-relations" aria-labelledby="pm-relations-title"><h3 class="pm-relations-title" id="pm-relations-title">Who owes whom</h3>';
+  html+='<details class="pm-ledger-trail"><summary>Ledger trail and original pairwise balances</summary><p class="pm-ledger-trail-hint">These show the direct expense and repayment record. They are not necessarily payments required by the group settlement.</p><section class="pm-relations">';
   if(!pairs.length){ html+='<div class="empty pm-relations-empty">Nothing outstanding with anyone yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id;
     var pairOwedTo=Math.max((pr.paid_for_minor||0)-(pr.settled_in_minor||0),0);
