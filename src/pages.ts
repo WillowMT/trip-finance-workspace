@@ -232,6 +232,10 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 @media(max-width:420px){.pm-more>summary{padding:var(--sp-3) var(--sp-4)}.pm-more .pm-analytics{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-relations{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-ledger-trail-hint{padding:0 var(--sp-4) var(--sp-3)}.pm-why-top{padding:var(--sp-3) var(--sp-4)}}
 .pm-ledger-trail-hint{margin:0;padding:0 var(--sp-5) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
+/* Original balances answer "what do the direct records say", and the sentence already says which way the
+   money runs ("Ww owes Hen"), so green/red here only competes with the plan card above it and reads as a
+   verdict on the payment. The amounts keep the text colour and let the words carry the direction. */
+.pm-relations .amt,.pm-relations .amt.pos,.pm-relations .amt.neg,.pm-relations .amt.zero{color:inherit}
 .pair{border-top:1px solid var(--line)}
 .pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:0;padding:var(--sp-5);color:inherit;font:inherit;text-align:left;cursor:pointer}
 /* content cards are buttons too, but their text must wrap (the base button rule is nowrap) */

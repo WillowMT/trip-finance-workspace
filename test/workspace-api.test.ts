@@ -650,6 +650,7 @@ test('the balance-by-person view says who owes whom instead of leaning on colour
     assert.ok(html.includes("pr.counterparty+' owes '+me"), 'the row names the person who owes');
     assert.ok(html.includes("me+' owes '+pr.counterparty"), 'and the other direction too');
     assert.ok(html.includes('Direct records between people. Not always a payment you owe.'), 'the section says what it is');
+    assert.ok(html.includes('.pm-relations .amt,.pm-relations .amt.pos,.pm-relations .amt.neg,.pm-relations .amt.zero{color:inherit}'), 'original balances keep the text colour: the sentence already says who owes whom');
     assert.ok(html.includes('red <b>−</b> is a repayment coming back'), 'and so is red');
     assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
     assert.ok(html.includes("label=meName+' paid for '+other"), 'the summary lines name the person instead of saying "them"');
