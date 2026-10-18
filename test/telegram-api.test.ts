@@ -1000,51 +1000,6 @@ test('/summary replies with the payments that settle the trip', async () => {
   });
 });
 
-test('/netsummary explains a payment that runs against the pair’s own record', async () => {
-  await withTelegramApi(async ({ request, query, bot }) => {
-    const secret = await createWorkspace(request, 'Netted trip');
-    const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Netted trip'`)[0].id);
-    query(`INSERT INTO workspace_people (workspace_id, display_name) VALUES (${workspaceId}, 'Cy')`);
-    const chatId = 143;
-    const chat = PRIVATE_CHAT(chatId);
-    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
-
-    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number; display_name: string }[] };
-    const [ada, bo] = state.people;
-    const cy = state.people.find((person) => person.display_name === 'Cy')!;
-    const write = (creditor: number, debtor: number, amount: number) => request(`/w/${secret}/api/transactions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ occurred_on: '2026-10-14', entry_kind: 'debt', topic: 'Netting fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: 'USD' }),
-    });
-    // Bo owes Ada 10, Ada owes Cy 100, Cy owes Bo 40: Ada is a net debtor (-90) and the plan sends her money
-    // to Bo, who is a net creditor (+30) even though their own pair says Bo owes Ada.
-    assert.equal((await write(ada.id, bo.id, 1_000)).status, 201);
-    assert.equal((await write(cy.id, ada.id, 10_000)).status, 201);
-    assert.equal((await write(bo.id, cy.id, 4_000)).status, 201);
-
-    bot.messages.length = 0;
-    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/netsummary' })).status, 200);
-    await waitFor(() => bot.messages.some((message) => message.text.includes('net balances & settlements')), '/netsummary should reply with balances and payments');
-    const reply = bot.messages.find((message) => message.text.includes('net balances & settlements'))!;
-    assert.deepEqual(reply.text.split('\n'), [
-      '💵 Netted trip — net balances & settlements',
-      '+ is owed · − owes',
-      '',
-      'USD · 2 payments move USD 90.00',
-      `• ${cy.display_name} +USD 60.00`,
-      `   ↳ receives USD 60.00 from ${ada.display_name}`,
-      `• ${bo.display_name} +USD 30.00`,
-      `   ↳ receives USD 30.00 from ${ada.display_name}`,
-      `   (you owe ${ada.display_name} USD 10.00 directly — netted into the payment above)`,
-      `• ${ada.display_name} −USD 90.00`,
-      `   ↳ pays ${cy.display_name} USD 60.00`,
-      `   ↳ pays ${bo.display_name} USD 30.00`,
-      `   (${bo.display_name} owes you USD 10.00 directly — netted into the payment above)`,
-    ]);
-  });
-});
-
 test('/netsummary files each payment under the person who makes it or takes it', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Net trip');

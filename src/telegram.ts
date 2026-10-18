@@ -654,14 +654,6 @@ function netByCurrency(rows: SummaryBalance[]): Map<string, PersonNet[]> {
   return byCurrency;
 }
 
-/**
- * What the ledger says directly between two people, as a credit of `owed` against `ower`: positive means
- * `ower` owes `owed`. Both directions are read because a pair can be stored on either side.
- */
-function directCredit(direct: Map<string, number>, currency_code: string, owed: number, ower: number): number {
-  return (direct.get(`${currency_code}:${owed}:${ower}`) ?? 0) - (direct.get(`${currency_code}:${ower}:${owed}`) ?? 0);
-}
-
 function settlementPayments(rows: SummaryBalance[]): SettlementPayment[] {
   const payments: SettlementPayment[] = [];
   for (const [currency_code, people] of netByCurrency(rows)) {
@@ -759,8 +751,6 @@ async function handleNetSummaryCommand(env: TelegramEnv, update: TelegramUpdate)
  * Balances and payments in one message: each person's net first, then — indented under it — the exact
  * transfers that settle it, worded from that person's side (`pays Ww USD 22.90`, `receives USD 11.50
  * from Nik`). /net and /summary answer the same two questions separately; this answers both together.
- * A payment that runs against the pair's own record carries a one-line note explaining that the direct
- * debt was netted away, because that is the line people ask about.
  */
 async function handleNetSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
   const workspace = await activeTripName(env, connection.workspace_id);
@@ -769,8 +759,6 @@ async function handleNetSummary(env: TelegramEnv, connection: { id: number; work
   const nets = netByCurrency(rows);
   if (!nets.size) { await sendMessage(env, chatId, `✅ ${workspace} is all settled.`); return; }
   const payments = settlementPayments(rows);
-  const direct = new Map<string, number>();
-  for (const row of rows) direct.set(`${row.currency_code}:${row.creditor_id}:${row.debtor_id}`, row.outstanding);
   const legs = new Map<string, { pays: SettlementPayment[]; receives: SettlementPayment[] }>();
   const leg = (key: string) => {
     const entry = legs.get(key) ?? { pays: [], receives: [] };
@@ -799,17 +787,8 @@ async function handleNetSummary(env: TelegramEnv, connection: { id: number; work
       const sign = person.net > 0 ? '+' : person.net < 0 ? '−' : '';
       lines.push(`• ${person.name} ${sign}${money(person.net, currency_code)}`);
       const entry = legs.get(`${currency_code}:${person.id}`);
-      for (const payment of entry?.pays ?? []) {
-        lines.push(`   ↳ pays ${payment.to} ${money(payment.amount_minor, currency_code)}`);
-        const pair = directCredit(direct, currency_code, payment.to_id, payment.from_id);
-        // Paying someone whose own record says they owe you looks wrong until someone nets it out loud.
-        if (pair < 0) lines.push(`   (${payment.to} owes you ${money(-pair, currency_code)} directly — netted into the payment above)`);
-      }
-      for (const payment of entry?.receives ?? []) {
-        lines.push(`   ↳ receives ${money(payment.amount_minor, currency_code)} from ${payment.from}`);
-        const pair = directCredit(direct, currency_code, payment.to_id, payment.from_id);
-        if (pair < 0) lines.push(`   (you owe ${payment.from} ${money(-pair, currency_code)} directly — netted into the payment above)`);
-      }
+      for (const payment of entry?.pays ?? []) lines.push(`   ↳ pays ${payment.to} ${money(payment.amount_minor, currency_code)}`);
+      for (const payment of entry?.receives ?? []) lines.push(`   ↳ receives ${money(payment.amount_minor, currency_code)} from ${payment.from}`);
     }
   }
   if (lines.length > MAX_NET_SUMMARY_LINES) {
