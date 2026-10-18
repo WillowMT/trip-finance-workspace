@@ -337,7 +337,7 @@ test('pairing tokens are single use, expire after ten minutes, and never land in
     const published = bot.calls.find((call) => call.method === 'setMyCommands');
     assert.ok(published, 'the command menu should be published on the first update');
     const commands = (published.payload as unknown as { commands: { command: string; description: string }[] }).commands ?? [];
-    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'summary', 'disconnect']);
+    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'summary', 'net', 'disconnect']);
     assert.ok(commands.every((entry) => entry.description.length > 0 && entry.description.length <= 256));
 
     // A token is stored as a hash only.
@@ -995,6 +995,64 @@ test('/summary replies with the payments that settle the trip', async () => {
     // An unconnected chat is told how to connect instead of getting a summary.
     bot.messages.length = 0;
     assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(999), text: '/summary' })).status, 200);
+    await waitFor(() => bot.messages.length === 1, 'an unconnected chat should get guidance');
+    assert.match(bot.messages[0].text, /not connected to any trip/);
+  });
+});
+
+test('/net lists every person\u2019s net balance per currency', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Net trip');
+    const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Net trip'`)[0].id);
+    query(`INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (${workspaceId}, 'MYR', 0)`);
+    const chatId = 141;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, bo] = state.people;
+    const write = (creditor: number, debtor: number, amount: number, currency: string) => request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'debt', topic: 'Net fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: currency }),
+    });
+    assert.equal((await write(ada.id, bo.id, 5_000, 'USD')).status, 201);
+    assert.equal((await write(bo.id, ada.id, 3_300, 'MYR')).status, 201);
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/net' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('net balances')), '/net should reply with the net balances');
+    const netMessage = bot.messages.find((message) => message.text.includes('net balances'))!;
+    assert.equal(netMessage.text.startsWith('💵 Net trip — net balances'), true, 'the reply leads with the trip it is about');
+    const lines = netMessage.text.match(/^.*$/gm) ?? [];
+    // The sign says which side of the ledger each person is on, and each currency is its own group.
+    assert.deepEqual(lines.filter((line) => line.startsWith('•')), [
+      `• ${bo.display_name} +MYR 33.00`,
+      `• ${ada.display_name} −MYR 33.00`,
+      `• ${ada.display_name} +USD 50.00`,
+      `• ${bo.display_name} −USD 50.00`,
+    ]);
+    assert.equal(lines.includes('MYR') && lines.includes('USD'), true, 'every currency gets a labelled group');
+    assert.equal(netMessage.text.includes('/w/'), false, 'the reply carries no workspace link');
+
+    // Settling every balance answers with the all-settled sentence instead of a list of zeros.
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: ada.id, debtor_person_id: bo.id, amount_minor: 5_000, currency_code: 'USD' }),
+    })).status, 201);
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: bo.id, debtor_person_id: ada.id, amount_minor: 3_300, currency_code: 'MYR' }),
+    })).status, 201);
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/net' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('is all settled')), 'a settled trip answers with the all-settled reply');
+
+    // An unconnected chat is told how to connect instead of getting balances.
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(998), text: '/net' })).status, 200);
     await waitFor(() => bot.messages.length === 1, 'an unconnected chat should get guidance');
     assert.match(bot.messages[0].text, /not connected to any trip/);
   });

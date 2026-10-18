@@ -317,9 +317,13 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
  * answers: a menu entry that does nothing is worse than no menu at all. Descriptions go to Telegram, so
  * they stay short and free of anything private.
  */
+/** Telegram caps a message at 4096 characters; a trip with many people and currencies must still send. */
+const MAX_NET_LINES = 40;
+
 export const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'start', description: 'Open the trip menu, or connect a trip' },
   { command: 'summary', description: 'Show the payments that settle the connected trip' },
+  { command: 'net', description: 'Show every person\’s net balance' },
   { command: 'disconnect', description: 'Stop trip notifications in this chat' },
 ];
 
@@ -550,7 +554,7 @@ async function sendWelcome(env: TelegramEnv, chatId: string, root: string): Prom
     '',
     'Tap the button below to create a trip or open one you already have. To get trip updates here, open that trip’s ⚙️ Setup tab and press “Connect Telegram chat”: changes are then announced in this chat, naming who owes or paid what, and this chat can never change a record itself.',
     '',
-    'Once a trip is connected, /start shows a menu that jumps straight into it, and /disconnect stops the messages in this chat.',
+    'Once a trip is connected, /start shows a menu that jumps straight into it, /net lists what every person is owed or owes, /summary lists the payments that would settle it, and /disconnect stops the messages in this chat.',
   ];
   const markup = root ? { inline_keyboard: [[{ text: 'Open Trip Finance Workspace', url: root }]] } : undefined;
   await sendMessage(env, chatId, lines.join('\n'), markup);
@@ -610,6 +614,7 @@ function shortTripName(name: string): string {
 
 type SummaryBalance = { debtor_id: number; creditor_id: number; currency_code: string; outstanding: number; debtor: string; creditor: string };
 type SettlementPayment = { from: string; to: string; amount_minor: number; currency_code: string };
+type PersonNet = { id: number; name: string; net: number };
 
 /**
  * The smallest set of payments that clears every balance, mirroring the Settle Up card: net each
@@ -617,11 +622,16 @@ type SettlementPayment = { from: string; to: string; amount_minor: number; curre
  * left. Pairwise debts can chain through a middleman (/summary used to print that chain), so this
  * is what a chat needs to act on.
  */
-function settlementPayments(rows: SummaryBalance[]): SettlementPayment[] {
-  const nets = new Map<string, { name: string; currency_code: string; net: number }>();
+/**
+ * Every person's net per currency, signed from the creditor's side: positive means the trip owes them,
+ * negative means they owe the trip. /net prints this list and /summary spends it, so the two commands
+ * can never disagree about what a balance is.
+ */
+function netByCurrency(rows: SummaryBalance[]): Map<string, PersonNet[]> {
+  const nets = new Map<string, { id: number; name: string; currency_code: string; net: number }>();
   const bump = (id: number, name: string, currency_code: string, delta: number) => {
     const key = `${currency_code}:${id}`;
-    const entry = nets.get(key) ?? { name, currency_code, net: 0 };
+    const entry = nets.get(key) ?? { id, name, currency_code, net: 0 };
     entry.net += delta;
     entry.name = name;
     nets.set(key, entry);
@@ -630,15 +640,19 @@ function settlementPayments(rows: SummaryBalance[]): SettlementPayment[] {
     bump(row.creditor_id, row.creditor, row.currency_code, row.outstanding);
     bump(row.debtor_id, row.debtor, row.currency_code, -row.outstanding);
   }
-  const byCurrency = new Map<string, { name: string; net: number }[]>();
+  const byCurrency = new Map<string, PersonNet[]>();
   for (const entry of nets.values()) {
     if (!entry.net) continue;
     const people = byCurrency.get(entry.currency_code) ?? [];
-    people.push({ name: entry.name, net: entry.net });
+    people.push({ id: entry.id, name: entry.name, net: entry.net });
     byCurrency.set(entry.currency_code, people);
   }
+  return byCurrency;
+}
+
+function settlementPayments(rows: SummaryBalance[]): SettlementPayment[] {
   const payments: SettlementPayment[] = [];
-  for (const [currency_code, people] of byCurrency) {
+  for (const [currency_code, people] of netByCurrency(rows)) {
     const creditors = people.filter((person) => person.net > 0).sort((a, b) => b.net - a.net);
     const debtors = people.filter((person) => person.net < 0).sort((a, b) => a.net - b.net);
     let debtor = 0;
@@ -671,10 +685,12 @@ async function handleSummaryCommand(env: TelegramEnv, update: TelegramUpdate): P
   }
 }
 
-/** Reads the ledger at command time, nets reciprocal obligations and sends the outstanding debts as text. */
-async function handleDebtSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
-  const workspace = await env.DB.prepare('SELECT name FROM workspaces WHERE id = ? AND is_active = 1').bind(connection.workspace_id).first<{ name: string }>();
-  if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
+/**
+ * One reading of the ledger for every chat command: same rows, same canonical arithmetic. A command that
+ * summed transactions its own way could report a different balance than the app, which is the whole bug
+ * class `creditMinorSql` exists to prevent.
+ */
+async function readOutstanding(env: TelegramEnv, workspaceId: number): Promise<SummaryBalance[]> {
   const rows = await env.DB.prepare(
     `SELECT t.debtor_person_id AS debtor_id, t.creditor_person_id AS creditor_id, t.currency_code,
             SUM(${creditMinorSql('t')}) AS outstanding,
@@ -685,15 +701,81 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
       WHERE t.workspace_id = ? AND t.is_deleted = 0
       GROUP BY t.debtor_person_id, t.creditor_person_id, t.currency_code
       HAVING outstanding <> 0`,
-  ).bind(connection.workspace_id).all<SummaryBalance>();
-  const payments = settlementPayments(rows.results);
-  if (!payments.length) { await sendMessage(env, chatId, `✅ ${workspace.name} is all settled.`); return; }
+  ).bind(workspaceId).all<SummaryBalance>();
+  return rows.results;
+}
+
+/** The trip's name while it is still active, else null — a chat can outlive the trip it follows. */
+async function activeTripName(env: TelegramEnv, workspaceId: number): Promise<string | null> {
+  const workspace = await env.DB.prepare('SELECT name FROM workspaces WHERE id = ? AND is_active = 1').bind(workspaceId).first<{ name: string }>();
+  return workspace ? workspace.name : null;
+}
+
+/** Reads the ledger at command time, nets reciprocal obligations and sends the outstanding debts as text. */
+async function handleDebtSummary(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
+  const workspace = await activeTripName(env, connection.workspace_id);
+  if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
+  const rows = await readOutstanding(env, connection.workspace_id);
+  const payments = settlementPayments(rows);
+  if (!payments.length) { await sendMessage(env, chatId, `✅ ${workspace} is all settled.`); return; }
   console.log(`[summary-diag] sending settlement summary to chat=${chatId} payments=${payments.length}`);
   await sendMessage(env, chatId, [
-    `📊 ${workspace.name} — ${payments.length} payment${payments.length === 1 ? '' : 's'} to settle`,
+    `📊 ${workspace} — ${payments.length} payment${payments.length === 1 ? '' : 's'} to settle`,
     '',
     ...payments.map((payment) => `• ${payment.from} pays ${payment.to} — ${money(payment.amount_minor, payment.currency_code)}`),
   ].join('\n'));
+}
+
+/** /net replies with every person's net balance per currency, for every trip this chat follows. */
+async function handleNetCommand(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
+  const chat = update.message?.chat;
+  if (!chat || chat.id === undefined || chat.id === null) return;
+  const chatId = String(chat.id);
+  const trips = await linkedTrips(env, chatId);
+  if (!trips.length) {
+    await sendMessage(env, chatId, '📭 This chat is not connected to any trip. Open a trip\’s ⚙️ Setup tab and press “Connect Telegram chat”.');
+    return;
+  }
+  for (const trip of trips) {
+    await handleNetBalances(env, { id: trip.connectionId, workspace_id: trip.workspaceId }, chatId);
+  }
+}
+
+/**
+ * Prints one line per person per currency: creditors signed `+`, debtors signed `−`, and everyone still
+ * on the trip listed even at zero, so the reply answers "what does everyone stand at" rather than only
+ * naming the people who moved money.
+ */
+async function handleNetBalances(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
+  const workspace = await activeTripName(env, connection.workspace_id);
+  if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
+  const rows = await readOutstanding(env, connection.workspace_id);
+  const nets = netByCurrency(rows);
+  if (!nets.size) { await sendMessage(env, chatId, `✅ ${workspace} is all settled.`); return; }
+  const people = await env.DB.prepare('SELECT id, display_name AS name, is_archived FROM workspace_people WHERE workspace_id = ?')
+    .bind(connection.workspace_id)
+    .all<{ id: number; name: string; is_archived: number }>();
+  const lines: string[] = [`💵 ${workspace} \u2014 net balances`];
+  let printed = 0;
+  let skipped = 0;
+  for (const currency_code of [...nets.keys()].sort()) {
+    const holders = new Map<number, PersonNet>();
+    for (const person of people.results) {
+      if (!person.is_archived) holders.set(person.id, { id: person.id, name: person.name, net: 0 });
+    }
+    // A person archived after the fact still holds a balance; the ledger wins over the roster.
+    for (const person of nets.get(currency_code) ?? []) holders.set(person.id, person);
+    const ordered = [...holders.values()].sort((a, b) => b.net - a.net || a.name.localeCompare(b.name));
+    lines.push('', currency_code);
+    for (const person of ordered) {
+      if (printed >= MAX_NET_LINES) { skipped += 1; continue; }
+      const sign = person.net > 0 ? '+' : person.net < 0 ? '−' : '';
+      lines.push(`• ${person.name} ${sign}${money(person.net, currency_code)}`);
+      printed += 1;
+    }
+  }
+  if (skipped) lines.push(`+${skipped} more ${skipped === 1 ? 'person' : 'people'}`);
+  await sendMessage(env, chatId, lines.join('\n'));
 }
 
 /**
@@ -917,13 +999,15 @@ async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promi
 }
 
 /**
- * The commands this bot answers: /start connects a trip and opens its menu, /disconnect unlinks this
- * chat. Anything else is left alone — no command can read, let alone write, the ledger.
+ * The commands this bot answers: /start connects a trip and opens its menu, /summary lists the payments
+ * that settle a trip, /net lists every person's net balance, /disconnect unlinks this chat. Anything else
+ * is left alone — no command can write the ledger.
  */
 async function handleCommand(env: TelegramEnv, update: TelegramUpdate, root: string): Promise<void> {
   const text = (update.message?.text ?? '').trim();
   if (/^\/disconnect(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleDisconnect(env, update);
   if (/^\/summary(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleSummaryCommand(env, update);
+  if (/^\/net(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleNetCommand(env, update);
   return handleStart(env, update, root);
 }
 
