@@ -1564,14 +1564,15 @@ test('the person drawer names who the money goes to or comes from', async () => 
     const nodec = html.slice(nodecAt, html.indexOf(';', nodecAt) + 1);
     const src =
       'var settleIndex=null;\n' + nodec + '\n' +
-      ['money', 'signedMinor', 'netsByCurrency', 'settlePlan', 'settlePlanFor', 'settleAdd', 'settlePartners'].map(grab).join('\n') +
+      ['money', 'signedMinor', 'netsByCurrency', 'settlePlan', 'settlePlanFor', 'settleAdd', 'settlePartners', 'settleLegs'].map(grab).join('\n') +
       // renderSettle's own indexing step, mirrored so the pairing can be exercised without a DOM
       `\nfunction indexRows(rows){settleIndex={};Object.keys(netsByCurrency(rows)).forEach(function(code){` +
       `settlePlanFor(rows,code).forEach(function(l){` +
-      `settleAdd(code,l.from_person_id,l.to_person_id);settleAdd(code,l.to_person_id,l.from_person_id)})})}`;
-    const drawer = new Function(`${src};return {indexRows:indexRows,settlePartners:settlePartners,money:money}`)() as {
+      `settleAdd(code,l.from_person_id,l.to_person_id,l.amount_minor);settleAdd(code,l.to_person_id,l.from_person_id,l.amount_minor)})})}`;
+    const drawer = new Function(`${src};return {indexRows:indexRows,settlePartners:settlePartners,settleLegs:settleLegs,money:money}`)() as {
       indexRows: (rows: unknown[]) => void;
       settlePartners: (code: string, id: number) => number[];
+      settleLegs: (code: string, id: number) => { id: number; amount_minor: number }[];
       money: (minor: number, code?: string) => string;
     };
 
@@ -1585,18 +1586,32 @@ test('the person drawer names who the money goes to or comes from', async () => 
     // whole units drop the ".00", so the drawer reads like a request rather than a ledger figure
     const strip = (v: string) => v.replace(/\.00$/, '');
 
-    // Ada owes Bo 30 and Cy 96, so her drawer has to name both people she pays
+    // Ada owes Bo 30 and Cy 96: two payments with two amounts, never one line naming 126
     drawer.indexRows([debt(BO, ADA, 3_000), debt(CY, ADA, 9_600)]);
     assert.deepEqual(drawer.settlePartners('USD', ADA), [CY, BO], 'a debtor keeps every creditor the plan pays, not just the last one');
-    assert.equal('Pay ' + strip(drawer.money(12_600, 'USD')) + ' to ' + names(drawer.settlePartners('USD', ADA)), 'Pay USD 126 to Cy and Bo', 'the drawer states who to pay');
-    assert.deepEqual(drawer.settlePartners('USD', CY), [ADA], 'the creditor names the person paying them');
+    assert.deepEqual(
+      drawer.settleLegs('USD', ADA),
+      [{ id: CY, amount_minor: 9_600 }, { id: BO, amount_minor: 3_000 }],
+      'each creditor keeps its own amount, largest first',
+    );
+    const adaLines = drawer.settleLegs('USD', ADA).map((leg) => 'Pay ' + strip(drawer.money(leg.amount_minor, 'USD')) + ' to ' + who(leg.id));
+    assert.deepEqual(adaLines, ['Pay USD 96 to Cy', 'Pay USD 30 to Bo'], 'the drawer states one payment per creditor');
+    assert.ok(!adaLines.some((line) => line.includes(' and ')), 'no line merges two creditors, because the sum is not a payment anyone makes');
+    assert.equal(
+      adaLines.length,
+      new Set(drawer.settleLegs('USD', ADA).map((leg) => leg.amount_minor)).size,
+      'the amounts are separate figures, not one total split by name',
+    );
+    assert.deepEqual(drawer.settleLegs('USD', CY), [{ id: ADA, amount_minor: 9_600 }], 'the creditor is owed one leg by the payer');
     assert.equal('Receive ' + strip(drawer.money(9_600, 'USD')) + ' from ' + names(drawer.settlePartners('USD', CY)), 'Receive USD 96 from Ada', 'and the other side states who pays them');
     assert.deepEqual(drawer.settlePartners('USD', 99), [], 'nobody outside the plan gets an invented counterparty');
+    assert.deepEqual(drawer.settleLegs('USD', 99), [], 'and no invented amount either');
     assert.deepEqual(drawer.settlePartners('VND', ADA), [], 'a currency with no plan line has no counterparty');
 
     // the index is filled inside renderSettle, from the one plan the Settle Up card already shows
-    assert.ok(html.includes('settleAdd(code,p.from_person_id,p.to_person_id)'), 'the plan line records the payer side');
-    assert.ok(html.includes('settleAdd(code,p.to_person_id,p.from_person_id)'), 'and the payee side');
-    assert.ok(html.includes('settlePartners(t.currency_code,p.id)'), 'the drawer asks the index for this person and currency');
+    assert.ok(html.includes('settleAdd(code,p.from_person_id,p.to_person_id,p.amount_minor)'), 'the plan line records the payer side with its amount');
+    assert.ok(html.includes('settleAdd(code,p.to_person_id,p.from_person_id,p.amount_minor)'), 'and the payee side with the same amount');
+    assert.ok(html.includes('settleLegs(t.currency_code,p.id)'), 'the drawer renders one line per plan leg');
+    assert.ok(html.includes('esc(name(leg.id))'), 'each line names its own creditor');
   });
 });

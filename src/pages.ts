@@ -1056,19 +1056,32 @@ function renderPerson(){
      necessarily the payment this person needs to make after the whole group is settled together. */
   var allPairs=d.counterparties||[];
   for(var c=0;c<totals.length;c++){ var t=totals[c];
-    /* Name the counterparty of this person's own plan line, so the drawer reads like a request
-       ("Pay USD 66 to Willow") instead of describing the settlement in the abstract. */
-    var partners=t.net_minor?settlePartners(t.currency_code,p.id):[], partnerNames=[];
-    for(var q=0;q<partners.length;q++){ partnerNames.push(name(partners[q])) }
-    var amountText=esc(money(Math.abs(t.net_minor),t.currency_code).replace(/\.00$/,''));
-    var act=(t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+amountText+'</span>';
-    /* with no plan line for this currency there is no name to give, so point at the card instead */
-    var dir=t.net_minor?((t.net_minor>0?' from ':' to ')+esc(partnerNames.length?partnerNames.join(' and '):'Settle Up')):'';
-    html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
-      (t.net_minor?act+dir:'No payment needed')+
-      '</span></div>'+
-      (!t.net_minor&&allPairs.length?'<p class="pm-why-explanation">The direct records below cancel out inside the group, so no payment is needed.</p>':'')+
-      '</div>';
+    /* One line per payment the plan asks for. A person the plan sends to two creditors gets two
+       lines with their own amounts — a single "Pay 29.55 to Ww and Bj" names a total that is not
+       any payment, and the exact amount for each creditor is what the drawer is for. */
+    var legs=t.net_minor?settleLegs(t.currency_code,p.id):[], partnerNames=[];
+    if(legs.length){
+      for(var q=0;q<legs.length;q++){ var leg=legs[q];
+        html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
+          (t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+
+          esc(money(leg.amount_minor,t.currency_code).replace(/\.00$/,''))+'</span>'+
+          (t.net_minor>0?' from ':' to ')+esc(name(leg.id))+
+          '</span></div></div>';
+      }
+    } else {
+      /* no plan line reaching this person: fall back to the aggregate, and say plainly that the
+         card above is where the payment comes from rather than inventing a counterparty */
+      var partners=settlePartners(t.currency_code,p.id);
+      for(var w=0;w<partners.length;w++){ partnerNames.push(name(partners[w])) }
+      var amountText=esc(money(Math.abs(t.net_minor),t.currency_code).replace(/\.00$/,''));
+      var act=(t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+amountText+'</span>';
+      var dir=t.net_minor?((t.net_minor>0?' from ':' to ')+esc(partnerNames.length?partnerNames.join(' and '):'Settle Up')):'';
+      html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
+        (t.net_minor?act+dir:'No payment needed')+
+        '</span></div>'+
+        (!t.net_minor&&allPairs.length?'<p class="pm-why-explanation">The direct records below cancel out inside the group, so no payment is needed.</p>':'')+
+        '</div>';
+    }
   }
   function analyticsAmounts(field,cls){
     var out=[];
@@ -1731,13 +1744,22 @@ function settlePlanFor(rows,code){
    can sit on several plan lines (a debtor paying two creditors), so this keeps every partner
    instead of the last one written. */
 var settleIndex=null;
-function settleAdd(code,id,other){
-  var key=code+':'+id, e=settleIndex[key]||(settleIndex[key]={others:[]});
+function settleAdd(code,id,other,amount){
+  var key=code+':'+id, e=settleIndex[key]||(settleIndex[key]={others:[],legs:[]});
   if(e.others.indexOf(other)<0){ e.others.push(other) }
+  var amt=Math.abs(Number(amount)||0), i, found=false;
+  for(i=0;i<e.legs.length;i++){ if(e.legs[i].id===other){ e.legs[i].amount_minor+=amt; found=true } }
+  if(!found){ e.legs.push({id:other,amount_minor:amt}) }
 }
 function settlePartners(code,id){
   var e=settleIndex&&settleIndex[code+':'+id];
   return e?e.others:[];
+}
+/* The plan can route one person to several creditors. Each leg is its own payment with its own
+   amount; naming them together with "and" and a summed total states a figure nobody has to pay. */
+function settleLegs(code,id){
+  var e=settleIndex&&settleIndex[code+':'+id];
+  return e?e.legs.slice().sort(function(a,b){ return b.amount_minor-a.amount_minor||a.id-b.id }):[];
 }
 function renderSettle(rows){
   var box=$('settle-list'); if(!box){return}
@@ -1750,8 +1772,8 @@ function renderSettle(rows){
     html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed</span></div>';
     for(i=0;i<plan.length;i++){
       var p=plan[i];
-      settleAdd(code,p.from_person_id,p.to_person_id);
-      settleAdd(code,p.to_person_id,p.from_person_id);
+      settleAdd(code,p.from_person_id,p.to_person_id,p.amount_minor);
+      settleAdd(code,p.to_person_id,p.from_person_id,p.amount_minor);
       html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div></div>'+
         '<div class="row-side"><div class="amt">'+esc(money(p.amount_minor,code))+'</div>'+
         '<button class="mini" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div></div>';
