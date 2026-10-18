@@ -25,6 +25,8 @@ export type TelegramEnv = {
   TELEGRAM_WEBHOOK_SECRET?: string;
   TELEGRAM_BOT_USERNAME?: string;
   TELEGRAM_API_BASE?: string;
+  /** Chart renderer override: a loopback address in tests, https in production. */
+  CHART_RENDER_URL?: string;
   PUBLIC_ORIGIN?: string;
 };
 
@@ -300,6 +302,11 @@ async function callApi<T>(env: TelegramEnv, method: string, payload: Json): Prom
   } catch {
     body = null;
   }
+  return readApiResponse<T>(response, body);
+}
+
+/** One answer shape for every Bot API call, whether it carried JSON or multipart. */
+function readApiResponse<T>(response: Response, body: ApiEnvelope<unknown> | null): ApiResult<T> {
   if (!body || body.ok !== true) {
     return {
       ok: false,
@@ -323,6 +330,7 @@ const MAX_NET_SUMMARY_LINES = 120;
 export const BOT_COMMANDS: { command: string; description: string }[] = [
   { command: 'start', description: 'Open the trip menu, or connect a trip' },
   { command: 'netsummary', description: 'Net balances with the payments under each person' },
+  { command: 'chart', description: 'Bar chart of what each person owes and is owed' },
   { command: 'disconnect', description: 'Stop trip notifications in this chat' },
 ];
 
@@ -697,6 +705,227 @@ async function activeTripName(env: TelegramEnv, workspaceId: number): Promise<st
 }
 
 
+
+// ---------------------------------------------------------------------------- /chart
+
+/**
+ * /chart draws what /netsummary says in words: one row per person, the money they owe stacked out to the
+ * left and the money they are owed stacked out to the right, with a diamond sitting on the net that
+ * actually has to change hands. Rows are sorted by net, so creditors rise to the top.
+ *
+ * A Worker has no canvas, so the Chart.js config goes to a renderer that returns a PNG; only names and
+ * amounts leave the runtime — never a capability token, a chat id, or the workspace link. Read-only: no
+ * command in this bot writes the ledger.
+ */
+const DEFAULT_CHART_RENDER_URL = 'https://quickchart.io/chart';
+const CHART_WIDTH = 1100;
+const CHART_MIN_HEIGHT = 460;
+const CHART_ROW_HEIGHT = 44;
+const CHART_MAX_CURRENCIES = 4;
+const PNG_MAGIC = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** One person as the chart needs them: both gross sides and the net they produce. */
+type ChartPerson = { id: number; name: string; owes: number; owed: number; net: number };
+
+/** Same rule as the Bot API origin: an override is honoured for loopback or https only. */
+export function chartRenderUrl(env: TelegramEnv, fallbackToDefault = true): string {
+  const raw = (env.CHART_RENDER_URL ?? '').trim();
+  if (!raw) return fallbackToDefault ? DEFAULT_CHART_RENDER_URL : '';
+  try {
+    const url = new URL(raw);
+    const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '[::1]';
+    if (url.protocol !== 'https:' && !loopback) return fallbackToDefault ? DEFAULT_CHART_RENDER_URL : '';
+    return url.toString();
+  } catch {
+    return fallbackToDefault ? DEFAULT_CHART_RENDER_URL : '';
+  }
+}
+
+function minorToChartUnits(minor: number): number {
+  return Math.round((Number(minor) || 0)) / 100;
+}
+
+/**
+ * The Chart.js v3 request body. Every row starts at the shared zero line: the negative dataset is what
+ * the person owes, the positive dataset is what they are owed, and the net is an annotation rather than
+ * a third bar so the two gross sides stay comparable.
+ */
+export function netBarChartRequest(trip: string, currency: string, book: ChartPerson[]): Json {
+  const ordered = [...book].sort((a, b) => b.net - a.net || a.name.localeCompare(b.name));
+  const height = Math.max(CHART_MIN_HEIGHT, 190 + CHART_ROW_HEIGHT * Math.max(ordered.length, 3));
+  const annotations: Json[] = [{
+    type: 'line', scaleID: 'x', value: 0, borderColor: '#334155', borderWidth: 1,
+  }];
+  ordered.forEach((person, index) => {
+    annotations.push({
+      type: 'point', xValue: minorToChartUnits(person.net), yValue: index,
+      pointStyle: 'rectRot', radius: 7, borderWidth: 0, backgroundColor: '#0F172A',
+    });
+  });
+  return {
+    version: '3',
+    format: 'png',
+    width: CHART_WIDTH,
+    height,
+    backgroundColor: '#FFFFFF',
+    chart: {
+      type: 'bar',
+      data: {
+        labels: ordered.map((person) => person.name),
+        datasets: [
+          {
+            label: 'they owe',
+            data: ordered.map((person) => -minorToChartUnits(person.owes)),
+            backgroundColor: '#94A3B8',
+            borderSkipped: false,
+          },
+          {
+            label: 'owed to them',
+            data: ordered.map((person) => minorToChartUnits(person.owed)),
+            backgroundColor: '#1D4ED8',
+            borderSkipped: false,
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        responsive: false,
+        animation: false,
+        plugins: {
+          title: { display: true, text: `${trip} — ${currency}`, font: { size: 22 } },
+          legend: { position: 'top', labels: { boxWidth: 14, font: { size: 14 } } },
+          annotation: { annotations },
+        },
+        scales: {
+          x: {
+            stacked: true,
+            grid: { color: '#E2E8F0' },
+            title: { display: true, text: 'owes  ←   |   →  is owed', font: { size: 14 } },
+          },
+          y: { stacked: true, grid: { display: false }, ticks: { font: { size: 15 } } },
+        },
+      },
+    },
+  };
+}
+
+/** Gross each way and the resulting net for every active person, in one currency. */
+export function chartBook(rows: SummaryBalance[], active: { id: number; name: string }[], currency: string): ChartPerson[] {
+  const book = new Map<number, ChartPerson>();
+  const entry = (id: number, name: string): ChartPerson => {
+    const found = book.get(id);
+    if (found) return found;
+    const created: ChartPerson = { id, name, owes: 0, owed: 0, net: 0 };
+    book.set(id, created);
+    return created;
+  };
+  for (const person of active) entry(person.id, person.name);
+  for (const row of rows) {
+    if (row.currency_code !== currency) continue;
+    const amount = Number(row.outstanding) || 0;
+    if (amount > 0) {
+      entry(row.debtor_id, row.debtor).owes += amount;
+      entry(row.creditor_id, row.creditor).owed += amount;
+    } else if (amount < 0) {
+      entry(row.creditor_id, row.creditor).owes -= amount;
+      entry(row.debtor_id, row.debtor).owed -= amount;
+    }
+  }
+  for (const person of book.values()) person.net = person.owed - person.owes;
+  return [...book.values()];
+}
+
+/** Any HTML or non-PNG answer means "no chart": the command falls back to pointing at /netsummary. */
+async function renderChartPng(env: TelegramEnv, body: Json): Promise<Uint8Array | null> {
+  let response: Response;
+  try {
+    response = await fetch(chartRenderUrl(env), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) return null;
+  const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+  if (!contentType.includes('image')) return null;
+  let buffer: ArrayBuffer;
+  try {
+    buffer = await response.arrayBuffer();
+  } catch {
+    return null;
+  }
+  const bytes = new Uint8Array(buffer);
+  if (bytes.byteLength < PNG_MAGIC.length) return null;
+  if (PNG_MAGIC.some((value, index) => bytes[index] !== value)) return null;
+  return bytes;
+}
+
+/** A PNG travels as multipart, not JSON, so it needs its own call. Answers arrive in the usual shape. */
+async function sendPhoto(env: TelegramEnv, chatId: string, bytes: Uint8Array, caption: string): Promise<ApiResult<{ message_id?: number }>> {
+  const token = botToken(env);
+  if (!token) return { ok: false, error_code: 0, description: 'Telegram is not configured', retry_after: 0 };
+  const form = new FormData();
+  form.set('chat_id', chatId);
+  form.set('caption', caption);
+  form.set('photo', new Blob([bytes], { type: 'image/png' }), 'balances.png');
+  let response: Response;
+  try {
+    response = await fetch(`${telegramApiBase(env)}/bot${token}/sendPhoto`, { method: 'POST', body: form });
+  } catch {
+    return { ok: false, error_code: 0, description: 'Telegram was unreachable', retry_after: 0 };
+  }
+  let body: ApiEnvelope<unknown> | null = null;
+  try {
+    body = (await response.json()) as ApiEnvelope<unknown>;
+  } catch {
+    body = null;
+  }
+  return readApiResponse<{ message_id?: number }>(response, body);
+}
+
+/** /chart sends one picture per linked trip, one chart per currency: the same numbers, drawn. */
+async function handleChartCommand(env: TelegramEnv, update: TelegramUpdate): Promise<void> {
+  const chat = update.message?.chat;
+  if (!chat || chat.id === undefined || chat.id === null) return;
+  const chatId = String(chat.id);
+  const trips = await linkedTrips(env, chatId);
+  if (!trips.length) {
+    await sendMessage(env, chatId, '📭 This chat is not connected to any trip. Open a trip’s ⚙️ Setup tab and press “Connect Telegram chat”.');
+    return;
+  }
+  for (const trip of trips) {
+    await handleChart(env, { id: trip.connectionId, workspace_id: trip.workspaceId }, chatId);
+  }
+}
+
+async function handleChart(env: TelegramEnv, connection: { id: number; workspace_id: number }, chatId: string): Promise<void> {
+  const trip = await activeTripName(env, connection.workspace_id);
+  if (!trip) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
+  const rows = await readOutstanding(env, connection.workspace_id);
+  const nets = netByCurrency(rows);
+  if (!nets.size) { await sendMessage(env, chatId, `✅ ${trip} is all settled — nothing to chart.`); return; }
+  const people = await env.DB.prepare('SELECT id, display_name AS name, is_archived FROM workspace_people WHERE workspace_id = ?')
+    .bind(connection.workspace_id)
+    .all<{ id: number; name: string; is_archived: number }>();
+  const active = people.results.filter((person) => !person.is_archived).map((person) => ({ id: person.id, name: person.name }));
+  let sent = 0;
+  for (const currency of [...nets.keys()].sort().slice(0, CHART_MAX_CURRENCIES)) {
+    const book = chartBook(rows, active, currency);
+    if (!book.length) continue;
+    const png = await renderChartPng(env, netBarChartRequest(trip, currency, book));
+    if (!png) continue;
+    const open = book.filter((person) => person.net !== 0).length;
+    const caption = `📊 ${trip} — ${currency}\n`
+      + 'Each row starts at zero: left is everything that person owes, right is everything they are owed.\n'
+      + `◆ is the net after netting. ${book.length} people · ${open} with a balance`;
+    const result = await sendPhoto(env, chatId, png, caption);
+    if (result.ok) sent += 1;
+  }
+  if (!sent) await sendMessage(env, chatId, '⚠️ The chart could not be drawn just now. /netsummary carries the same numbers as text.');
+}
+
 /**
  * /summary and /net were replaced by /netsummary, which answers both questions in one message. A retired
  * command says so rather than going quiet or falling through to /start, so old habits land somewhere.
@@ -996,7 +1225,8 @@ async function handleDisconnect(env: TelegramEnv, update: TelegramUpdate): Promi
 
 /**
  * The commands this bot answers: /start connects a trip and opens its menu, /netsummary puts every
- * person's balance above the payments they make or take, /disconnect unlinks this chat. /summary and
+ * person's balance above the payments they make or take, /chart draws those balances, /disconnect
+ * unlinks this chat. /summary and
  * /net were folded into /netsummary and now only point at it. Anything else is left alone — no
  * command can write the ledger.
  */
@@ -1004,6 +1234,7 @@ async function handleCommand(env: TelegramEnv, update: TelegramUpdate, root: str
   const text = (update.message?.text ?? '').trim();
   if (/^\/disconnect(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleDisconnect(env, update);
   if (/^\/netsummary(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleNetSummaryCommand(env, update);
+  if (/^\/chart(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleChartCommand(env, update);
   if (/^\/(?:summary|net)(?:@[A-Za-z0-9_]+)?(?:\s|$)/i.test(text)) return handleRetiredCommand(env, update);
   return handleStart(env, update, root);
 }

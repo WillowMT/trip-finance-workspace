@@ -56,6 +56,8 @@ class FakeBot {
   mode: { error_code: number; description: string } | null = null;
   /** Failures aimed at one chat only, so a test can break a single connection while the rest stay healthy. */
   readonly failFor = new Map<string, { error_code: number; description: string }>();
+  /** Chart configs the Worker posted to the renderer, so a test can read what would be drawn. */
+  readonly renderRequests: string[] = [];
   private server?: Server;
   port = 0;
 
@@ -65,6 +67,12 @@ class FakeBot {
       incoming.on('data', (chunk: Buffer) => { chunks.push(Buffer.from(chunk)); });
       incoming.on('end', () => {
         const path = incoming.url ?? '';
+        if (path === '/chart') {
+          this.renderRequests.push(Buffer.concat(chunks).toString('utf8'));
+          outgoing.writeHead(200, { 'content-type': 'image/png' });
+          outgoing.end(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 42, 42, 42, 42]));
+          return;
+        }
         const match = path.match(/^\/bot([^/]+)\/([A-Za-z]+)$/);
         if (!match) {
           outgoing.writeHead(404, { 'content-type': 'application/json' });
@@ -194,6 +202,7 @@ async function withTelegramApi(run: (harness: Harness) => Promise<void>): Promis
       '--var', `TELEGRAM_WEBHOOK_SECRET:${WEBHOOK_SECRET}`,
       '--var', `TELEGRAM_BOT_USERNAME:${BOT_USERNAME}`,
       '--var', `TELEGRAM_API_BASE:http://127.0.0.1:${bot.port}`,
+      '--var', `CHART_RENDER_URL:http://127.0.0.1:${bot.port}/chart`,
       '--var', `PUBLIC_ORIGIN:${ORIGIN}`,
     ], { cwd: root, stdio: 'ignore', detached: true });
     const request = (path: string, init: RequestInit = {}) => fetch(`${ORIGIN}${path}`, { ...init, headers: { connection: 'close', ...(init.headers ?? {}) } });
@@ -337,7 +346,7 @@ test('pairing tokens are single use, expire after ten minutes, and never land in
     const published = bot.calls.find((call) => call.method === 'setMyCommands');
     assert.ok(published, 'the command menu should be published on the first update');
     const commands = (published.payload as unknown as { commands: { command: string; description: string }[] }).commands ?? [];
-    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'netsummary', 'disconnect']);
+    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'netsummary', 'chart', 'disconnect']);
     assert.ok(commands.every((entry) => entry.description.length > 0 && entry.description.length <= 256));
 
     // A token is stored as a hash only.
@@ -1054,3 +1063,62 @@ test('/netsummary files each payment under the person who makes it or takes it',
   });
 });
 
+test('/chart draws both gross sides per person and marks the net that settles them', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Chart trip');
+    const chatId = 145;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, bo] = state.people;
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'debt', topic: 'Chart fixture', category: 'Food', creditor_person_id: ada.id, debtor_person_id: bo.id, amount_minor: 5_000, currency_code: 'USD' }),
+    })).status, 201);
+
+    bot.photos.length = 0;
+    bot.renderRequests.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/chart' })).status, 200);
+    await waitFor(() => bot.photos.length > 0, '/chart should send a chart photo');
+
+    const photo = bot.photos[0];
+    assert.equal(photo.chat_id, String(chatId));
+    assert.deepEqual(photo.bytes.slice(0, 4), [137, 80, 78, 71], 'the photo is a PNG');
+    assert.match(photo.caption ?? '', /Chart trip — USD/);
+    assert.match(photo.caption ?? '', /◆ is the net after netting/);
+    assert.equal((photo.caption ?? '').includes('/w/'), false, 'the caption carries no workspace link');
+
+    // What the renderer was asked to draw: the debtor's 50.00 on the owe side, the creditor's on the other,
+    // and one diamond per person sitting on the net.
+    assert.equal(bot.renderRequests.length, 1, 'one chart per currency');
+    const posted = JSON.parse(bot.renderRequests[0]) as {
+      format: string;
+      chart: { data: { labels: string[]; datasets: { label: string; data: number[] }[] }; options: Record<string, unknown> };
+    };
+    assert.equal(posted.format, 'png');
+    assert.equal(posted.chart.data.labels[0], ada.display_name, 'rows are sorted by net, creditor first');
+    const oweSide = posted.chart.data.datasets.find((dataset) => dataset.label === 'they owe')!;
+    const owedSide = posted.chart.data.datasets.find((dataset) => dataset.label === 'owed to them')!;
+    assert.deepEqual(oweSide.data, [0, -50]);
+    assert.deepEqual(owedSide.data, [50, 0]);
+    const annotations = (posted.chart.options.plugins as { annotation: { annotations: { type: string; xValue?: number }[] } }).annotation.annotations;
+    const diamonds = annotations.filter((entry) => entry.type === 'point').map((entry) => entry.xValue);
+    assert.deepEqual(diamonds.sort((a, b) => Number(a) - Number(b)), [-50, 50]);
+    assert.equal(bot.renderRequests[0].includes(secret), false, 'the renderer never sees the workspace secret');
+    assert.equal(bot.renderRequests[0].includes(String(chatId)), false, 'the renderer never sees the chat id');
+
+    // Nothing outstanding means nothing to draw: the command says so instead of posting an empty chart.
+    assert.equal((await request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: ada.id, debtor_person_id: bo.id, amount_minor: 5_000, currency_code: 'USD' }),
+    })).status, 201);
+    bot.messages.length = 0;
+    bot.photos.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/chart' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('nothing to chart')), 'a settled trip answers without a chart');
+    assert.equal(bot.photos.length, 0, 'no photo for a settled trip');
+  });
+});
