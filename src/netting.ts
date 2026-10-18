@@ -1,3 +1,4 @@
+import { creditMinor } from './money';
 import { offsetTransactions, reciprocalBalance } from './workflows';
 
 /** A row a request is about to commit, used to predict the balance inside the same batch. */
@@ -5,6 +6,7 @@ export type PendingRow = {
   creditor_person_id: number;
   debtor_person_id: number;
   amount_minor: number;
+  entry_kind: string;
   currency_code: string;
   occurred_on: string;
 };
@@ -50,9 +52,11 @@ export async function autoNettingStatements(db: D1Database, workspaceId: number,
     let secondOwesFirst = Math.max(balance.second_owes_first_minor, 0);
     for (const row of pending) {
       if (row.currency_code !== group.currency) continue;
-      const amount = Number(row.amount_minor) || 0;
-      if (row.debtor_person_id === group.first && row.creditor_person_id === group.second) firstOwesSecond += amount;
-      else if (row.debtor_person_id === group.second && row.creditor_person_id === group.first) secondOwesFirst += amount;
+      // The predicted balance must use the same rule as the stored one: a repayment reduces the debt,
+      // whether the page posted it positive or the CSV import stored it negative.
+      const credit = creditMinor(row);
+      if (row.debtor_person_id === group.first && row.creditor_person_id === group.second) firstOwesSecond += credit;
+      else if (row.debtor_person_id === group.second && row.creditor_person_id === group.first) secondOwesFirst += credit;
     }
     const amount = Math.min(Math.max(firstOwesSecond, 0), Math.max(secondOwesFirst, 0));
     if (amount <= 0) continue;

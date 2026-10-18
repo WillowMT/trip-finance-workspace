@@ -642,7 +642,16 @@ async function loadLedger(){
   renderTxList();
   renderSpend(txs);
 }
-function signedMinor(t){ return t.entry_kind==='payment'?-t.amount_minor:t.amount_minor }
+/* One arithmetic for every surface, so no two views can disagree about the same row: a debt adds to
+   what is owed, a repayment reduces it, and an offset row already carries its own signed value because
+   netting writes both directions negative. The rule itself lives in src/money.ts — the page keeps its
+   own copy because it ships as a template literal, and test/money.test.ts lifts this function and holds
+   it to the shared rule. A repayment is identified by its KIND or by a negative amount, because the page
+   posts repayments positive while the CSV import stores them negative. */
+function signedMinor(t){
+  var a=Math.abs(Number(t.amount_minor)||0);
+  return (t.entry_kind==='payment'||Number(t.amount_minor)<0)?-a:a;
+}
 /* ---------------- maximum payment (only the Record a payment page) ----------------
    The most that can be repaid is what the debtor still owes the creditor, so the cap is the ledger's
    own number rather than a form-side guess: the signedMinor() sum of the rows between those two

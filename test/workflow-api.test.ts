@@ -191,3 +191,109 @@ test('CSV import preview and commit re-parse raw text server-side, reject parsed
     assert.equal(conflict.status, 409);
   });
 });
+
+// Take a function's own source out of the served page and run it, so an assertion covers the arithmetic
+// the browser runs and not a copy of it.
+const lift = (html: string, name: string): string => {
+  const at = html.indexOf(`function ${name}(`);
+  assert.ok(at > 0, `${name} is shipped to the client`);
+  let depth = 0;
+  for (let k = html.indexOf('{', at); k < html.length; k += 1) {
+    if (html[k] === '{') depth += 1;
+    else if (html[k] === '}') { depth -= 1; if (depth === 0) return html.slice(at, k + 1); }
+  }
+  throw new Error(`unterminated ${name}`);
+};
+
+// The production incident this pins down: the CSV import stores a repayment as a negative 'payment' row
+// while the page posts it positive, and the two conventions have to read as the same repayment on every
+// surface. Under the old raw-sum math the legacy positive row ADDED 20.00 to the debt it was paying back,
+// which invented a reciprocal balance, so auto-netting cancelled money that did not exist.
+test('a repayment reduces the balance in the summary, the offsets and the plan however it is stored', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'netting off keeps the arithmetic below exact');
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const workspaceId = (query('SELECT id FROM workspaces ORDER BY id DESC LIMIT 1') as { id: number }[])[0].id;
+
+    // Lin owes Ada 10.00 and Ada owes Lin 30.00, so the pair has a real reciprocal overlap to expose.
+    await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Taxi', category: 'Transport', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 1_000, currency_code: 'USD' });
+    await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Hotel', category: 'Lodging', creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 3_000, currency_code: 'USD' });
+
+    // A repayment in the shape the 2026-10-11 import wrote: kind 'payment', POSITIVE amount on disk.
+    query(`INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (${workspaceId}, '2026-10-09', 'payment', 'Legacy repayment', 'Other', ${ada.id}, ${lin.id}, 2000, 'USD', NULL, NULL)`);
+    // A repayment in the shape the import writes today: negative on disk, straight from the CSV text.
+    const csv = ['occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes', `2026-10-09,payment,Imported repayment,Other,${ada.display_name},${lin.display_name},-10.00,USD,`].join('\n');
+    const imported = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-repay-1' }, body: csv });
+    assert.equal(imported.status, 201);
+    assert.deepEqual(
+      (query("SELECT amount_minor FROM transactions WHERE import_group_id LIKE 'import:%'") as { amount_minor: number }[]).map((row) => row.amount_minor),
+      [-1_000],
+      'an imported repayment is stored signed for the creditor, so even a raw sum reads it as money coming back',
+    );
+    assert.deepEqual(
+      (query("SELECT amount_minor FROM transactions WHERE entry_kind = 'payment' AND import_group_id IS NULL") as { amount_minor: number }[]).map((row) => row.amount_minor),
+      [2_000],
+      'a historical row keeps the sign it was written with — the fix is the reading, never the record',
+    );
+
+    // Ada fronted 10.00, was paid back 30.00 in total and owes Lin 30.00: she owes 50.00.
+    type Summary = { totals: { currency_code: string; paid_for_minor: number; covered_for_them_minor: number; settled_in_minor: number; settled_out_minor: number; net_minor: number }[]; counterparties: { counterparty: string; net_minor: number }[]; suggestions: { counterpaltry?: string }[] };
+    const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
+    const usd = summary.totals.find((row) => row.currency_code === 'USD')!;
+    assert.deepEqual(
+      { paid_for: usd.paid_for_minor, covered: usd.covered_for_them_minor, settled_in: usd.settled_in_minor, settled_out: usd.settled_out_minor, net: usd.net_minor },
+      { paid_for: 1_000, covered: 3_000, settled_in: 3_000, settled_out: 0, net: -5_000 },
+      'both repayment shapes are settlements worth 30.00 in total, so Ada owes 50.00 rather than being owed 10.00',
+    );
+    assert.equal(summary.counterparties.find((row) => row.counterparty === lin.display_name)!.net_minor, -5_000, 'the pair agrees with the total');
+    // Correctly read, both directions still hold a positive balance (Lin owes 20.00, Ada owes 30.00) but the
+    // repayment overshoots this way, so the netting overlap is the 30.00 Ada owes -- never a raw 20.00 + 30.00.
+    const direct = await (await request(`${api}/offset-suggestions`)).json() as { suggestions: { first_person_id: number; second_person_id: number; first_owes_second_minor: number; second_owes_first_minor: number; offset_amount_minor: number }[] };
+    for (const suggestion of direct.suggestions) {
+      assert.equal(suggestion.offset_amount_minor, Math.min(suggestion.first_owes_second_minor, suggestion.second_owes_first_minor));
+    }
+    assert.equal(
+      direct.suggestions.some((suggestion) => [suggestion.first_person_id, suggestion.second_person_id].includes(ada.id) && [suggestion.first_person_id, suggestion.second_person_id].includes(lin.id)),
+      false,
+      'one direction is in credit, so there is nothing reciprocal left to net',
+    );
+
+    // The page must arrive at the same figure the drawer does, from the same rows.
+    const html = await (await request(`/w/${secret}`)).text();
+    const nets = new Function(`${lift(html, 'signedMinor')};${lift(html, 'netsByCurrency')};return netsByCurrency`)() as (list: Record<string, unknown>[]) => Record<string, Record<number, number>>;
+    const ledger = await (await request(`${api}/transactions`)).json() as { transactions: Record<string, unknown>[] };
+    const usdNets = nets(ledger.transactions).USD;
+    assert.deepEqual({ ada: usdNets[ada.id], lin: usdNets[lin.id] }, { ada: -5_000, lin: 5_000 }, 'the Balances view and settle plan read the same 50.00 the drawer reports');
+    assert.equal(usdNets[ada.id], usd.net_minor, 'one number per person per currency, not one per surface');
+  });
+});
+
+test('a settlement is stored signed for the creditor, and an ambiguous row is refused', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const write = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Dinner', category: 'Food', currency_code: 'USD', ...body }) });
+    assert.equal((await write({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 10_000 })).status, 201);
+    // The page posts a repayment as a positive amount; the row that lands on disk is signed.
+    assert.equal((await write({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 2_500, entry_kind: 'payment', topic: 'Paid back' })).status, 201);
+    assert.deepEqual(
+      (query("SELECT amount_minor FROM transactions WHERE entry_kind = 'payment'") as { amount_minor: number }[]).map((row) => row.amount_minor),
+      [-2_500],
+      'a repayment is stored as a credit against what the creditor is owed',
+    );
+    // A negative debt cannot mean anything but "money came back", which has its own kind, so it is refused
+    // instead of being silently reinterpreted.
+    const negativeDebt = await write({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: -1_000 });
+    assert.equal(negativeDebt.status, 400);
+    assert.match(((await negativeDebt.json()) as { error: string }).error, /must be positive/);
+    const csv = ['occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes', `2026-10-09,debt,Bad,Food,${ada.display_name},${lin.display_name},-10.00,USD,`].join('\n');
+    const preview = await request(`${api}/imports/preview`, { method: 'POST', headers: { 'content-type': 'text/csv' }, body: csv });
+    assert.equal(preview.status, 400, 'a CSV cannot smuggle a settlement in as a negative debt either');
+    assert.match(JSON.stringify(await preview.json()), /must be positive/);
+  });
+});

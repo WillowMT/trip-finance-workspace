@@ -2,6 +2,7 @@ import { aiInstructions, appHtml, homeHtml, linkRetiredHtml, isValidTimeZone, DE
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
 import { autoNettingStatements } from './netting';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
+import { creditMinorSql, isSettlementRow, storedMinor } from './money';
 import { canonicalName, hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 import { createPairing, dispatchWorkspaceNotifications, handleNavRedirect, handleTelegramWebhook, isNavPath, isTelegramWebhookPath, removeConnection, resolveNavWorkspace, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
 
@@ -197,7 +198,13 @@ async function ownedCurrency(db: D1Database, workspaceId: number, code: unknown,
 }
 async function validateTransaction(db: D1Database, workspaceId: number, input: Json): Promise<string | null> {
   if (!validDate(input.occurred_on) || !entryKinds.has(input.entry_kind as string) || !cleanText(input.topic, 200) || !cleanText(input.category, 80) || !Number.isSafeInteger(input.amount_minor) || input.amount_minor === 0 || input.notes !== undefined && input.notes !== null && typeof input.notes !== 'string') return 'Invalid transaction';
+  // A negative debt can only mean "money came back", which is what entry_kind 'payment' is for. Refusing
+  // it keeps the sign of a stored row meaningful instead of silently reinterpreting the entry.
+  if (input.entry_kind === 'debt' && (input.amount_minor as number) < 0) return 'A debt amount must be positive — record money coming back as a payment';
   if (input.creditor_person_id === input.debtor_person_id || !await ownedPerson(db, workspaceId, input.creditor_person_id, true) || !await ownedPerson(db, workspaceId, input.debtor_person_id, true) || !await ownedCurrency(db, workspaceId, input.currency_code, true)) return 'Transaction references must belong to this workspace and be active';
+  // Store settlements negative and debts positive (src/money.ts), so the row's own sign says which way
+  // the money moved no matter which surface reads it next.
+  input.amount_minor = storedMinor(input.entry_kind as string, input.amount_minor as number);
   return null;
 }
 
@@ -523,9 +530,9 @@ async function handle(request: Request, env: Env): Promise<Response> {
     for (const row of rows.results) {
       const outgoing = row.creditor_person_id === person.id;
       const counterpartyId = outgoing ? row.debtor_person_id : row.creditor_person_id;
-      // A repayment is stored positive with entry_kind 'payment' (that is what the page posts) while an
-      // offset row carries its own negative sign: both are settlements. Reading a repayment as
-      // 'paid_for' made a person's net grow every time somebody paid them back.
+      // A repayment is a settlement however it sits on disk: the page posts a positive amount and the CSV
+      // import writes a negative one, while an offset row carries its own negative sign. Reading a
+      // repayment as 'paid_for' made a person's net grow every time somebody paid them back.
       const settled = row.amount_minor < 0 || row.entry_kind === 'payment';
       const direction = settled ? (outgoing ? 'settled_in' : 'settled_out') : outgoing ? 'paid_for' : 'covered_for_them';
       if (row.is_deleted === 1) archivedRecords += 1; else activeRecords += 1;
@@ -724,7 +731,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null)];
     // Automatic bilateral netting rides in the same atomic batch as the entry that triggered it.
-    const netting = await autoNettingStatements(env.DB, workspace.id, [{ creditor_person_id: input.creditor_person_id as number, debtor_person_id: input.debtor_person_id as number, amount_minor: input.amount_minor as number, currency_code: input.currency_code as string, occurred_on: input.occurred_on as string }]);
+    const netting = await autoNettingStatements(env.DB, workspace.id, [{ creditor_person_id: input.creditor_person_id as number, debtor_person_id: input.debtor_person_id as number, amount_minor: input.amount_minor as number, entry_kind: input.entry_kind as string, currency_code: input.currency_code as string, occurred_on: input.occurred_on as string }]);
     statements.push(...netting);
     const results = await env.DB.batch(statements);
     await tickBackups(env, workspace.id);

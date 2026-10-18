@@ -202,7 +202,8 @@ test('every page is styled from one token-based design system', async () => {
       assert.match(sheet, /:focus-visible/, 'keyboard focus is visible');
       assert.match(sheet, /prefers-reduced-motion/, 'motion is reduced when the OS asks for it');
       assert.match(sheet, /button\[aria-busy=true\]/, 'writes show a loading state');
-      assert.match(sheet, /prefers-color-scheme:dark/, 'the dark theme is preserved');
+      assert.match(sheet, /html\[data-theme="dark"\]\{[^}]*--bg:/, 'the dark theme is a class the page sets, not a query the phone answers');
+      assert.match(sheet, /:root\{color-scheme:light\}/, 'and light is what a visitor with no saved choice gets');
 
       // no route-specific patches, no dead selectors
       assert.ok(!/#split \.btns|\.top-actions/.test(sheet), `${label}: no route-specific patches or dead selectors`);
@@ -255,7 +256,7 @@ test('creating a transaction or a split asks for review before it writes', async
     assert.match(html, /signedMoney\(pay\?-one\.amount_minor:one\.amount_minor/, 'and is signed like the ledger row it will produce');
     assert.match(html, /signedMoney\(owed,d\.currency_code\)/, 'a split reviews the debt it will actually create, not the bill');
     assert.match(html, /allocate\(d\.amount_minor,ids\)/, 'per-person shares come from the same allocator the server uses');
-    assert.match(html, /if\(ev\.key==='Escape'\)\{[^}]*closeReview\(\)/, 'Escape backs out of the review');
+    assert.match(html, /if\(ev\.key==='Escape'\)\{[\s\S]{0,400}?closeReview\(\)/, 'Escape backs out of the review');
     assert.match(html, /ev\.target\.id==='review-modal'/, 'a backdrop tap backs out too');
   });
 });
@@ -400,7 +401,7 @@ test('the workspace page ships a usable split form: people pre-rendered, archive
     assert.equal(archived.status, 200);
 
     const html = await (await request(`/w/${secret}`)).text();
-    assert.match(html, /id="tab-split"[^>]*>(<span[^>]*>[^<]*<\/span>\s*)?Split</, 'the split tab is reachable');
+    assert.match(html, /id="tab-split"[^>]*>(<span[^>]*>[^<]*<\/span>\s*)?Split/, 'the split tab is reachable');
     assert.match(html, /<section id="split" hidden>/, 'the split panel exists and starts hidden like its siblings');
     assert.match(html, /id="sp-preview"/); assert.match(html, /id="sp-commit"/); assert.match(html, /id="sp-payer"/);
     assert.match(html, /<label class="check"><input type="checkbox" value="\d+" checked><span>Ada<\/span><\/label>/);
@@ -1340,9 +1341,9 @@ test('a repayment reduces what is owed in the summary, the plan, and every view 
     const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
     const [ada, lin] = state.people;
     const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Dinner', category: 'Food', currency_code: 'USD', ...body }) });
-    // 120.00 fronted for Lin, then 20.00 handed back. Both rows are stored positive and the repayment is
-    // marked by its kind - the shape the page itself posts - so a repayment that reads as "fronted for
-    // others" here grows the debt every time somebody pays it back.
+    // 120.00 fronted for Lin, then 20.00 handed back. The repayment is now stored signed for the creditor
+    // while a historical row of the same shape is positive, and only the kind plus the sign together read
+    // both as "20.00 came back": a repayment counted as "fronted for others" grows the debt it paid off.
     await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 12_000 });
     await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 2_000, entry_kind: 'payment', topic: 'Paid back' });
 

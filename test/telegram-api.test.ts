@@ -332,11 +332,12 @@ test('pairing tokens are single use, expire after ten minutes, and never land in
     assert.equal(connectionRows(query, workspaceId).length, 0);
 
     // The first authenticated update of a deployment also publishes the bot's command menu, so the chat
-    // offers exactly the commands the code answers — and nothing that would do nothing.
+    // offers exactly the commands the code answers — and nothing that would do nothing. /summary answers
+    // with the settlement payments, so it belongs in the menu beside /start and /disconnect.
     const published = bot.calls.find((call) => call.method === 'setMyCommands');
     assert.ok(published, 'the command menu should be published on the first update');
     const commands = (published.payload as unknown as { commands: { command: string; description: string }[] }).commands ?? [];
-    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'disconnect']);
+    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'summary', 'disconnect']);
     assert.ok(commands.every((entry) => entry.description.length > 0 && entry.description.length <= 256));
 
     // A token is stored as a hash only.

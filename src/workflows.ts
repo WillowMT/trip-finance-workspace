@@ -1,3 +1,5 @@
+import { creditMinorSql, storedMinor } from './money';
+
 export type Json = Record<string, unknown>;
 
 type Person = { id: number; workspace_id: number; display_name: string; is_archived: number };
@@ -62,6 +64,11 @@ export async function validateWorkflowRow(
   const topic = cleanText(input.topic, 200);
   const category = cleanText(input.category, 80);
   const amount_minor = input.amount_minor;
+  if (!Number.isSafeInteger(amount_minor)) return { problem: 'Invalid transaction row' };
+  // A negative debt can only mean "money came back", which is what entry_kind 'payment' is for.
+  if (entry_kind === 'debt' && (amount_minor as number) < 0) {
+    return { problem: 'A debt amount must be positive — record money coming back as a payment' };
+  }
   const currency_code = input.currency_code;
   const notes = input.notes === undefined || input.notes === null ? null : typeof input.notes === 'string' && input.notes.length <= 4_000 ? input.notes : undefined;
   const creditor_person_id = input.creditor_person_id;
@@ -87,18 +94,27 @@ export async function validateWorkflowRow(
       occurred_on, entry_kind, topic, category,
       creditor_person_id: creditor_person_id as number,
       debtor_person_id: debtor_person_id as number,
-      amount_minor: amount_minor as number,
+      // Canonical sign on the way in (src/money.ts): settlements negative, debts positive.
+      amount_minor: storedMinor(entry_kind, amount_minor as number),
       currency_code, notes: notes as string | null,
     },
   };
 }
 
-/** Reciprocal balances between two people in one currency, computed from non-deleted rows. */
+/**
+ * Reciprocal balances between two people in one currency, computed from non-deleted rows.
+ *
+ * The contribution of a row is `creditMinorSql()`, never the raw amount: a repayment written negative by
+ * the CSV import and a repayment written positive by a historical row must both reduce what is owed, and a
+ * raw SUM adds the positive one instead. That sum is what auto-netting and the offset suggestions
+ * run on, so reading it raw invented debts that then got netted away.
+ */
 export async function reciprocalBalance(db: D1Database, workspaceId: number, firstId: number, secondId: number, currencyCode: string): Promise<{ first_owes_second_minor: number; second_owes_first_minor: number }> {
+  const credit = creditMinorSql();
   const row = await db.prepare(
     `SELECT
-       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN amount_minor ELSE 0 END), 0) AS first_owes_second_minor,
-       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN amount_minor ELSE 0 END), 0) AS second_owes_first_minor
+       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN ${credit} ELSE 0 END), 0) AS first_owes_second_minor,
+       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN ${credit} ELSE 0 END), 0) AS second_owes_first_minor
      FROM transactions
      WHERE workspace_id = ? AND is_deleted = 0 AND currency_code = ?
        AND ((debtor_person_id = ? AND creditor_person_id = ?) OR (debtor_person_id = ? AND creditor_person_id = ?))`,
@@ -176,6 +192,7 @@ export function parseImportCsv(
     const amountText = value('amount');
     const amount = /^-?\d+(\.\d+)?$/.test(amountText) ? Math.round(Number(amountText) * 100) : NaN;
     if (!Number.isSafeInteger(amount) || amount === 0) problems.push('invalid amount');
+    if (entry_kind === 'debt' && Number.isSafeInteger(amount) && amount < 0) problems.push('a debt amount must be positive — use entry_kind payment');
     const currency_code = value('currency').toUpperCase();
     if (!currencies.has(currency_code)) problems.push('unknown or archived currency');
     const notes = notesIndex >= 0 && notesIndex < cells.length && cells[notesIndex].trim() !== '' ? cells[notesIndex].trim().slice(0, 4_000) : null;
@@ -183,7 +200,9 @@ export function parseImportCsv(
     rows.push({
       occurred_on, entry_kind, topic: topic!, category: category!,
       creditor_person_id: creditor!.id, debtor_person_id: debtor!.id,
-      amount_minor: entry_kind === 'debt' ? amount : -Math.abs(amount),
+      // Canonical sign (src/money.ts): a repayment is stored negative, a debt positive, whichever way the
+      // CSV wrote it. This is the line that used to make an imported repayment read as a new debt.
+      amount_minor: storedMinor(entry_kind, amount),
       currency_code, notes,
     });
   }

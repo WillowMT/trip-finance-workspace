@@ -17,6 +17,8 @@
  */
 
 
+import { creditMinorSql, isSettlementRow } from './money';
+
 export type TelegramEnv = {
   DB: D1Database;
   TELEGRAM_BOT_TOKEN?: string;
@@ -675,7 +677,7 @@ async function handleDebtSummary(env: TelegramEnv, connection: { id: number; wor
   if (!workspace) { await sendMessage(env, chatId, '💤 This trip is no longer active. Send /start for a fresh menu.'); return; }
   const rows = await env.DB.prepare(
     `SELECT t.debtor_person_id AS debtor_id, t.creditor_person_id AS creditor_id, t.currency_code,
-            SUM(CASE WHEN t.entry_kind = 'payment' THEN -t.amount_minor ELSE t.amount_minor END) AS outstanding,
+            SUM(${creditMinorSql('t')}) AS outstanding,
             d.display_name AS debtor, c.display_name AS creditor
        FROM transactions t
        JOIN workspace_people d ON d.id = t.debtor_person_id
@@ -1079,10 +1081,12 @@ function perCurrencyTotals(rows: AuditRow[]): string {
   const totals = new Map<string, number>();
   for (const row of rows) {
     const after = parseJson(row.after_json);
-    if (String(after['entry_kind'] ?? 'debt') === 'payment') continue;
+    // A repayment or a netting offset is not new spending, however it happens to be signed on disk.
+    const kind = String(after['entry_kind'] ?? 'debt');
+    if (isSettlementRow({ entry_kind: kind, amount_minor: Number(after['amount_minor']) || 0 })) continue;
     const currency = String(after['currency_code'] ?? '').toUpperCase();
     if (!currency) continue;
-    totals.set(currency, (totals.get(currency) ?? 0) + (Number(after['amount_minor']) || 0));
+    totals.set(currency, (totals.get(currency) ?? 0) + Math.abs(Number(after['amount_minor']) || 0));
   }
   // Currencies are never added together: each one keeps its own line.
   const lines = [...totals.entries()].filter(([, total]) => total > 0).map(([currency, total]) => money(total, currency));
