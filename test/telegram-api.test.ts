@@ -793,6 +793,7 @@ test('one workspace fans out to every linked chat, and one unreachable chat neve
 test('the /start menu hands out expiring section passes, never the trip link', async () => {
   await withTelegramApi(async ({ request, query, bot }) => {
     const secret = await createWorkspace(request, 'Menu trip');
+    const groupSecret = await createWorkspace(request, 'Group menu trip');
     const workspaceId = Number((query(`SELECT id FROM workspaces WHERE name = 'Menu trip'`) as { id: number }[])[0].id);
 
     // A chat that follows nothing gets the plain welcome, and no pass is minted for it.
@@ -870,7 +871,6 @@ test('the /start menu hands out expiring section passes, never the trip link', a
     assert.equal((await request(`/go/${token}/ledger`, { redirect: 'manual' })).status, 404);
 
     // A group gets the same grid, from the command Telegram actually delivers to a bot in a group.
-    const groupSecret = await createWorkspace(request, 'Group menu trip');
     const groupChat = GROUP_CHAT(-770003, 'Menu group');
     bot.statuses.set(String(groupChat.id), 'administrator');
     const groupPair = await mintPairing(request, groupSecret);
@@ -890,6 +890,7 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
   await withTelegramApi(async ({ request, query, bot }) => {
     const first = await createWorkspace(request, 'Disconnect trip one');
     const second = await createWorkspace(request, 'Disconnect trip two');
+    const groupSecret = await createWorkspace(request, 'Disconnect group trip');
     const firstId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect trip one'`)[0].id);
     const secondId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect trip two'`)[0].id);
     const chatId = 880001;
@@ -921,7 +922,6 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
     assert.equal(Number((query(passesFor) as { count: number }[])[0].count), 0, 'the menu passes go with the connection');
 
     // A group is only disconnected by one of its administrators, exactly like connecting it.
-    const groupSecret = await createWorkspace(request, 'Disconnect group trip');
     const groupId = Number(query(`SELECT id FROM workspaces WHERE name = 'Disconnect group trip'`)[0].id);
     const groupChat = GROUP_CHAT(-880003, 'Disconnect group');
     const groupPasses = `SELECT COUNT(*) AS count FROM telegram_nav_links WHERE connection_id IN (SELECT id FROM telegram_connections WHERE chat_id = '${groupChat.id}')`;
@@ -945,6 +945,34 @@ test('/disconnect unlinks this chat, takes its menu passes with it, and a group 
     assert.match(bot.messages[0].text, /Disconnected .*Disconnect group trip/);
     assert.equal(connectionRows(query, groupId).length, 0, 'an administrator can disconnect the group');
     assert.equal(Number((query(groupPasses) as { count: number }[])[0].count), 0);
+  });
+});
+
+test('adding a new trip disconnects the trip the chat was following', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const oldSecret = await createWorkspace(request, 'Older trip');
+    const chatId = 142;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, oldSecret)).token, chatId), /is now connected/);
+
+    const linked = query(`SELECT enabled, workspace_id FROM telegram_connections WHERE chat_id = '${chatId}'`) as { enabled: number; workspace_id: number }[];
+    assert.equal(linked.length, 1, 'the chat should follow exactly one trip to begin with');
+    assert.equal(Number(linked[0].enabled), 1);
+
+    await createWorkspace(request, 'Newer trip');
+    const newer = (query("SELECT id FROM workspaces WHERE name = 'Newer trip'") as { id: number }[])[0];
+
+    const after = query(`SELECT enabled, workspace_id, last_error FROM telegram_connections WHERE chat_id = '${chatId}'`) as { enabled: number; workspace_id: number; last_error: string | null }[];
+    assert.equal(after.length, 1, 'the old connection is kept, not deleted');
+    assert.equal(Number(after[0].enabled), 0, 'adding a trip must disconnect the old one');
+    assert.notEqual(after[0].workspace_id, newer.id);
+    assert.match(String(after[0].last_error), /newer trip/, 'the old trip should say why the chat went quiet');
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/netsummary' })).status, 200);
+    await waitFor(() => bot.messages.length > 0, 'a disconnected chat should still get an answer');
+    assert.match(bot.messages[0].text, /not connected to any trip/);
+    assert.doesNotMatch(bot.messages[0].text, /net balances & settlements/);
   });
 });
 

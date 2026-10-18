@@ -234,6 +234,16 @@ async function handle(request: Request, env: Env): Promise<Response> {
     for (const currency of valid.currencies) statements.push(env.DB.prepare('INSERT INTO workspace_currencies (workspace_id, code, is_default) SELECT id, ?, ? FROM workspaces WHERE secret_hash = ?').bind(currency.code, currency.is_default ? 1 : 0, hash));
     await env.DB.batch(statements);
     const workspace = await resolveWorkspace(env.DB, secret);
+    // One trip at a time on Telegram: a trip is the unit of attention, so starting a new one retires the
+    // links that still point at an older trip. The rows are disabled rather than deleted, so reconnecting a
+    // chat to an old trip later keeps its watermark and never replays history into the chat.
+    if (workspace) {
+      await env.DB.prepare(
+        `UPDATE telegram_connections
+            SET enabled = 0, last_error = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+          WHERE enabled = 1 AND workspace_id <> ?`,
+      ).bind('Disconnected automatically when a newer trip was added', workspace.id).run();
+    }
     return json({ workspace: workspace && { id: workspace.id, name: workspace.name }, workspace_url: `/w/${secret}` }, 201, secretHeaders());
   }
   // Telegram's own endpoint: a dedicated path, authenticated by the secret registered at setWebhook
