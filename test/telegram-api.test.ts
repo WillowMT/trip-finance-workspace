@@ -337,7 +337,7 @@ test('pairing tokens are single use, expire after ten minutes, and never land in
     const published = bot.calls.find((call) => call.method === 'setMyCommands');
     assert.ok(published, 'the command menu should be published on the first update');
     const commands = (published.payload as unknown as { commands: { command: string; description: string }[] }).commands ?? [];
-    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'summary', 'net', 'disconnect']);
+    assert.deepEqual(commands.map((entry) => entry.command), ['start', 'summary', 'net', 'netsummary', 'disconnect']);
     assert.ok(commands.every((entry) => entry.description.length > 0 && entry.description.length <= 256));
 
     // A token is stored as a hash only.
@@ -997,6 +997,64 @@ test('/summary replies with the payments that settle the trip', async () => {
     assert.equal((await sendUpdate({ request, query, bot }, { chat: PRIVATE_CHAT(999), text: '/summary' })).status, 200);
     await waitFor(() => bot.messages.length === 1, 'an unconnected chat should get guidance');
     assert.match(bot.messages[0].text, /not connected to any trip/);
+  });
+});
+
+test('/netsummary files each payment under the person who makes it or takes it', async () => {
+  await withTelegramApi(async ({ request, query, bot }) => {
+    const secret = await createWorkspace(request, 'Net trip');
+    const workspaceId = Number(query(`SELECT id FROM workspaces WHERE name = 'Net trip'`)[0].id);
+    query(`INSERT INTO workspace_currencies (workspace_id, code, is_default) VALUES (${workspaceId}, 'MYR', 0)`);
+    const chatId = 142;
+    const chat = PRIVATE_CHAT(chatId);
+    assert.match(await startInPrivate({ request, query, bot }, (await mintPairing(request, secret)).token, chatId), /is now connected/);
+
+    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, bo] = state.people;
+    const write = (creditor: number, debtor: number, amount: number, currency: string) => request(`/w/${secret}/api/transactions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'debt', topic: 'Net fixture', category: 'Food', creditor_person_id: creditor, debtor_person_id: debtor, amount_minor: amount, currency_code: currency }),
+    });
+    assert.equal((await write(ada.id, bo.id, 5_000, 'USD')).status, 201);
+    assert.equal((await write(bo.id, ada.id, 3_300, 'MYR')).status, 201);
+
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/netsummary' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('net balances & settlements')), '/netsummary should reply with balances and payments');
+    const reply = bot.messages.find((message) => message.text.includes('net balances & settlements'))!;
+    // The balance line says which side a person is on; the indented lines say exactly what they pay or take.
+    assert.deepEqual(reply.text.split('\n'), [
+      '💵 Net trip — net balances & settlements',
+      '',
+      'MYR · 1 payment moves MYR 33.00',
+      `• ${bo.display_name} +MYR 33.00`,
+      `   ↳ receives MYR 33.00 from ${ada.display_name}`,
+      `• ${ada.display_name} −MYR 33.00`,
+      `   ↳ pays ${bo.display_name} MYR 33.00`,
+      '',
+      'USD · 1 payment moves USD 50.00',
+      `• ${ada.display_name} +USD 50.00`,
+      `   ↳ receives USD 50.00 from ${bo.display_name}`,
+      `• ${bo.display_name} −USD 50.00`,
+      `   ↳ pays ${ada.display_name} USD 50.00`,
+    ]);
+    assert.equal(reply.text.includes('/w/'), false, 'the reply carries no workspace link');
+
+    // Standalone commands stay separate answers: /net has no payment lines, /summary has no balances.
+    assert.equal(reply.text.includes('pays') && reply.text.includes('•'), true, 'the combined reply has both halves');
+
+    // Settling every balance drops the payment scaffolding and says so plainly.
+    for (const amount of [{ creditor: ada.id, debtor: bo.id, minor: 5_000, currency: 'USD' }, { creditor: bo.id, debtor: ada.id, minor: 3_300, currency: 'MYR' }]) {
+      assert.equal((await request(`/w/${secret}/api/transactions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ occurred_on: '2026-10-13', entry_kind: 'payment', topic: 'Settle', category: 'Settle', creditor_person_id: amount.creditor, debtor_person_id: amount.debtor, amount_minor: amount.minor, currency_code: amount.currency }),
+      })).status, 201);
+    }
+    bot.messages.length = 0;
+    assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/netsummary' })).status, 200);
+    await waitFor(() => bot.messages.some((message) => message.text.includes('is all settled')), 'a settled trip answers with the all-settled reply');
   });
 });
 
