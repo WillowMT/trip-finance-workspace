@@ -745,6 +745,19 @@ function minorToChartUnits(minor: number): number {
   return Math.round((Number(minor) || 0)) / 100;
 }
 
+/** Chart labels are drawn by the renderer with no formatting of their own, so the text is built here. */
+export function chartAmount(minor: number): string {
+  const fixed = Math.abs(minorToChartUnits(minor)).toFixed(2);
+  const [whole, cents] = fixed.split('.');
+  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${cents}`;
+}
+
+/** Signed net as the chart prints it: no minus on zero, ASCII hyphen so it survives every font. */
+export function chartNet(minor: number): string {
+  if (!minor) return '0.00';
+  return `${minor > 0 ? '+' : '-'}${chartAmount(minor)}`;
+}
+
 /**
  * The Chart.js v3 request body. Every row starts at the shared zero line: the negative dataset is what
  * the person owes, the positive dataset is what they are owed, and the net is an annotation rather than
@@ -757,6 +770,16 @@ export function netBarChartRequest(trip: string, currency: string, book: ChartPe
     type: 'line', scaleID: 'x', value: 0, borderColor: '#334155', borderWidth: 1,
   }];
   ordered.forEach((person, index) => {
+    // The renderer formats nothing for us, so every figure on the picture is written as a label here:
+    // paid-out amounts sit outside the left tip, owed amounts outside the right tip, and the diamond
+    // marks the net that has to change hands. Without these the bars carry no numbers at all.
+    const tip = (xValue: number, text: string, colour: string, xAdjust: number): Json => ({
+      type: 'label', xValue, yValue: index, content: [text], xAdjust,
+      color: colour, font: { size: 13, weight: 'bold' }, backgroundColor: 'transparent',
+      callout: { display: false },
+    });
+    if (person.owes) annotations.push(tip(-minorToChartUnits(person.owes), chartAmount(person.owes), '#334155', -26));
+    if (person.owed) annotations.push(tip(minorToChartUnits(person.owed), chartAmount(person.owed), '#1D4ED8', 26));
     annotations.push({
       type: 'point', xValue: minorToChartUnits(person.net), yValue: index,
       pointStyle: 'rectRot', radius: 7, borderWidth: 0, backgroundColor: '#0F172A',
@@ -771,7 +794,7 @@ export function netBarChartRequest(trip: string, currency: string, book: ChartPe
     chart: {
       type: 'bar',
       data: {
-        labels: ordered.map((person) => person.name),
+        labels: ordered.map((person) => `${person.name}  ${chartNet(person.net)}`),
         datasets: [
           {
             label: 'they owe',
@@ -791,6 +814,7 @@ export function netBarChartRequest(trip: string, currency: string, book: ChartPe
         indexAxis: 'y',
         responsive: false,
         animation: false,
+        layout: { padding: { right: 40, left: 4 } },
         plugins: {
           title: { display: true, text: `${trip} — ${currency}`, font: { size: 22 } },
           legend: { position: 'top', labels: { boxWidth: 14, font: { size: 14 } } },
@@ -799,10 +823,11 @@ export function netBarChartRequest(trip: string, currency: string, book: ChartPe
         scales: {
           x: {
             stacked: true,
+            grace: '14%',
             grid: { color: '#E2E8F0' },
             title: { display: true, text: 'owes  ←   |   →  is owed', font: { size: 14 } },
           },
-          y: { stacked: true, grid: { display: false }, ticks: { font: { size: 15 } } },
+          y: { stacked: true, grid: { display: false }, ticks: { font: { size: 15, weight: 'bold' } } },
         },
       },
     },
@@ -919,7 +944,7 @@ async function handleChart(env: TelegramEnv, connection: { id: number; workspace
     const open = book.filter((person) => person.net !== 0).length;
     const caption = `📊 ${trip} — ${currency}\n`
       + 'Each row starts at zero: left is everything that person owes, right is everything they are owed.\n'
-      + `◆ is the net after netting. ${book.length} people · ${open} with a balance`;
+      + `Bars are labelled in ${currency}; ◆ is the net after netting. ${book.length} people · ${open} with a balance`;
     const result = await sendPhoto(env, chatId, png, caption);
     if (result.ok) sent += 1;
   }

@@ -1098,14 +1098,17 @@ test('/chart draws both gross sides per person and marks the net that settles th
       chart: { data: { labels: string[]; datasets: { label: string; data: number[] }[] }; options: Record<string, unknown> };
     };
     assert.equal(posted.format, 'png');
-    assert.equal(posted.chart.data.labels[0], ada.display_name, 'rows are sorted by net, creditor first');
+    assert.equal(posted.chart.data.labels[0], `${ada.display_name}  +50.00`, 'rows are sorted by net, creditor first, carrying the net');
     const oweSide = posted.chart.data.datasets.find((dataset) => dataset.label === 'they owe')!;
     const owedSide = posted.chart.data.datasets.find((dataset) => dataset.label === 'owed to them')!;
     assert.deepEqual(oweSide.data, [0, -50]);
     assert.deepEqual(owedSide.data, [50, 0]);
-    const annotations = (posted.chart.options.plugins as { annotation: { annotations: { type: string; xValue?: number }[] } }).annotation.annotations;
+    const annotations = (posted.chart.options.plugins as { annotation: { annotations: { type: string; xValue?: number; content?: string[] }[] } }).annotation.annotations;
     const diamonds = annotations.filter((entry) => entry.type === 'point').map((entry) => entry.xValue);
     assert.deepEqual(diamonds.sort((a, b) => Number(a) - Number(b)), [-50, 50]);
+    // Amounts are drawn from these labels, so a bare `50` instead of `50.00` is a real regression.
+    const printed = annotations.filter((entry) => entry.type === 'label').map((entry) => entry.content);
+    assert.deepEqual(printed.flat(), ['50.00', '50.00']);
     assert.equal(bot.renderRequests[0].includes(secret), false, 'the renderer never sees the workspace secret');
     assert.equal(bot.renderRequests[0].includes(String(chatId)), false, 'the renderer never sees the chat id');
 
