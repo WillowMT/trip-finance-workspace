@@ -1107,8 +1107,11 @@ test('/chart draws both gross sides per person and marks the net that settles th
     const diamonds = annotations.filter((entry) => entry.type === 'point').map((entry) => entry.xValue);
     assert.deepEqual(diamonds.sort((a, b) => Number(a) - Number(b)), [-50, 50]);
     // Amounts are drawn from these labels, so a bare `50` instead of `50.00` is a real regression.
-    const printed = annotations.filter((entry) => entry.type === 'label').map((entry) => entry.content);
-    assert.deepEqual(printed.flat(), ['50.00', '50.00']);
+    const printed = annotations.filter((entry) => entry.type === 'label').map((entry) => entry.content).flat();
+    assert.deepEqual(printed.filter((text) => !text.startsWith('+') && !text.startsWith('-')), ['50.00', '50.00'],
+      'each bar tip carries its gross amount');
+    assert.deepEqual(printed.filter((text) => text.startsWith('+') || text.startsWith('-')).sort(), ['+50.00', '-50.00'],
+      'each diamond carries the net it marks');
     assert.equal(bot.renderRequests[0].includes(secret), false, 'the renderer never sees the workspace secret');
     assert.equal(bot.renderRequests[0].includes(String(chatId)), false, 'the renderer never sees the chat id');
 

@@ -784,6 +784,18 @@ export function netBarChartRequest(trip: string, currency: string, book: ChartPe
       type: 'point', xValue: minorToChartUnits(person.net), yValue: index,
       pointStyle: 'rectRot', radius: 7, borderWidth: 0, backgroundColor: '#0F172A',
     });
+    // The diamond's own figure, on a dark pill so it reads over either bar. It goes to whichever side of
+    // the marker is emptier, measured against the two bar-tip labels it would otherwise run into.
+    const net = minorToChartUnits(person.net);
+    const roomLeft = net + minorToChartUnits(person.owes);
+    const roomRight = minorToChartUnits(person.owed) - net;
+    const pill = roomRight >= roomLeft ? { xAdjust: 34 } : { xAdjust: -34 };
+    annotations.push({
+      type: 'label', xValue: net, yValue: index, content: [chartNet(person.net)],
+      ...pill, color: '#FFFFFF', backgroundColor: '#0F172A', borderRadius: 6,
+      padding: { top: 2, bottom: 2, left: 6, right: 6 },
+      font: { size: 12, weight: 'bold' }, callout: { display: false },
+    });
   });
   return {
     version: '3',
