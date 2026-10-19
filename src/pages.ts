@@ -232,6 +232,11 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 @media(max-width:420px){.pm-more>summary{padding:var(--sp-3) var(--sp-4)}.pm-more .pm-analytics{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-relations{padding:0 var(--sp-3) var(--sp-3)}.pm-more .pm-ledger-trail-hint{padding:0 var(--sp-4) var(--sp-3)}.pm-why-top{padding:var(--sp-3) var(--sp-4)}}
 .pm-ledger-trail-hint{margin:0;padding:0 var(--sp-5) var(--sp-5);color:var(--muted);font-size:var(--fs-sm)}
 .pm-relations-empty{margin:0;padding:var(--sp-5);border-top:1px solid var(--line)}
+/* Activity counts what someone has done over the life of the trip, not a balance they owe or are owed,
+   so the figures and their cards carry no green/red — the label above each one already says which way
+   it points. Colour is reserved for the plan lines, which are the only actionable numbers here. */
+.pm-analytics-amount,.pm-analytics-amount.pos,.pm-analytics-amount.neg,.pm-analytics-amount.zero{color:inherit}
+.analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}
 /* Original balances answer "what do the direct records say", and the sentence already says which way the
    money runs ("Ww owes Hen"), so green/red here only competes with the plan card above it and reads as a
    verdict on the payment. The amounts keep the text colour and let the words carry the direction. */

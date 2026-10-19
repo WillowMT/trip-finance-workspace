@@ -651,6 +651,10 @@ test('the balance-by-person view says who owes whom instead of leaning on colour
     assert.ok(html.includes("me+' owes '+pr.counterparty"), 'and the other direction too');
     assert.ok(html.includes('Direct records between people. Not always a payment you owe.'), 'the section says what it is');
     assert.ok(html.includes('.pm-relations .amt,.pm-relations .amt.pos,.pm-relations .amt.neg,.pm-relations .amt.zero{color:inherit}'), 'original balances keep the text colour: the sentence already says who owes whom');
+    assert.ok(html.includes('.pm-analytics-amount,.pm-analytics-amount.pos,.pm-analytics-amount.neg,.pm-analytics-amount.zero{color:inherit}'), 'activity totals keep the text colour too, so only the plan is coloured');
+    assert.ok(html.includes('.analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}'),
+      'the activity cards lose their green/red tint as well, so the block reads as reference material');
+    assert.ok(html.includes('.analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}'), 'activity cards are not tinted green or red');
     assert.ok(html.includes('red <b>−</b> is a repayment coming back'), 'and so is red');
     assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
     assert.ok(html.includes("label=meName+' paid for '+other"), 'the summary lines name the person instead of saying "them"');
