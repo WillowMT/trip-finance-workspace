@@ -654,6 +654,8 @@ test('the balance-by-person view says who owes whom instead of leaning on colour
     assert.ok(html.includes('.pm-analytics-amount,.pm-analytics-amount.pos,.pm-analytics-amount.neg,.pm-analytics-amount.zero{color:inherit}'), 'activity totals keep the text colour too, so only the plan is coloured');
     assert.ok(html.includes('.analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}'),
       'the activity cards lose their green/red tint as well, so the block reads as reference material');
+    assert.ok(html.includes('.pm-relations .r-amt,.pm-relations .r-amt.pos,.pm-relations .r-amt.neg,.pm-analytics .r-amt,.pm-analytics .r-amt.pos,.pm-analytics .r-amt.neg{color:inherit}'),
+      'record rows inside the drawer stay plain too: the row already says who paid for whom');
     assert.ok(html.includes('.analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}'), 'activity cards are not tinted green or red');
     assert.ok(html.includes('red <b>−</b> is a repayment coming back'), 'and so is red');
     assert.ok(html.includes('Green <b>+</b> is a debt someone owes the payer'), 'the ledger legend uses the same vocabulary');
@@ -800,7 +802,8 @@ test('a person summary reports what they fronted, what was covered for them, and
     assert.deepEqual({ direction: summary.recent[0].direction, amount_label: summary.recent[0].counterparty }, { direction: 'settled_in', amount_label: 'Lin' });
     assert.deepEqual(summary.breakdown.paid_for.map((row) => row.topic), ['Snacks', 'Dinner'], 'what Ada paid for lists debts they fronted');
     assert.deepEqual(summary.breakdown.covered_for_them.map((row) => row.topic), ['Taxi'], 'what was paid for Ada lists debts another person fronted');
-    assert.deepEqual(summary.breakdown.settlements.map((row) => ({ topic: row.topic, direction: row.direction, kind: row.entry_kind })), [{ topic: 'Transfer', direction: 'settled_in', kind: 'payment' }], 'payments and offsets use the settlement list');
+    assert.deepEqual(summary.breakdown.settlements.map((row) => ({ topic: row.topic, direction: row.direction, kind: row.entry_kind })), [{ topic: 'Transfer', direction: 'settled_in', kind: 'payment' }], 'repayments use the settlement list');
+    assert.ok(summary.breakdown.paid_for.concat(summary.breakdown.covered_for_them, summary.breakdown.settlements).every((row) => row.entry_kind !== 'offset'), 'offset bookkeeping never appears as a record a person made');
 
     const removed = await request(`${api}/transactions/${taxi.transaction.id}`, { method: 'DELETE' });
     assert.ok(removed.status < 300, `archiving should succeed (${removed.status})`);
@@ -867,6 +870,36 @@ type BackupBody = {
   configured: boolean;
   keep: number;
 };
+
+test('offset bookkeeping stays out of the person summary while still settling the money', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', category: 'Food', currency_code: 'USD', ...body }) });
+    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 6000, topic: 'Dinner' });
+    await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 4000, topic: 'Taxi' });
+    const ledgerRows = (await (await request(`${api}/transactions`)).json() as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions;
+    assert.equal(ledgerRows.filter((row) => row.entry_kind === 'offset').length, 2, 'netting wrote one offset per direction');
+
+    type Summary = {
+      totals: { currency_code: string; net_minor: number; entries: number }[];
+      counterparties: { counterparty: string; net_minor: number; records: number }[];
+      breakdown: { paid_for: { entry_kind: string }[]; covered_for_them: { entry_kind: string }[]; settlements: { entry_kind: string }[] };
+      recent: { entry_kind: string }[];
+      records: { active: number; archived: number };
+    };
+    const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
+    const usd = summary.totals.find((row) => row.currency_code === 'USD')!;
+    assert.equal(usd.net_minor, 2000, 'the money still settles: the offsets cancel the overlap and 20.00 is left owed to Ada');
+    const everyListed = summary.breakdown.paid_for.concat(summary.breakdown.covered_for_them, summary.breakdown.settlements);
+    assert.equal(everyListed.some((row) => row.entry_kind === 'offset'), false, 'no list shows an offset row');
+    assert.equal(summary.recent.some((row) => row.entry_kind === 'offset'), false, 'recent activity hides them too');
+    assert.equal(summary.counterparties.find((row) => row.counterparty === 'Lin')!.records, 2, 'only the two debts count as records');
+    assert.equal(summary.records.active, 2, 'offset rows are not counted as records either');
+  });
+});
 
 test('automatic backups snapshot the workspace every N transactions and restore into a fresh workspace', async () => {
   await withWorkspaceApi(async (request, query) => {

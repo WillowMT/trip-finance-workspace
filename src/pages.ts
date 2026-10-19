@@ -237,6 +237,9 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
    it points. Colour is reserved for the plan lines, which are the only actionable numbers here. */
 .pm-analytics-amount,.pm-analytics-amount.pos,.pm-analytics-amount.neg,.pm-analytics-amount.zero{color:inherit}
 .analytics-item.in,.analytics-item.out{background:var(--surface);border-color:var(--line)}
+/* Record rows are history, not a balance to act on, so their amounts stay plain as well: each row's own
+   words ("Ww paid for Hen", "Hen paid Ww back", "offset") already say which way the money went. */
+.pm-relations .r-amt,.pm-relations .r-amt.pos,.pm-relations .r-amt.neg,.pm-analytics .r-amt,.pm-analytics .r-amt.pos,.pm-analytics .r-amt.neg{color:inherit}
 /* Original balances answer "what do the direct records say", and the sentence already says which way the
    money runs ("Ww owes Hen"), so green/red here only competes with the plan card above it and reads as a
    verdict on the payment. The amounts keep the text colour and let the words carry the direction. */

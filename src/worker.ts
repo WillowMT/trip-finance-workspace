@@ -545,17 +545,24 @@ async function handle(request: Request, env: Env): Promise<Response> {
       // repayment as 'paid_for' made a person's net grow every time somebody paid them back.
       const settled = row.amount_minor < 0 || row.entry_kind === 'payment';
       const direction = settled ? (outgoing ? 'settled_in' : 'settled_out') : outgoing ? 'paid_for' : 'covered_for_them';
-      if (row.is_deleted === 1) archivedRecords += 1; else activeRecords += 1;
+      const bookkeepingRow = row.entry_kind === 'offset';
+      if (!bookkeepingRow) { if (row.is_deleted === 1) archivedRecords += 1; else activeRecords += 1; }
       if (row.is_deleted === 1) {
         // Archived rows stay out of the money, but the pair still reports that they exist.
         const archivedKey = `${row.currency_code}:${counterpartyId}`;
         const archivedPair = pairs.get(archivedKey) ?? { counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', currency_code: row.currency_code, paid_for_minor: 0, covered_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, records: 0, archived_records: 0 };
-        archivedPair.archived_records += 1;
+        if (row.entry_kind !== 'offset') archivedPair.archived_records += 1;
         pairs.set(archivedKey, archivedPair);
       }
       const record: SummaryRecord = { id: row.id, occurred_on: row.occurred_on, entry_kind: row.entry_kind, topic: row.topic, category: row.category, currency_code: row.currency_code, amount_minor: row.amount_minor, direction, counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', notes: row.notes, is_deleted: row.is_deleted };
-      if (direction === 'paid_for') breakdown.paid_for.push(record); else if (direction === 'covered_for_them') breakdown.covered_for_them.push(record); else breakdown.settlements.push(record);
-      if (recent.length < 25) recent.push(record);
+      // An offset row is netting bookkeeping written by the offset tool, not something a person did, so it never
+      // appears in this drawer's record lists or its record counts. Its money still counts in the totals below,
+      // because those rows are exactly what cancels the reciprocal debts.
+      const bookkeeping = row.entry_kind === 'offset';
+      if (!bookkeeping) {
+        if (direction === 'paid_for') breakdown.paid_for.push(record); else if (direction === 'covered_for_them') breakdown.covered_for_them.push(record); else breakdown.settlements.push(record);
+        if (recent.length < 25) recent.push(record);
+      }
       if (row.is_deleted === 1) continue; // archived rows stay visible as history but never move a balance
       const total = totals.get(row.currency_code) ?? { currency_code: row.currency_code, paid_for_minor: 0, covered_for_them_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, entries: 0 };
       total.entries += 1;
@@ -568,7 +575,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       const pairKey = `${row.currency_code}:${counterpartyId}`;
       const pair = pairs.get(pairKey) ?? { counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', currency_code: row.currency_code, paid_for_minor: 0, covered_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, records: 0, archived_records: 0 };
       if (direction === 'paid_for') pair.paid_for_minor += row.amount_minor; else if (direction === 'covered_for_them') pair.covered_minor += row.amount_minor; else if (direction === 'settled_out') pair.settled_out_minor += Math.abs(row.amount_minor); else pair.settled_in_minor += Math.abs(row.amount_minor);
-      pair.net_minor = pair.paid_for_minor - pair.covered_minor - pair.settled_in_minor + pair.settled_out_minor; pair.records += 1; pairs.set(pairKey, pair);
+      pair.net_minor = pair.paid_for_minor - pair.covered_minor - pair.settled_in_minor + pair.settled_out_minor; if (!bookkeepingRow) pair.records += 1; pairs.set(pairKey, pair);
     }
     const activePartners = roster.results.filter((entry) => entry.id !== person.id && entry.is_archived === 0);
     const currencies = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0 ORDER BY code').bind(workspace.id).all<{ code: string }>();
