@@ -244,6 +244,18 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
    money runs ("Ww owes Hen"), so green/red here only competes with the plan card above it and reads as a
    verdict on the payment. The amounts keep the text colour and let the words carry the direction. */
 .pm-relations .amt,.pm-relations .amt.pos,.pm-relations .amt.neg,.pm-relations .amt.zero{color:inherit}
+.pm-full-history{margin-top:var(--sp-4)}
+.pm-full-history h3{margin-bottom:var(--sp-3)}
+.pm-history-group{margin-top:var(--sp-4);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
+.pm-history-heading{display:flex;justify-content:space-between;gap:var(--sp-4);margin:0;padding:var(--sp-4) var(--sp-5);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;background:var(--surface)}
+.pm-history-heading span{color:var(--muted);font-weight:500;white-space:nowrap}
+.pm-history-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.pm-history-table{width:100%;min-width:560px;border-collapse:collapse;font-size:var(--fs-sm)}
+.pm-history-table th,.pm-history-table td{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line);text-align:left;vertical-align:top}
+.pm-history-table th{font-size:var(--fs-xs);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--card)}
+.pm-history-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.pm-history-detail{min-width:180px}.pm-history-topic{display:block;font-weight:650;overflow-wrap:anywhere}.pm-history-meta{display:block;margin-top:2px;color:var(--muted);font-size:var(--fs-xs)}
+@media(max-width:420px){.pm-history-heading{padding:var(--sp-3) var(--sp-4)}.pm-history-table th,.pm-history-table td{padding:var(--sp-3)}}
 .pair{border-top:1px solid var(--line)}
 .pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:0;padding:var(--sp-5);color:inherit;font:inherit;text-align:left;cursor:pointer}
 /* content cards are buttons too, but their text must wrap (the base button rule is nowrap) */
@@ -1059,6 +1071,39 @@ function pmSides(inLabel,inAmt,inCls,outLabel,outAmt,outCls,code,compact){
   }
   return '<div class="pm-sides">'+side(inLabel,inAmt,inCls)+side(outLabel,outAmt,outCls)+'</div>';
 }
+function personHistory(rows){
+  var byCurrency={}, codes=[];
+  for(var i=0;i<rows.length;i++){
+    var row=rows[i]; if(!row||Number(row.is_deleted)){continue}
+    var code=String(row.currency_code||'');
+    if(!byCurrency[code]){ byCurrency[code]=[]; codes.push(code) }
+    byCurrency[code].push(row);
+  }
+  codes.sort();
+  var groups=[];
+  for(var c=0;c<codes.length;c++){
+    var list=byCurrency[codes[c]];
+    list.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return Number(a.id)-Number(b.id) } return a.occurred_on<b.occurred_on?-1:1 });
+    var running=0, entries=[];
+    for(var j=0;j<list.length;j++){
+      var record=list[j], amount=Math.abs(Number(record.amount_minor)||0), impact=0;
+      if(record.direction==='paid_for'||record.direction==='settled_out'){ impact=amount }
+      else if(record.direction==='covered_for_them'||record.direction==='settled_in'){ impact=-amount }
+      running+=impact;
+      entries.push({record:record,amount_minor:impact,running_minor:running});
+    }
+    groups.push({currency_code:codes[c],net_minor:running,rows:entries});
+  }
+  return groups;
+}
+function historyDetail(record,meName){
+  if(record.entry_kind==='offset'){ return 'Offset' }
+  var other=record.counterparty||'someone';
+  if(record.direction==='paid_for'){ return meName+' paid for '+other }
+  if(record.direction==='covered_for_them'){ return other+' paid for '+meName }
+  if(record.direction==='settled_in'){ return other+' paid '+meName+' back' }
+  return meName+' paid '+other+' back';
+}
 function renderPerson(){
   var d=pmData||{}, p=d.person||{}, body=$('pm-body'), title=$('pm-title');
   if(title){ title.textContent=((p.emoji?p.emoji+' ':'')+(p.display_name||'Person'))+(p.is_archived?' (archived)':'') }
@@ -1145,6 +1190,18 @@ function renderPerson(){
     analyticsCard('paid-for','What they paid for','paid_for_minor','in',paidFor,'They have not paid for anyone yet.')+
     analyticsCard('paid-back','They were paid for','settled_in_minor','in',paidBack,'Nobody has paid them back yet.')+
     '</div></section></details>';
+  var fullHistory=personHistory(d.history||[]);
+  html+='<section class="pm-full-history"><h3 class="mt-16">Full history</h3>';
+  if(!fullHistory.length){ html+='<div class="empty">No active records for this person.</div>' }
+  for(var h=0;h<fullHistory.length;h++){
+    var group=fullHistory[h], historyRows='';
+    for(var hr=0;hr<group.rows.length;hr++){
+      var entry=group.rows[hr], record=entry.record;
+      historyRows+='<tr><td>'+esc(record.occurred_on)+'</td><td class="pm-history-detail"><span class="pm-history-topic">'+esc(record.topic)+'</span><span class="pm-history-meta">'+esc(historyDetail(record,meName))+'</span></td><td class="num">'+esc(signedMoney(entry.amount_minor,group.currency_code))+'</td><td class="num">'+esc(signedMoney(entry.running_minor,group.currency_code))+'</td></tr>';
+    }
+    html+='<section class="pm-history-group"><h4 class="pm-history-heading">'+esc(group.currency_code)+'<span>Final net '+esc(signedMoney(group.net_minor,group.currency_code))+'</span></h4><div class="pm-history-scroll"><table class="pm-history-table"><thead><tr><th scope="col">Date</th><th scope="col">Detail</th><th scope="col">Amount</th><th scope="col">Running net</th></tr></thead><tbody>'+historyRows+'</tbody></table></div></section>';
+  }
+  html+='</section>';
   var sug=d.suggestions||[];
   if(sug.length){ html+='<h3 class="mt-16">Offset these</h3>';
     for(var s=0;s<sug.length;s++){ var g=sug[s];

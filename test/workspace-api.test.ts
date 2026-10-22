@@ -1210,6 +1210,61 @@ const lift = (html: string, name: string): string => {
 // PNG IHDR stores width and height as big-endian 32-bit integers.
 const ihdr = (size: number) => [0, 0, (size >> 8) & 0xff, size & 0xff, 0, 0, (size >> 8) & 0xff, size & 0xff];
 
+test('person full history groups active records chronologically with a per-currency running net', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const html = await (await request(`/w/${secret}`)).text();
+    const personHistory = new Function(`${lift(html, 'personHistory')};return personHistory`)() as (rows: { id: number; occurred_on: string; entry_kind: string; direction: string; amount_minor: number; currency_code: string; is_deleted: number }[]) => { currency_code: string; net_minor: number; rows: { record: { id: number }; amount_minor: number; running_minor: number }[] }[];
+
+    assert.deepEqual(personHistory([
+      { id: 7, occurred_on: '2026-10-12', entry_kind: 'debt', direction: 'paid_for', amount_minor: 1000, currency_code: 'USD', is_deleted: 0 },
+      { id: 2, occurred_on: '2026-10-12', entry_kind: 'offset', direction: 'settled_out', amount_minor: -300, currency_code: 'USD', is_deleted: 0 },
+      { id: 5, occurred_on: '2026-10-13', entry_kind: 'debt', direction: 'covered_for_them', amount_minor: 100, currency_code: 'USD', is_deleted: 0 },
+      { id: 4, occurred_on: '2026-10-11', entry_kind: 'offset', direction: 'settled_in', amount_minor: -50, currency_code: 'SGD', is_deleted: 0 },
+      { id: 6, occurred_on: '2026-10-12', entry_kind: 'debt', direction: 'paid_for', amount_minor: 700, currency_code: 'SGD', is_deleted: 0 },
+      { id: 1, occurred_on: '2026-10-10', entry_kind: 'debt', direction: 'paid_for', amount_minor: 9999, currency_code: 'USD', is_deleted: 1 },
+    ]).map((group) => ({ currency_code: group.currency_code, net_minor: group.net_minor, rows: group.rows.map((row) => ({ id: row.record.id, amount_minor: row.amount_minor, running_minor: row.running_minor })) })), [
+      { currency_code: 'SGD', net_minor: 650, rows: [{ id: 4, amount_minor: -50, running_minor: -50 }, { id: 6, amount_minor: 700, running_minor: 650 }] },
+      { currency_code: 'USD', net_minor: 1200, rows: [{ id: 2, amount_minor: 300, running_minor: 300 }, { id: 7, amount_minor: 1000, running_minor: 1300 }, { id: 5, amount_minor: -100, running_minor: 1200 }] },
+    ], 'each currency is separate, date then id order is stable, offsets use their canonical direction, and archived rows are defensive exclusions');
+
+    const renderer = new Function(`
+      var pmData = null;
+      var elements = {'pm-body': {innerHTML: ''}, 'pm-title': {textContent: ''}};
+      function $(id){ return elements[id] || null }
+      function esc(value){ return String(value == null ? '' : value) }
+      function money(amount, code){ return code + ' ' + Math.abs(Number(amount) || 0) }
+      function signedMoney(amount, code){ var n = Number(amount) || 0; return (n < 0 ? '-' : '+') + code + ' ' + Math.abs(n) }
+      function settleLegs(){ return [] }
+      function settlePartners(){ return [] }
+      function name(id){ return String(id) }
+      function recRow(){ return '' }
+      ${lift(html, 'personHistory')}
+      ${lift(html, 'historyDetail')}
+      ${lift(html, 'renderPerson')}
+      return {render:function(data){ pmData = data; renderPerson(); return elements['pm-body'].innerHTML }};
+    `)() as { render: (data: Record<string, unknown>) => string };
+    const markup = renderer.render({
+      person: { id: 1, display_name: 'Ada' }, totals: [], records: { active: 2, archived: 0 }, counterparties: [], breakdown: {},
+      history: [
+        { id: 7, occurred_on: '2026-10-12', entry_kind: 'debt', direction: 'paid_for', amount_minor: 1000, currency_code: 'USD', topic: 'Lunch', counterparty: 'Lin', is_deleted: 0 },
+        { id: 2, occurred_on: '2026-10-12', entry_kind: 'offset', direction: 'settled_in', amount_minor: -300, currency_code: 'USD', topic: 'Generated pair', counterparty: 'Lin', is_deleted: 0 },
+        { id: 1, occurred_on: '2026-10-10', entry_kind: 'debt', direction: 'paid_for', amount_minor: 9999, currency_code: 'USD', topic: 'Deleted', counterparty: 'Lin', is_deleted: 1 },
+      ],
+      suggestions: [{ counterparty: 'Lin', counterparty_id: 2, offset_amount_minor: 1, currency_code: 'USD' }],
+    });
+    assert.ok(markup.indexOf('<summary>Activity</summary>') < markup.indexOf('Full history') && markup.indexOf('Full history') < markup.indexOf('Offset these'), 'the rendered history sits below Activity and before suggestions');
+    assert.match(markup, /<h3 class="mt-16">Full history<\/h3><section class="pm-history-group"><h4 class="pm-history-heading">USD<span>Final net \+USD 700<\/span><\/h4>/, 'the rendered currency heading states its final net');
+    assert.match(markup, /<th scope="col">Date<\/th><th scope="col">Detail<\/th><th scope="col">Amount<\/th><th scope="col">Running net<\/th>/, 'the rendered table names every column');
+    assert.match(markup, /class="pm-history-scroll"/, 'the rendered table has a responsive horizontal wrapper');
+    assert.ok(markup.indexOf('Generated pair') < markup.indexOf('Lunch'), 'the rendered rows retain oldest date then id order');
+    assert.match(markup, /<span class="pm-history-meta">Offset<\/span>/, 'rendered offset rows have an Offset label');
+    assert.ok(!markup.includes('Deleted'), 'the renderer defensively omits deleted history');
+    assert.equal(renderer.render({ person: { display_name: 'Ada' }, totals: [], records: {}, counterparties: [], breakdown: {}, history: [], suggestions: [] }).includes('No active records for this person.'), true, 'the rendered empty history has the exact active-records copy');
+    assert.match(html, /d\.history\|\|\[\]/, 'the modal consumes the summary history without another query');
+  });
+});
+
 test('a receipt can be logged against the ledger row it became', async () => {
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
