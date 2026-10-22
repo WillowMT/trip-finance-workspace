@@ -901,6 +901,42 @@ test('offset bookkeeping stays out of the person summary while still settling th
   });
 });
 
+test('a person summary history contains every active ledger row across counterparties and currencies', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const miaResponse = await request(`${api}/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name: 'Mia' }) });
+    assert.equal(miaResponse.status, 201);
+    const mia = await miaResponse.json() as { person: { id: number } };
+    assert.equal((await request(`${api}/currencies`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: 'SGD', is_default: false }) })).status, 201);
+    const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', category: 'Food', currency_code: 'USD', ...body }) });
+    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 6000, topic: 'Dinner' });
+    await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 4000, topic: 'Taxi' });
+    assert.equal((await post({ occurred_on: '2026-10-12', entry_kind: 'payment', creditor_person_id: ada.id, debtor_person_id: mia.person.id, amount_minor: 5000, currency_code: 'SGD', topic: 'Hotel' })).status, 201);
+    const archived = await (await post({ occurred_on: '2026-10-13', creditor_person_id: ada.id, debtor_person_id: mia.person.id, amount_minor: 900, topic: 'Archived' })).json() as { transaction: { id: number } };
+    assert.ok((await request(`${api}/transactions/${archived.transaction.id}`, { method: 'DELETE' })).status < 300);
+
+    type HistoryRow = { id: number; occurred_on: string; entry_kind: string; topic: string; currency_code: string; direction: string; counterparty: string; amount_minor: number; is_deleted: number };
+    type Summary = { history: HistoryRow[] };
+    const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
+
+    assert.deepEqual(
+      summary.history.map((row) => [row.currency_code, row.topic, row.entry_kind, row.counterparty, row.amount_minor, row.direction, row.is_deleted]),
+      [
+        ['SGD', 'Hotel', 'payment', 'Mia', -5000, 'settled_in', 0],
+        ['USD', 'Offset', 'offset', 'Lin', -4000, 'settled_out', 0],
+        ['USD', 'Offset', 'offset', 'Lin', -4000, 'settled_in', 0],
+        ['USD', 'Taxi', 'debt', 'Lin', 4000, 'covered_for_them', 0],
+        ['USD', 'Dinner', 'debt', 'Lin', 6000, 'paid_for', 0],
+      ],
+      'history is the complete active ledger, including auto-generated offsets',
+    );
+    assert.ok(summary.history.every((row) => row.is_deleted === 0), 'soft-deleted rows stay out of history');
+  });
+});
+
 test('automatic backups snapshot the workspace every N transactions and restore into a fresh workspace', async () => {
   await withWorkspaceApi(async (request, query) => {
     const secret = await createWorkspace(request);

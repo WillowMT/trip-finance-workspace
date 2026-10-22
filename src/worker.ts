@@ -534,6 +534,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     let activeRecords = 0; let archivedRecords = 0;
     type SummaryRecord = { id: number; occurred_on: string; entry_kind: string; topic: string; category: string; currency_code: string; amount_minor: number; direction: string; counterparty_id: number; counterparty: string; notes: string | null; is_deleted: number };
     const recent: SummaryRecord[] = [];
+    const history: SummaryRecord[] = [];
     // These are the full per-person history, deliberately separate from the 25-row Recent activity window.
     // A traveller asking for "all payments" must not silently lose older repayments or offset rows.
     const breakdown: { paid_for: SummaryRecord[]; covered_for_them: SummaryRecord[]; settlements: SummaryRecord[] } = { paid_for: [], covered_for_them: [], settlements: [] };
@@ -555,6 +556,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         pairs.set(archivedKey, archivedPair);
       }
       const record: SummaryRecord = { id: row.id, occurred_on: row.occurred_on, entry_kind: row.entry_kind, topic: row.topic, category: row.category, currency_code: row.currency_code, amount_minor: row.amount_minor, direction, counterparty_id: counterpartyId, counterparty: nameOf.get(counterpartyId) ?? 'Unknown', notes: row.notes, is_deleted: row.is_deleted };
+      if (row.is_deleted === 0) history.push(record);
       // An offset row is netting bookkeeping written by the offset tool, not something a person did, so it never
       // appears in this drawer's record lists or its record counts. Its money still counts in the totals below,
       // because those rows are exactly what cancels the reciprocal debts.
@@ -563,7 +565,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
         if (direction === 'paid_for') breakdown.paid_for.push(record); else if (direction === 'covered_for_them') breakdown.covered_for_them.push(record); else breakdown.settlements.push(record);
         if (recent.length < 25) recent.push(record);
       }
-      if (row.is_deleted === 1) continue; // archived rows stay visible as history but never move a balance
+      if (row.is_deleted === 1) continue; // archived rows stay out of history and never move a balance
       const total = totals.get(row.currency_code) ?? { currency_code: row.currency_code, paid_for_minor: 0, covered_for_them_minor: 0, settled_out_minor: 0, settled_in_minor: 0, net_minor: 0, entries: 0 };
       total.entries += 1;
       if (direction === 'paid_for') total.paid_for_minor += row.amount_minor; else if (direction === 'covered_for_them') total.covered_for_them_minor += row.amount_minor; else if (direction === 'settled_out') total.settled_out_minor += Math.abs(row.amount_minor); else total.settled_in_minor += Math.abs(row.amount_minor);
@@ -586,7 +588,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       const offset = Math.min(owedToThem, theyOwe);
       if (offset > 0) suggestions.push({ counterparty_id: partner.id, counterparty: partner.display_name, currency_code: currency.code, offset_amount_minor: offset, they_owe_minor: theyOwe, owed_to_them_minor: owedToThem });
     }
-    return secretResponse({ person, totals: [...totals.values()].sort((a, b) => a.currency_code.localeCompare(b.currency_code)), counterparties: [...pairs.values()].sort((a, b) => b.net_minor - a.net_minor || a.counterparty.localeCompare(b.counterparty)), suggestions, recent, breakdown, recent_limit: 25, records: { active: activeRecords, archived: archivedRecords, total: activeRecords + archivedRecords } });
+    return secretResponse({ person, totals: [...totals.values()].sort((a, b) => a.currency_code.localeCompare(b.currency_code)), counterparties: [...pairs.values()].sort((a, b) => b.net_minor - a.net_minor || a.counterparty.localeCompare(b.counterparty)), suggestions, recent, breakdown, history, recent_limit: 25, records: { active: activeRecords, archived: archivedRecords, total: activeRecords + archivedRecords } });
   }
   if (tail === 'offset-suggestions' && request.method === 'GET') {
     const people = await env.DB.prepare('SELECT id FROM workspace_people WHERE workspace_id = ? AND is_archived = 0 ORDER BY id').bind(workspace.id).all<{ id: number }>();
