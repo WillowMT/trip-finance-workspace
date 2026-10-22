@@ -245,16 +245,27 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
    verdict on the payment. The amounts keep the text colour and let the words carry the direction. */
 .pm-relations .amt,.pm-relations .amt.pos,.pm-relations .amt.neg,.pm-relations .amt.zero{color:inherit}
 .pm-full-history{margin-top:var(--sp-4)}
-.pm-full-history h3{margin-bottom:var(--sp-3)}
 .pm-history-group{margin-top:var(--sp-4);border:1px solid var(--line);border-radius:var(--r-lg);overflow:hidden}
-.pm-history-heading{display:flex;justify-content:space-between;gap:var(--sp-4);margin:0;padding:var(--sp-4) var(--sp-5);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;background:var(--surface)}
-.pm-history-heading span{color:var(--muted);font-weight:500;white-space:nowrap}
+.pm-history-heading{display:grid;grid-template-columns:1fr auto;align-items:baseline;gap:2px var(--sp-4);margin:0;padding:var(--sp-4) var(--sp-5);font-size:var(--fs-sm);font-weight:500;background:var(--surface)}
+.pm-history-currency{grid-column:1;font-weight:700;font-variant-numeric:tabular-nums}
+.pm-history-order{grid-column:1;font-size:var(--fs-xs);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+.pm-history-net{grid-column:2;grid-row:1/span 2;justify-self:end;font-size:var(--fs-lg);font-variant-numeric:tabular-nums;font-weight:800;white-space:nowrap;color:var(--ink)}
+.pm-history-net.pos{color:var(--ok)}
+.pm-history-net.neg{color:var(--bad)}
 .pm-history-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .pm-history-table{width:100%;min-width:560px;border-collapse:collapse;font-size:var(--fs-sm)}
-.pm-history-table th,.pm-history-table td{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line);text-align:left;vertical-align:top}
-.pm-history-table th{font-size:var(--fs-xs);letter-spacing:.04em;text-transform:uppercase;color:var(--muted);background:var(--card)}
+.pm-history-table th,.pm-history-table td{padding:var(--sp-3) var(--sp-5);border-top:1px solid var(--line);text-align:left;vertical-align:top}
+.pm-history-table th{font-size:var(--fs-xs);letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:700;background:var(--card)}
 .pm-history-table .num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-.pm-history-detail{min-width:180px}.pm-history-topic{display:block;font-weight:650;overflow-wrap:anywhere}.pm-history-meta{display:block;margin-top:2px;color:var(--muted);font-size:var(--fs-xs)}
+.pm-history-date{color:var(--muted);white-space:nowrap;font-variant-numeric:tabular-nums}
+.pm-history-detail{min-width:200px}
+.pm-history-kind{display:inline-block;margin-right:var(--sp-3);padding:1px var(--sp-2);border:1px solid var(--line-strong);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);font-size:var(--fs-xs);font-weight:700;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
+.pm-history-event{font-weight:650;overflow-wrap:anywhere}
+.pm-history-note{display:block;margin-top:2px;color:var(--muted);font-size:var(--fs-xs)}
+.pm-history-amount{font-weight:700}
+.pm-history-amount.pos{color:var(--ok)}
+.pm-history-amount.neg{color:var(--bad)}
+.pm-history-balance{color:var(--muted)}
 @media(max-width:420px){.pm-history-heading{padding:var(--sp-3) var(--sp-4)}.pm-history-table th,.pm-history-table td{padding:var(--sp-3)}}
 .pair{border-top:1px solid var(--line)}
 .pair-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-4);width:100%;background:none;border:0;border-radius:0;padding:var(--sp-5);color:inherit;font:inherit;text-align:left;cursor:pointer}
@@ -306,13 +317,29 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .kpi-grid > *,.kpi,.total{min-width:0}
 .kpi{padding:var(--sp-4);min-width:0}
 .kpi .k-label{font-size:var(--fs-2xs);text-transform:uppercase;letter-spacing:.04em;color:var(--muted);font-weight:700;line-height:1.25}
-.person-card{display:flex;align-items:center;gap:var(--sp-4);width:100%;text-align:left;background:transparent;color:inherit;border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-2);font:inherit;cursor:pointer;transition:border-color var(--dur) var(--ease),background var(--dur) var(--ease)}
-.person-card:hover{background:transparent;border-color:var(--brand)}
+.bal-label{margin:0 0 var(--sp-2);font-size:var(--fs-xs);font-weight:750;letter-spacing:.11em;text-transform:uppercase;color:var(--muted)}
+.bal-legend{margin:0 0 var(--sp-3);max-width:56ch;color:var(--muted);font-size:var(--fs-sm);line-height:1.45}
+#balance-people{border-top:1px solid var(--line)}
+.person-card{display:flex;align-items:center;gap:var(--sp-4);width:100%;text-align:left;background:transparent;color:inherit;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:var(--sp-4) 0;margin:0;font:inherit;cursor:pointer;transition:background var(--dur) var(--ease)}
+.person-card:hover{background:transparent;border-color:var(--line)}
+.person-card:focus-visible{outline:2px solid var(--brand);outline-offset:-2px}
 .person-card.archived{opacity:.6}
+.person-card .p-chev{flex:0 0 auto;width:var(--ctl-sm);height:var(--ctl-sm);display:flex;align-items:center;justify-content:center;border:1px solid var(--line-strong);border-radius:50%;color:var(--muted);font-size:var(--fs-sm);line-height:1}
 .person-card .avatar{flex:0 0 var(--avatar);width:var(--avatar);height:var(--avatar);border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--surface);color:var(--brand);font-weight:800;font-size:var(--fs-sm)}
 .person-card .p-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
-.person-card .p-nets{display:flex;flex-wrap:wrap;gap:var(--sp-3);margin-top:3px}
-.person-card .chev{color:var(--muted);font-size:var(--fs-xl);line-height:1;flex:0 0 auto}
+.person-card .who{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;letter-spacing:.045em;text-transform:uppercase;overflow-wrap:anywhere}
+.person-card .p-nets{flex:0 0 auto;margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;gap:2px;text-align:right}
+.person-card .p-net{font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap;color:var(--ink)}
+.person-card .p-net.pos{color:var(--ok)}
+.person-card .p-net.neg{color:var(--bad)}
+.person-card .p-net.sub{font-size:var(--fs-sm);font-weight:600}
+.person-card .p-settled{color:var(--muted);font-size:var(--fs-sm);font-weight:600}
+.settle-row{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
+.settle-names{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:var(--sp-2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;letter-spacing:.045em;text-transform:uppercase;overflow-wrap:anywhere}
+.settle-arrow{color:var(--muted);font-weight:500}
+.settle-amt{flex:0 0 auto;font-variant-numeric:tabular-nums;font-weight:700;white-space:nowrap}
+.settle-btn{flex:0 0 auto;width:auto;min-height:var(--ctl-sm);padding:0 var(--sp-5);border-radius:var(--r-pill);background:transparent;color:var(--brand);border:1px solid var(--brand);font-size:var(--fs-sm);font-weight:650}
+.settle-btn:hover{background:var(--brand);color:var(--brand-ink)}
 .emoji-edit{display:flex;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3)}
 #s-people input.emoji-input{width:var(--emoji-w);min-height:var(--ctl-sm);padding:0 var(--sp-3);text-align:center;font-size:var(--fs-lg)}
 .people-actions{display:flex;gap:var(--sp-3);align-items:center;flex-wrap:wrap;margin:0 0 var(--sp-3)}
@@ -945,16 +972,28 @@ async function loadBalances(){
     counts[t.debtor_person_id]=(counts[t.debtor_person_id]||0)+1;
   }
   box.innerHTML='';
+  /* The row answers where this person stands, per currency, without opening the drawer. The default
+     currency leads and the rest trail in smaller type, so a long SGD tail never competes with VND. */
+  var nets=netsByCurrency(txs), netCodes=Object.keys(nets).sort();
+  var defaultCode=((currencies.filter(function(c){return c.is_default})[0])||currencies[0]||{}).code||netCodes[0]||'';
   var order=people.slice().sort(function(a,b){ return (a.is_archived?1:0)-(b.is_archived?1:0) || String(a.display_name).localeCompare(String(b.display_name)) });
   if(!order.length){ box.innerHTML='<div class="empty">No people yet — add them in Settings.</div>'; return }
   for(var j=0;j<order.length;j++){ var p=order[j], count=counts[p.id]||0;
     var el=document.createElement('button'); el.type='button';
     el.className='person-card'+(p.is_archived?' archived':''); el.setAttribute('data-person',p.id); el.setAttribute('aria-haspopup','dialog');
-    el.innerHTML='<span class="avatar" aria-hidden="true">'+esc(p.emoji||initials(p.display_name))+'</span>'+
+    var cells=[];
+    for(var nc=0;nc<netCodes.length;nc++){ var ncCode=netCodes[nc], ncNet=(nets[ncCode]&&nets[ncCode][p.id])||0;
+      if(ncNet){ cells.push({code:ncCode,net_minor:ncNet}) } }
+    cells.sort(function(a,b){ return (b.code===defaultCode?1:0)-(a.code===defaultCode?1:0)||String(a.code).localeCompare(String(b.code)) });
+    var netsHtml='';
+    for(var nci=0;nci<cells.length;nci++){ var cell=cells[nci];
+      netsHtml+='<span class="p-net '+(cell.net_minor>0?'pos':'neg')+(nci?' sub':'')+'">'+esc((cell.net_minor>0?'+':'−')+money(Math.abs(cell.net_minor),cell.code))+'</span>';
+    }
+    el.innerHTML='<span class="p-chev" aria-hidden="true">›</span>'+
       '<span class="p-main"><span class="who">'+esc(p.display_name)+(p.is_archived?' <span class="chip">archived</span>':'')+'</span>'+
       '<span class="meta">'+count+' record'+(count===1?'':'s')+'</span>'+
       '</span>'+
-      '<span class="chev" aria-hidden="true">›</span>';
+      '<span class="p-nets">'+(netsHtml||'<span class="p-settled">settled</span>')+'</span>';
     box.appendChild(el);
   }
   renderSettle(txs);
@@ -1096,11 +1135,16 @@ function personHistory(rows){
   }
   return groups;
 }
-function historyDetail(record,meName){
+function historyKind(record){
   if(record.entry_kind==='offset'){ return 'Offset' }
+  if(record.entry_kind==='payment'){ return 'Payment' }
+  return 'Bill share';
+}
+function historyDetail(record,meName){
+  if(record.entry_kind==='offset'){ return meName+' and '+((record.counterparty)||'someone')+' netted' }
   var other=record.counterparty||'someone';
-  if(record.direction==='paid_for'){ return meName+' paid for '+other }
-  if(record.direction==='covered_for_them'){ return other+' paid for '+meName }
+  if(record.direction==='paid_for'){ return meName+' paid · '+other+"'s share" }
+  if(record.direction==='covered_for_them'){ return other+' paid · '+meName+"'s share" }
   if(record.direction==='settled_in'){ return other+' paid '+meName+' back' }
   return meName+' paid '+other+' back';
 }
@@ -1197,9 +1241,19 @@ function renderPerson(){
     var group=fullHistory[h], historyRows='';
     for(var hr=0;hr<group.rows.length;hr++){
       var entry=group.rows[hr], record=entry.record;
-      historyRows+='<tr><td>'+esc(record.occurred_on)+'</td><td class="pm-history-detail"><span class="pm-history-topic">'+esc(record.topic)+'</span><span class="pm-history-meta">'+esc(historyDetail(record,meName))+'</span></td><td class="num">'+esc(signedMoney(entry.amount_minor,group.currency_code))+'</td><td class="num">'+esc(signedMoney(entry.running_minor,group.currency_code))+'</td></tr>';
+      var amountCls=entry.amount_minor>0?'pos':(entry.amount_minor<0?'neg':'');
+      historyRows+='<tr><td class="pm-history-date">'+esc(record.occurred_on)+'</td>'+
+        '<td class="pm-history-detail"><span class="pm-history-kind">'+esc(historyKind(record))+'</span>'+
+        '<span class="pm-history-event">'+esc(historyDetail(record,meName))+'</span>'+
+        (record.topic?'<span class="pm-history-note">'+esc(record.topic)+'</span>':'')+'</td>'+
+        '<td class="num pm-history-amount '+amountCls+'">'+esc(signedMoney(entry.amount_minor,group.currency_code))+'</td>'+
+        '<td class="num pm-history-balance">'+esc(signedMoney(entry.running_minor,group.currency_code))+'</td></tr>';
     }
-    html+='<section class="pm-history-group"><h4 class="pm-history-heading">'+esc(group.currency_code)+'<span>Final net '+esc(signedMoney(group.net_minor,group.currency_code))+'</span></h4><div class="pm-history-scroll"><table class="pm-history-table"><thead><tr><th scope="col">Date</th><th scope="col">Detail</th><th scope="col">Amount</th><th scope="col">Running net</th></tr></thead><tbody>'+historyRows+'</tbody></table></div></section>';
+    html+='<section class="pm-history-group"><h4 class="pm-history-heading">'+
+      '<span class="pm-history-currency">'+esc(group.currency_code)+' · '+group.rows.length+' record'+(group.rows.length===1?'':'s')+'</span>'+
+      '<span class="pm-history-order">Oldest → newest</span>'+
+      '<b class="pm-history-net '+(group.net_minor>0?'pos':(group.net_minor<0?'neg':''))+'">'+esc(signedMoney(group.net_minor,group.currency_code))+'</b></h4>'+
+      '<div class="pm-history-scroll"><table class="pm-history-table"><thead><tr><th scope="col">Date</th><th scope="col">Detail</th><th scope="col" class="num">Amount</th><th scope="col" class="num">Balance</th></tr></thead><tbody>'+historyRows+'</tbody></table></div></section>';
   }
   html+='</section>';
   var sug=d.suggestions||[];
@@ -1843,9 +1897,9 @@ function renderSettle(rows){
       var p=plan[i];
       settleAdd(code,p.from_person_id,p.to_person_id,p.amount_minor);
       settleAdd(code,p.to_person_id,p.from_person_id,p.amount_minor);
-      html+='<div class="row"><div class="row-main"><div class="who">'+esc(name(p.from_person_id))+' pays '+esc(name(p.to_person_id))+'</div></div>'+
-        '<div class="row-side"><div class="amt">'+esc(money(p.amount_minor,code))+'</div>'+
-        '<button class="mini" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div></div>';
+      html+='<div class="settle-row"><span class="settle-names">'+esc(name(p.from_person_id))+'<span class="settle-arrow" aria-hidden="true">→</span>'+esc(name(p.to_person_id))+'</span>'+
+        '<span class="settle-amt">'+esc(money(p.amount_minor,code))+'</span>'+
+        '<button class="settle-btn" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div>';
     }
   }
   box.innerHTML=html||'<div class="empty">Everyone is square — nothing to settle.</div>';
@@ -2426,8 +2480,8 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 </section>
 
 <section id="balances" hidden>
-  <div class="card"><h2><span aria-hidden="true">💸</span> Settle Up</h2><p class="hint">Who pays whom, and how much. Tap Record to log it.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
-  <div class="card"><h2><span aria-hidden="true">🧑‍🤝‍🧑</span> People</h2><div id="balance-people"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2 class="bal-label">Settle Up</h2><p class="bal-legend">Fewest transfers that clear the group. Tap Record to log one.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
+  <div class="card"><h2 class="bal-label">People</h2><p class="bal-legend">Amounts are what the group owes each person. Negative means they owe the group.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
   <div class="card" id="offset-card" hidden><h2><span aria-hidden="true">🤝</span> Offset balances</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
     <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
 </section>

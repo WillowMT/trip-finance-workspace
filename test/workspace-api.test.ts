@@ -1240,6 +1240,7 @@ test('person full history groups active records chronologically with a per-curre
       function name(id){ return String(id) }
       function recRow(){ return '' }
       ${lift(html, 'personHistory')}
+      ${lift(html, 'historyKind')}
       ${lift(html, 'historyDetail')}
       ${lift(html, 'renderPerson')}
       return {render:function(data){ pmData = data; renderPerson(); return elements['pm-body'].innerHTML }};
@@ -1254,11 +1255,12 @@ test('person full history groups active records chronologically with a per-curre
       suggestions: [{ counterparty: 'Lin', counterparty_id: 2, offset_amount_minor: 1, currency_code: 'USD' }],
     });
     assert.ok(markup.indexOf('<summary>Activity</summary>') < markup.indexOf('Full history') && markup.indexOf('Full history') < markup.indexOf('Offset these'), 'the rendered history sits below Activity and before suggestions');
-    assert.match(markup, /<h3 class="mt-16">Full history<\/h3><section class="pm-history-group"><h4 class="pm-history-heading">USD<span>Final net \+USD 700<\/span><\/h4>/, 'the rendered currency heading states its final net');
-    assert.match(markup, /<th scope="col">Date<\/th><th scope="col">Detail<\/th><th scope="col">Amount<\/th><th scope="col">Running net<\/th>/, 'the rendered table names every column');
+    assert.match(markup, /<h3 class="mt-16">Full history<\/h3><section class="pm-history-group"><h4 class="pm-history-heading"><span class="pm-history-currency">USD · 2 records<\/span><span class="pm-history-order">Oldest → newest<\/span><b class="pm-history-net pos">\+USD 700<\/b><\/h4>/, 'the rendered currency heading counts its rows, states its order, and states its final net');
+    assert.match(markup, /<th scope="col">Date<\/th><th scope="col">Detail<\/th><th scope="col" class="num">Amount<\/th><th scope="col" class="num">Balance<\/th>/, 'the rendered table names every column');
     assert.match(markup, /class="pm-history-scroll"/, 'the rendered table has a responsive horizontal wrapper');
     assert.ok(markup.indexOf('Generated pair') < markup.indexOf('Lunch'), 'the rendered rows retain oldest date then id order');
-    assert.match(markup, /<span class="pm-history-meta">Offset<\/span>/, 'rendered offset rows have an Offset label');
+    assert.match(markup, /<span class="pm-history-kind">Offset<\/span>/, 'rendered offset rows have an Offset label');
+    assert.match(markup, /<span class="pm-history-kind">Bill share<\/span><span class="pm-history-event">Ada paid · Lin's share<\/span>/, 'a debt row names its kind and the share it moved');
     assert.ok(!markup.includes('Deleted'), 'the renderer defensively omits deleted history');
     assert.equal(renderer.render({ person: { display_name: 'Ada' }, totals: [], records: {}, counterparties: [], breakdown: {}, history: [], suggestions: [] }).includes('No active records for this person.'), true, 'the rendered empty history has the exact active-records copy');
     assert.match(html, /d\.history\|\|\[\]/, 'the modal consumes the summary history without another query');
@@ -1443,8 +1445,8 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.match(html, /id="settle-list"/, 'Settle Up has a dedicated main-page container');
     assert.match(html, /id="balance-people"/, 'people remain available as detail entry points');
     assert.ok(html.indexOf('Settle Up') < html.indexOf('id="balance-people"'), 'Settle Up is presented before the people list');
-    assert.match(html, /<h2><span aria-hidden="true">💸<\/span> Settle Up<\/h2><p class="hint">Who pays whom, and how much\. Tap Record to log it\.<\/p>/, 'Settle Up leads with a one-line description of who pays whom');
-    assert.match(html, /<h2><span aria-hidden="true">🧑‍🤝‍🧑<\/span> People<\/h2><div id="balance-people">/, 'the people card is titled People with no description paragraph');
+    assert.match(html, /<h2 class="bal-label">Settle Up<\/h2><p class="bal-legend">Fewest transfers that clear the group\. Tap Record to log one\.<\/p>/, 'Settle Up leads with a one-line description of who pays whom');
+    assert.match(html, /<h2 class="bal-label">People<\/h2><p class="bal-legend">Amounts are what the group owes each person\. Negative means they owe the group\.<\/p><div id="balance-people">/, 'the people card states what its amounts mean');
     assert.match(html, /id="offset-card" hidden/, 'the offsets card starts hidden and is only revealed when a row exists');
     assert.match(html, /oc\.hidden=!sug\.length/, 'the offsets card is hidden as soon as nothing is left to offset');
     assert.match(html, /counts\[t\.creditor_person_id\]=\(counts\[t\.creditor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its creditor');
@@ -1452,8 +1454,9 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.match(html, /if\(t\.is_deleted\)\{continue\}/, 'archived transactions stay out of card counts');
     assert.match(html, /count\+' record'\+\(count===1\?'':'s'\)/, 'person cards pluralize their non-monetary record count');
     assert.doesNotMatch(html, /Open group-settlement status, optional ledger trail, and history/, 'person cards drop the repeated description');
-    assert.match(html, /<span class="chev" aria-hidden="true">›<\/span>/, 'each compact person row ends in a chevron');
-    assert.doesNotMatch(html, /className='person-card[\s\S]{0,700}p-nets/, 'main person cards do not expose many per-person money chips');
+    assert.match(html, /<span class="p-chev" aria-hidden="true">›<\/span>/, 'each compact person row leads with a circled chevron');
+    assert.match(html, /className='person-card[\s\S]{0,1400}p-nets/, 'main person cards state each person\'s net per currency');
+    assert.match(html, /p-settled">settled<\/span>/, 'a person with no open balance reads settled instead of a zero');
     assert.match(html, /function renderSpend\(rows\)/, 'both read the ledger the page already fetched');
     assert.match(html, /data-settle="'\+/, 'each plan line records through the ordinary entry form');
     assert.match(html, /function startSettlePayment\(/, 'which prefills a repayment and opens the review sheet');
