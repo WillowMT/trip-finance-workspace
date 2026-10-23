@@ -588,6 +588,10 @@ function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria
    out of the page at boot and the keyboard/hash route is redirected, so nothing can land on a blank
    screen. Nothing is deleted — set it back to true and the whole view returns as it was. */
 var SHOW_RANKING=false;
+/* Same treatment for the two extra folds on the Transactions page: the per-day spend chart and the
+   recent-splits recap are parked so the page shows the ledger rows (and their delete buttons) only.
+   Set either back to true to bring that fold back — the renderers already no-op without a mount. */
+var SHOW_SPEND_CHART=false, SHOW_RECENT_SPLITS=false;
 
 var TABS=(function(){
   var out=[], nodes=null;
@@ -598,9 +602,12 @@ var TABS=(function(){
   return out;
 })();
 /* Removes a parked section and its nav button together, so the tablist never offers a dead target. */
+function hideNode(id){
+  var node=$(id); if(node&&node.parentNode){ node.parentNode.removeChild(node) }
+}
 function hideSection(tab){
-  var btn=$('tab-'+tab); if(btn&&btn.parentNode){ btn.parentNode.removeChild(btn) }
-  var section=$(tab); if(section&&section.parentNode){ section.parentNode.removeChild(section) }
+  hideNode('tab-'+tab);
+  hideNode(tab);
 }
 /* the drawer holds navigation, so the page it switches to is named once, plainly, next to the ☰ */
 /* classList is not guaranteed — a stripped embedder or a DOM stub can hand us a bare body — so the
@@ -2162,6 +2169,8 @@ document.addEventListener('click',async function(ev){
 });
 function init(){
   if(!SHOW_RANKING){ hideSection('ranking') }
+  if(!SHOW_SPEND_CHART){ hideNode('fold-spend') }
+  if(!SHOW_RECENT_SPLITS){ hideNode('fold-splits') }
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab); if(tab==='pay'){ payLimits() } } } });
@@ -2400,14 +2409,14 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 <div id="digest" class="card" hidden role="region" aria-label="Since your last visit"></div>
 
 <section id="ledger">
-  <details class="card fold">
+  <details class="card fold" id="fold-spend">
     <summary><h2><span aria-hidden="true">📈</span> Spend by day</h2><span class="fold-count" id="spend-count"></span></summary>
     <div class="fold-body">
       <p class="hint">What was fronted each day — money coming back (a repayment) and netting offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
       <div id="spend-chart"><div class="empty">Loading…</div></div>
     </div>
   </details>
-  <details class="card fold">
+  <details class="card fold" id="fold-tx" open>
     <summary><h2><span aria-hidden="true">📒</span> Transactions</h2><span class="fold-count" id="tx-count"></span></summary>
     <div class="fold-body">
       <p class="hint">Green <b>+</b> is a debt someone owes the payer · red <b>−</b> is a repayment coming back.</p>
@@ -2416,7 +2425,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div id="tx-pager" class="pager" hidden><button id="tx-prev" class="ghost" type="button">‹ Prev</button><span id="tx-pager-info" class="pager-info"></span><button id="tx-next" class="ghost" type="button">Next ›</button></div>
     </div>
   </details>
-  <details class="card fold">
+  <details class="card fold" id="fold-splits">
     <summary><h2><span aria-hidden="true">🕘</span> Recent splits</h2><span class="fold-count" id="splits-count"></span></summary>
     <div class="fold-body">
       <p class="hint">Latest active split records. The amount is the debt created for the payer; deleted split records stay out of this list.</p>
