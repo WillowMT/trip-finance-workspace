@@ -2381,7 +2381,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
   <details class="card fold" id="fold-spend">
     <summary><h2><span aria-hidden="true">📈</span> Spend by day</h2><span class="fold-count" id="spend-count"></span></summary>
     <div class="fold-body">
-      <p class="hint">What was fronted each day — money coming back (a repayment) and netting offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
+      <p class="hint">What was fronted each day — money coming back (a repayment) and legacy offsets are not spending. Grouped per currency, so nothing is summed across currencies.</p>
       <div id="spend-chart"><div class="empty">Loading…</div></div>
     </div>
   </details>
