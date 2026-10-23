@@ -55,56 +55,6 @@ async function seedDebt(request: (path: string, init?: RequestInit) => Promise<R
   assert.equal(response.status, 201);
 }
 
-test('offset suggestions, preview, and commit net reciprocal balances with audited atomic writes', async () => {
-  await withWorkspaceApi(async (request, query) => {
-    const secret = await createWorkspace(request);
-    const api = `/w/${secret}/api`;
-    const state = await (await request(api)).json() as { people: { id: number }[] };
-    const [ada, lin] = state.people;
-    // Automatic netting would cancel these reciprocal debts the moment they are created, so the manual
-    // suggestion flow is exercised with netting switched off (the automatic path is covered in workspace-api.test.ts).
-    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
-    // Ada owes Lin 300; Lin owes Ada 100 => reciprocal min = 100.
-    await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Hotel', category: 'Lodging', creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 300, currency_code: 'USD' });
-    await seedDebt(request, api, { occurred_on: '2026-10-09', entry_kind: 'debt', topic: 'Taxi', category: 'Transport', creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 100, currency_code: 'USD' });
-    const suggestions = await request(`${api}/offset-suggestions`);
-    assert.equal(suggestions.status, 200);
-    const suggested = await suggestions.json() as { suggestions: { first_person_id: number; second_person_id: number; first_owes_second_minor: number; second_owes_first_minor: number; offset_amount_minor: number; currency_code: string }[] };
-    assert.equal(suggested.suggestions.length, 1);
-    assert.equal(suggested.suggestions[0].offset_amount_minor, 100);
-    assert.equal(suggested.suggestions[0].currency_code, 'USD');
-
-    const beforePreview = (query('SELECT COUNT(*) AS count FROM audit_log') as { count: number }[])[0].count;
-    const preview = await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: lin.id, second_person_id: ada.id, currency_code: 'USD' }) });
-    assert.equal(preview.status, 200);
-    const planned = await preview.json() as { transactions: { entry_kind: string; amount_minor: number; creditor_person_id: number; debtor_person_id: number }[]; offset_amount_minor: number };
-    assert.equal(planned.offset_amount_minor, 100);
-    assert.equal(planned.transactions.length, 2);
-    assert.ok(planned.transactions.every((transaction) => transaction.entry_kind === 'offset' && transaction.amount_minor === -100));
-    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 2);
-    assert.equal((query('SELECT COUNT(*) AS count FROM audit_log') as { count: number }[])[0].count, beforePreview);
-
-    const invalidBody = await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: ada.id, currency_code: 'USD' }) });
-    assert.equal(invalidBody.status, 400);
-    const unknownPeople = await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: 99991, second_person_id: 99992, currency_code: 'USD' }) });
-    assert.equal(unknownPeople.status, 400);
-
-    const committed = await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'offset-1' }, body: JSON.stringify({ first_person_id: lin.id, second_person_id: ada.id, currency_code: 'USD' }) });
-    assert.equal(committed.status, 201);
-    const saved = await committed.json() as { transactions: { id: number }[]; offset_amount_minor: number };
-    assert.equal(saved.transactions.length, 2); assert.equal(saved.offset_amount_minor, 100);
-    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE entry_kind = 'offset'") as { count: number }[])[0].count, 2);
-    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'transaction' AND action = 'create' AND json_extract(after_json, '$.entry_kind') = 'offset'") as { count: number }[])[0].count, 2);
-    const duplicate = await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'offset-1' }, body: JSON.stringify({ first_person_id: lin.id, second_person_id: ada.id, currency_code: 'USD' }) });
-    assert.equal(duplicate.status, 200);
-
-    // Reciprocal balance is now zero in USD; a second offset must 409 with no new rows.
-    const empty = await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'offset-2' }, body: JSON.stringify({ first_person_id: lin.id, second_person_id: ada.id, currency_code: 'USD' }) });
-    assert.equal(empty.status, 409);
-    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE entry_kind = 'offset'") as { count: number }[])[0].count, 2);
-  });
-});
-
 test('batch preview writes nothing and batch commit revalidates every row atomically with per-row audits', async () => {
   await withWorkspaceApi(async (request, query) => {
     const secret = await createWorkspace(request);
@@ -178,15 +128,14 @@ test('CSV import preview and commit re-parse raw text server-side, reject parsed
     const saved = await committed.json() as { transactions: { topic: string; amount_minor: number }[] };
     assert.equal(saved.transactions.length, 2);
     assert.ok(saved.transactions.every((row) => row.amount_minor > 0));
-    // The two imported rows are reciprocal, so importing them nets 8.00 USD automatically:
-    // 2 imported rows + the 2 offset rows the netting writes in the same commit.
-    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 4);
+    // Reciprocal or not, an import writes exactly the rows it was given.
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 2);
     assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE import_group_id LIKE 'import:%'") as { count: number }[])[0].count, 2);
-    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE entry_kind = 'offset' AND amount_minor = -800") as { count: number }[])[0].count, 2);
-    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'transaction' AND action = 'create'") as { count: number }[])[0].count, 4);
+    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE entry_kind = 'offset'") as { count: number }[])[0].count, 0, 'an import never writes netting rows');
+    assert.equal((query("SELECT COUNT(*) AS count FROM audit_log WHERE entity_type = 'transaction' AND action = 'create'") as { count: number }[])[0].count, 2);
     const duplicate = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-1' }, body: csv });
     assert.equal(duplicate.status, 200);
-    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 4, 'a retried import must not net the same amounts twice');
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 2, 'a retried import writes nothing twice');
     const conflict = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-1' }, body: csv.replace('Brunch', 'Changed') });
     assert.equal(conflict.status, 409);
   });
@@ -209,11 +158,10 @@ const lift = (html: string, name: string): string => {
 // while the page posts it positive, and the two conventions have to read as the same repayment on every
 // surface. Under the old raw-sum math the legacy positive row ADDED 20.00 to the debt it was paying back,
 // which invented a reciprocal balance, so auto-netting cancelled money that did not exist.
-test('a repayment reduces the balance in the summary, the offsets and the plan however it is stored', async () => {
+test('a repayment reduces the balance in the summary and the plan however it is stored', async () => {
   await withWorkspaceApi(async (request, query) => {
     const secret = await createWorkspace(request);
     const api = `/w/${secret}/api`;
-    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'netting off keeps the arithmetic below exact');
     const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
     const [ada, lin] = state.people;
     const workspaceId = (query('SELECT id FROM workspaces ORDER BY id DESC LIMIT 1') as { id: number }[])[0].id;
@@ -249,17 +197,6 @@ test('a repayment reduces the balance in the summary, the offsets and the plan h
       'both repayment shapes are settlements worth 30.00 in total, so Ada owes 50.00 rather than being owed 10.00',
     );
     assert.equal(summary.counterparties.find((row) => row.counterparty === lin.display_name)!.net_minor, -5_000, 'the pair agrees with the total');
-    // Correctly read, both directions still hold a positive balance (Lin owes 20.00, Ada owes 30.00) but the
-    // repayment overshoots this way, so the netting overlap is the 30.00 Ada owes -- never a raw 20.00 + 30.00.
-    const direct = await (await request(`${api}/offset-suggestions`)).json() as { suggestions: { first_person_id: number; second_person_id: number; first_owes_second_minor: number; second_owes_first_minor: number; offset_amount_minor: number }[] };
-    for (const suggestion of direct.suggestions) {
-      assert.equal(suggestion.offset_amount_minor, Math.min(suggestion.first_owes_second_minor, suggestion.second_owes_first_minor));
-    }
-    assert.equal(
-      direct.suggestions.some((suggestion) => [suggestion.first_person_id, suggestion.second_person_id].includes(ada.id) && [suggestion.first_person_id, suggestion.second_person_id].includes(lin.id)),
-      false,
-      'one direction is in credit, so there is nothing reciprocal left to net',
-    );
 
     // The page must arrive at the same figure the drawer does, from the same rows.
     const html = await (await request(`/w/${secret}`)).text();

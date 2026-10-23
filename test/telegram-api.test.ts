@@ -545,7 +545,7 @@ test('committed writes are announced, previews and refused writes are not, and a
     await waitFor(() => bot.sentMatching('🗄️ Removed — Lin owes Ada USD 50.00').length === 1, 'an archive should be announced');
     assert.equal((await request(`/w/${secret}/api/transactions/${transactionId}/restore`, { method: 'POST' })).status, 200);
     await waitFor(() => bot.sentMatching('♻️ Restored — Lin owes Ada USD 50.00').length === 1, 'a restore should be announced');
-    assert.equal((await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
+    assert.equal((await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { categories: ['Food', 'Transport', 'Lodging'] } }) })).status, 200);
     await waitFor(() => bot.sentMatching('setup was changed').length === 1, 'a settings change should be announced');
 
     // A repayment reads the other way round: the debtor is the one who handed the money over.
@@ -1087,7 +1087,7 @@ test('/chart draws both gross sides per person and marks the net that settles th
     assert.equal(photo.chat_id, String(chatId));
     assert.deepEqual(photo.bytes.slice(0, 4), [137, 80, 78, 71], 'the photo is a PNG');
     assert.match(photo.caption ?? '', /Chart trip — USD/);
-    assert.match(photo.caption ?? '', /◆ is the net after netting/);
+    assert.match(photo.caption ?? '', /◆ is the net balance/);
     assert.equal((photo.caption ?? '').includes('/w/'), false, 'the caption carries no workspace link');
 
     // What the renderer was asked to draw: the debtor's 50.00 on the owe side, the creditor's on the other,

@@ -155,7 +155,6 @@ const NO_DECIMAL_CURRENCIES = ['BIF', 'CLP', 'DJF', 'GNF', 'HUF', 'ISK', 'JPY', 
 
 const SETTING_LABELS: Record<string, string> = {
   timezone: 'Time zone',
-  auto_offset: 'Automatic netting',
   backup_every: 'Backup every',
   categories_json: 'Categories',
   small_amount_guard_json: 'Small-amount guard',
@@ -956,7 +955,7 @@ async function handleChart(env: TelegramEnv, connection: { id: number; workspace
     const open = book.filter((person) => person.net !== 0).length;
     const caption = `📊 ${trip} — ${currency}\n`
       + 'Each row starts at zero: left is everything that person owes, right is everything they are owed.\n'
-      + `Bars are labelled in ${currency}; ◆ is the net after netting. ${book.length} people · ${open} with a balance`;
+      + `Bars are labelled in ${currency}; ◆ is the net balance. ${book.length} people · ${open} with a balance`;
     const result = await sendPhoto(env, chatId, png, caption);
     if (result.ok) sent += 1;
   }
@@ -1521,8 +1520,7 @@ function settingLines(rows: AuditRow[]): string[] {
       for (const [key, label] of Object.entries(SETTING_LABELS)) {
         if (!changed(before, after, key)) continue;
         const value = after[key];
-        if (key === 'auto_offset') push(label, Number(value) === 1 || value === true ? 'On' : 'Off');
-        else if (key === 'backup_every') {
+        if (key === 'backup_every') {
           const count = Number(value) || 0;
           push(label, count > 0 ? `Every ${count} ledger rows` : 'Off');
         } else if (key === 'categories_json') {

@@ -532,63 +532,30 @@ test('the import instructions follow the live people and currency roster', async
   });
 });
 
-test('a new transaction nets the reciprocal balance between two people automatically', async () => {
-  await withWorkspaceApi(async (request, query) => {
-    const secret = await createWorkspace(request);
-    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[] };
-    const [ada, lin] = state.people;
-    const post = (body: Record<string, unknown>) => request(`/w/${secret}/api/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-10', entry_kind: 'debt', topic: 'Entry', category: 'Food', currency_code: 'USD', ...body }) });
-    const ledger = async () => ((await (await request(`/w/${secret}/api/transactions`)).json()) as {
-      transactions: { entry_kind: string; amount_minor: number; creditor_person_id: number; debtor_person_id: number; notes: string | null; import_group_id: string | null }[];
-    }).transactions;
-    const offsets = (rows: Awaited<ReturnType<typeof ledger>>) => rows.filter((row) => row.entry_kind === 'offset');
-    const owes = (rows: Awaited<ReturnType<typeof ledger>>, creditor: number, debtor: number) => rows.filter((row) => row.creditor_person_id === creditor && row.debtor_person_id === debtor).reduce((sum, row) => sum + row.amount_minor, 0);
-
-    const oneWay = await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 4000 });
-    assert.equal(oneWay.status, 201);
-    assert.equal(((await oneWay.json()) as { netted_pairs: number }).netted_pairs, 0, 'one direction alone has nothing to offset');
-    assert.equal(offsets(await ledger()).length, 0);
-
-    const reverse = await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 2500 });
-    assert.equal(reverse.status, 201);
-    assert.equal(((await reverse.json()) as { netted_pairs: number }).netted_pairs, 1, 'the reverse debt creates an offsettable overlap');
-    const rows = await ledger();
-    const netted = offsets(rows);
-    assert.equal(netted.length, 2, 'netting writes one offset per direction');
-    assert.deepEqual(netted.map((row) => row.amount_minor), [-2500, -2500], 'only the overlapping amount is offset');
-    assert.equal(netted.every((row) => row.notes === 'Automatic bilateral netting'), true);
-    assert.equal(netted.every((row) => row.import_group_id === `auto-offset:USD:${ada.id}-${lin.id}`), true);
-    assert.equal(owes(rows, ada.id, lin.id), 1500, 'the unmatched remainder stays outstanding');
-    assert.equal(owes(rows, lin.id, ada.id), 0, 'the offset side is cleared');
-    assert.equal(Number((query("SELECT COUNT(*) AS n FROM audit_log WHERE entity_type = 'transaction'")[0] as { n: number }).n), 4, 'the automatic offsets are audited');
-
-    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 1000 });
-    assert.equal(offsets(await ledger()).length, 2, 'netting converges: no overlap means no new offsets');
-    const again = await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 1000 });
-    assert.equal(((await again.json()) as { netted_pairs: number }).netted_pairs, 1);
-    const after = await ledger();
-    assert.deepEqual(offsets(after).map((row) => row.amount_minor), [-1000, -1000, -2500, -2500], 'the ledger lists newest first, so the latest offset pair leads');
-    assert.equal(owes(after, ada.id, lin.id), 1500, 'Lin still owes Ada the unmatched remainder');
-    assert.equal(owes(after, lin.id, ada.id), 0, 'the offset side is cleared');
-  });
-});
-
-test('automatic netting is on by default and can be switched off per workspace', async () => {
+test('reciprocal debts are left exactly as recorded: the offset tool is gone', async () => {
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
-    const state = await (await request(`/w/${secret}/api`)).json() as { people: { id: number }[]; settings: { auto_offset: number; timezone: string } };
-    assert.equal(state.settings.auto_offset, 1, 'netting is on by default');
-    assert.equal((await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200);
-    const after = await (await request(`/w/${secret}/api`)).json() as { settings: { auto_offset: number; timezone: string } };
-    assert.equal(after.settings.auto_offset, 0);
-    assert.equal(after.settings.timezone, state.settings.timezone, 'a partial settings patch must not clear the time zone');
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number }[]; settings: Record<string, unknown> };
     const [ada, lin] = state.people;
-    const post = (body: Record<string, unknown>) => request(`/w/${secret}/api/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-10', entry_kind: 'debt', topic: 'Entry', category: 'Food', currency_code: 'USD', ...body }) });
-    assert.equal(((await (await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 4000 })).json()) as { netted_pairs: number }).netted_pairs, 0);
-    assert.equal(((await (await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 2500 })).json()) as { netted_pairs: number }).netted_pairs, 0, 'netting stays off when the workspace says so');
-    const rows = ((await (await request(`/w/${secret}/api/transactions`)).json()) as { transactions: { entry_kind: string }[] }).transactions;
-    assert.equal(rows.length, 2);
-    assert.equal(rows.filter((row) => row.entry_kind === 'offset').length, 0);
+    assert.equal('auto_offset' in state.settings, false, 'the netting switch is gone from the workspace state');
+    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 400, 'the retired switch is not accepted any more');
+
+    const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-10', entry_kind: 'debt', topic: 'Entry', category: 'Food', currency_code: 'USD', ...body }) });
+    const first = await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 4000 });
+    assert.equal(first.status, 201);
+    assert.equal('netted_pairs' in ((await first.json()) as Record<string, unknown>), false, 'the write no longer reports netting');
+    assert.equal((await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 2500 })).status, 201);
+
+    const rows = ((await (await request(`${api}/transactions`)).json()) as { transactions: { entry_kind: string; amount_minor: number; creditor_person_id: number; debtor_person_id: number }[] }).transactions;
+    assert.equal(rows.length, 2, 'both reciprocal debts stay in the ledger');
+    assert.equal(rows.filter((row) => row.entry_kind === 'offset').length, 0, 'nothing is written behind the scenes');
+    assert.equal(rows.filter((row) => row.creditor_person_id === ada.id && row.debtor_person_id === lin.id).reduce((sum, row) => sum + row.amount_minor, 0), 4000, 'each side keeps its full balance');
+    assert.equal(rows.filter((row) => row.creditor_person_id === lin.id && row.debtor_person_id === ada.id).reduce((sum, row) => sum + row.amount_minor, 0), 2500, 'each side keeps its full balance');
+
+    assert.equal((await request(`${api}/offset-suggestions`)).status, 404, 'the suggestion endpoint is gone');
+    assert.equal((await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'offset-1' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) })).status, 404, 'the manual offset write is gone');
+    assert.equal((await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) })).status, 404, 'the offset preview is gone');
   });
 });
 
@@ -754,7 +721,6 @@ test('a person summary reports what they fronted, what was covered for them, and
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
     const api = `/w/${secret}/api`;
-    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'netting off keeps the numbers below exact');
     const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
     const [ada, lin] = state.people;
     const miaResponse = await request(`${api}/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name: 'Mia' }) });
@@ -772,7 +738,6 @@ test('a person summary reports what they fronted, what was covered for them, and
       person: { id: number; display_name: string };
       totals: Totals[];
       counterparties: Pair[];
-      suggestions: { counterparty: string; offset_amount_minor: number }[];
       recent: { id: number; topic: string; is_deleted: number; direction: string; counterparty: string }[];
       breakdown: {
         paid_for: { topic: string; direction: string }[];
@@ -794,8 +759,6 @@ test('a person summary reports what they fronted, what was covered for them, and
       { paid_for: 6000, covered: 2000, net: 2500, records: 3 },
     );
     assert.equal(summary.counterparties.find((row) => row.counterparty === 'Mia')!.net_minor, 1000);
-    assert.equal(summary.suggestions.length, 1, 'only Lin has a reciprocal balance worth offsetting');
-    assert.deepEqual({ other: summary.suggestions[0].counterparty, offset: summary.suggestions[0].offset_amount_minor }, { other: 'Lin', offset: 2000 });
     assert.equal(summary.records.active, 4);
     assert.equal(summary.recent.length, 4);
     assert.equal(summary.recent[0].topic, 'Transfer', 'newest record first');
@@ -871,36 +834,6 @@ type BackupBody = {
   keep: number;
 };
 
-test('offset bookkeeping stays out of the person summary while still settling the money', async () => {
-  await withWorkspaceApi(async (request) => {
-    const secret = await createWorkspace(request);
-    const api = `/w/${secret}/api`;
-    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
-    const [ada, lin] = state.people;
-    const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', category: 'Food', currency_code: 'USD', ...body }) });
-    await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 6000, topic: 'Dinner' });
-    await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 4000, topic: 'Taxi' });
-    const ledgerRows = (await (await request(`${api}/transactions`)).json() as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions;
-    assert.equal(ledgerRows.filter((row) => row.entry_kind === 'offset').length, 2, 'netting wrote one offset per direction');
-
-    type Summary = {
-      totals: { currency_code: string; net_minor: number; entries: number }[];
-      counterparties: { counterparty: string; net_minor: number; records: number }[];
-      breakdown: { paid_for: { entry_kind: string }[]; covered_for_them: { entry_kind: string }[]; settlements: { entry_kind: string }[] };
-      recent: { entry_kind: string }[];
-      records: { active: number; archived: number };
-    };
-    const summary = await (await request(`${api}/people/${ada.id}/summary`)).json() as Summary;
-    const usd = summary.totals.find((row) => row.currency_code === 'USD')!;
-    assert.equal(usd.net_minor, 2000, 'the money still settles: the offsets cancel the overlap and 20.00 is left owed to Ada');
-    const everyListed = summary.breakdown.paid_for.concat(summary.breakdown.covered_for_them, summary.breakdown.settlements);
-    assert.equal(everyListed.some((row) => row.entry_kind === 'offset'), false, 'no list shows an offset row');
-    assert.equal(summary.recent.some((row) => row.entry_kind === 'offset'), false, 'recent activity hides them too');
-    assert.equal(summary.counterparties.find((row) => row.counterparty === 'Lin')!.records, 2, 'only the two debts count as records');
-    assert.equal(summary.records.active, 2, 'offset rows are not counted as records either');
-  });
-});
-
 test('a person summary history contains every active ledger row across counterparties and currencies', async () => {
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
@@ -926,12 +859,10 @@ test('a person summary history contains every active ledger row across counterpa
       summary.history.map((row) => [row.currency_code, row.topic, row.entry_kind, row.counterparty, row.amount_minor, row.direction, row.is_deleted]),
       [
         ['SGD', 'Hotel', 'payment', 'Mia', -5000, 'settled_in', 0],
-        ['USD', 'Offset', 'offset', 'Lin', -4000, 'settled_out', 0],
-        ['USD', 'Offset', 'offset', 'Lin', -4000, 'settled_in', 0],
         ['USD', 'Taxi', 'debt', 'Lin', 4000, 'covered_for_them', 0],
         ['USD', 'Dinner', 'debt', 'Lin', 6000, 'paid_for', 0],
       ],
-      'history is the complete active ledger, including auto-generated offsets',
+      'history is the complete active ledger, newest row first',
     );
     assert.ok(summary.history.every((row) => row.is_deleted === 0), 'soft-deleted rows stay out of history');
   });
@@ -1255,7 +1186,6 @@ test('person full history groups active records chronologically with a per-curre
       suggestions: [{ counterparty: 'Lin', counterparty_id: 2, offset_amount_minor: 1, currency_code: 'USD' }],
     });
     assert.ok(markup.indexOf('<summary>Original balances</summary>') === -1 && markup.indexOf('<summary>Activity</summary>') === -1, 'the legacy Original balances and Activity folds stay hidden while the flag is off');
-    assert.ok(markup.indexOf('Full history') < markup.indexOf('Offset these'), 'the rendered history sits before the offset suggestions');
     assert.match(markup, /<h3 class="mt-16">Full history<\/h3><section class="pm-history-group"><h4 class="pm-history-heading"><span class="pm-history-currency">USD · 2 records<\/span><span class="pm-history-order">Oldest → newest<\/span><b class="pm-history-net pos">\+USD 700<\/b><\/h4>/, 'the rendered currency heading counts its rows, states its order, and states its final net');
     assert.match(markup, /<th scope="col">Date<\/th><th scope="col">Detail<\/th><th scope="col" class="num">Amount<\/th><th scope="col" class="num">Balance<\/th>/, 'the rendered table names every column');
     assert.match(markup, /class="pm-history-scroll"/, 'the rendered table has a responsive horizontal wrapper');
@@ -1448,8 +1378,6 @@ test('the settle-up plan clears every balance and the day chart counts only spen
     assert.ok(html.indexOf('Settle Up') < html.indexOf('id="balance-people"'), 'Settle Up is presented before the people list');
     assert.match(html, /<h2 class="bal-label">Settle Up<\/h2><p class="bal-legend">Fewest transfers that clear the group\. Tap Record to log one\.<\/p>/, 'Settle Up leads with a one-line description of who pays whom');
     assert.match(html, /<h2 class="bal-label">People<\/h2><p class="bal-legend">Amounts are what the group owes each person\. Negative means they owe the group\.<\/p><div id="balance-people">/, 'the people card states what its amounts mean');
-    assert.match(html, /id="offset-card" hidden/, 'the offsets card starts hidden and is only revealed when a row exists');
-    assert.match(html, /oc\.hidden=!sug\.length/, 'the offsets card is hidden as soon as nothing is left to offset');
     assert.match(html, /counts\[t\.creditor_person_id\]=\(counts\[t\.creditor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its creditor');
     assert.match(html, /counts\[t\.debtor_person_id\]=\(counts\[t\.debtor_person_id\]\|\|0\)\+1/, 'each active transaction counts for its debtor');
     assert.match(html, /if\(t\.is_deleted\)\{continue\}/, 'archived transactions stay out of card counts');
@@ -1470,7 +1398,6 @@ test('a repayment reduces what is owed in the summary, the plan, and every view 
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
     const api = `/w/${secret}/api`;
-    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'netting off keeps the arithmetic below exact');
     const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
     const [ada, lin] = state.people;
     const post = (body: Record<string, unknown>) => request(`${api}/transactions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ occurred_on: '2026-10-11', entry_kind: 'debt', topic: 'Dinner', category: 'Food', currency_code: 'USD', ...body }) });
@@ -1560,7 +1487,6 @@ test('debtor ranking groups active negative balances by currency and opens the p
   await withWorkspaceApi(async (request, query) => {
     const secret = await createWorkspace(request);
     const api = `/w/${secret}/api`;
-    assert.equal((await request(api, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { auto_offset: false } }) })).status, 200, 'manual offset fixtures must not be auto-netted first');
     const initial = await (await request(api)).json() as { people: { id: number; display_name: string; is_archived: number }[]; currencies: { code: string; is_default: number }[] };
     const [ada, lin] = initial.people;
     assert.equal(initial.currencies.find((currency) => currency.code === 'USD')!.is_default, 1, 'USD is the workspace default for the initially selected ranking pill');
@@ -1575,15 +1501,8 @@ test('debtor ranking groups active negative balances by currency and opens the p
       return (await response.json()) as { transaction: { id: number } };
     };
 
-    // This uses the committed two-row workflow: offset values are already negative and must not be flipped again.
     await post({ creditor_person_id: ada.id, debtor_person_id: lin.id, amount_minor: 12_000 });
     await post({ creditor_person_id: lin.id, debtor_person_id: ada.id, amount_minor: 2_000 });
-    const preview = await request(`${api}/offsets/preview`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) });
-    assert.equal(preview.status, 200);
-    assert.ok(((await preview.json()) as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions.every((row) => row.entry_kind === 'offset' && row.amount_minor === -2_000));
-    const committed = await request(`${api}/offsets`, { method: 'POST', headers: { 'content-type': 'application/json', 'idempotency-key': 'ranking-offset-usd' }, body: JSON.stringify({ first_person_id: ada.id, second_person_id: lin.id, currency_code: 'USD' }) });
-    assert.equal(committed.status, 201);
-    assert.deepEqual(((await committed.json()) as { transactions: { entry_kind: string; amount_minor: number }[] }).transactions.map((row) => [row.entry_kind, row.amount_minor]), [['offset', -2_000], ['offset', -2_000]], 'the committed contra entries retain their negative sign');
     await post({ creditor_person_id: ada.id, debtor_person_id: mia.id, amount_minor: 4_000 });
     await post({ creditor_person_id: lin.id, debtor_person_id: mia.id, amount_minor: 500_000, currency_code: 'VND' });
     await post({ creditor_person_id: ada.id, debtor_person_id: noah.id, amount_minor: 777, topic: 'Archived person debt' });
@@ -1597,7 +1516,7 @@ test('debtor ranking groups active negative balances by currency and opens the p
     const html = await (await request(`/w/${secret}`)).text();
     const nets = new Function(`${lift(html, 'signedMinor')};${lift(html, 'netsByCurrency')};return netsByCurrency`)() as (list: Row[]) => Record<string, Record<number, number>>;
     const allBalances = nets(rows);
-    assert.deepEqual({ lin: allBalances.USD[lin.id], mia: allBalances.USD[mia.id], noah: allBalances.USD[noah.id], miaVnd: allBalances.VND[mia.id] }, { lin: -10_000, mia: -4_000, noah: -777, miaVnd: -500_000 }, 'the ledger has the negative balances before active-person filtering, with committed offsets consumed signed-as-is');
+    assert.deepEqual({ lin: allBalances.USD[lin.id], mia: allBalances.USD[mia.id], noah: allBalances.USD[noah.id], miaVnd: allBalances.VND[mia.id] }, { lin: -10_000, mia: -4_000, noah: -777, miaVnd: -500_000 }, 'the ledger has the negative balances before active-person filtering');
     assert.equal((await request(`${api}/ranking`)).status, 404, 'ranking is client-rendered; this pins that no ranking API was added');
 
     assert.match(html, /id="tab-ranking"[^>]*><span aria-hidden="true">🏆<\/span>\s*Ranking</, 'the Ranking tab has the required trophy label');

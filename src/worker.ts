@@ -1,9 +1,8 @@
 import { aiInstructions, appHtml, homeHtml, linkRetiredHtml, isValidTimeZone, DEFAULT_TIME_ZONE, zonedParts } from './pages';
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
-import { autoNettingStatements } from './netting';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
 import { creditMinorSql, isSettlementRow, storedMinor } from './money';
-import { canonicalName, hashJson, maxWorkflowRows, offsetTransactions, parseImportCsv, reciprocalBalance, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
+import { canonicalName, hashJson, maxWorkflowRows, parseImportCsv, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 import { createPairing, dispatchWorkspaceNotifications, handleNavRedirect, handleTelegramWebhook, isNavPath, isTelegramWebhookPath, removeConnection, resolveNavWorkspace, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
 
 export interface Env {
@@ -129,14 +128,14 @@ async function state(env: Env, workspace: Workspace): Promise<Json> {
   const [people, currencies, settings, receipts, attachments] = await Promise.all([
     db.prepare('SELECT id, workspace_id, display_name, emoji, is_archived, created_at, updated_at FROM workspace_people WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Person>(),
     db.prepare('SELECT id, workspace_id, code, is_default, is_archived, created_at, updated_at FROM workspace_currencies WHERE workspace_id = ? ORDER BY id').bind(workspace.id).all<Currency>(),
-    db.prepare('SELECT categories_json, small_amount_guard_json, timezone, auto_offset, backup_every, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; timezone: string; auto_offset: number; backup_every: number; created_at: string; updated_at: string }>(),
+    db.prepare('SELECT categories_json, small_amount_guard_json, timezone, backup_every, created_at, updated_at FROM workspace_settings WHERE workspace_id = ?').bind(workspace.id).first<{ categories_json: string; small_amount_guard_json: string; timezone: string; backup_every: number; created_at: string; updated_at: string }>(),
     db.prepare(`SELECT ${RECEIPT_COLUMNS} FROM receipts WHERE workspace_id = ? ORDER BY is_added ASC, id DESC`).bind(workspace.id).all<Receipt>(),
     db.prepare(`SELECT ${ATTACHMENT_COLUMNS} FROM receipt_attachments WHERE workspace_id = ? ORDER BY id`).bind(workspace.id).all<ReceiptAttachment>(),
   ]);
   const backups = await backupStatus(db, workspace.id);
   // Telegram connections ride along with the state the Setup tab already reads, so the card renders on
   // first paint. The bot's username is left out here (it costs a Bot API call) and fetched on demand.
-  return { workspace, people: people.results, currencies: currencies.results, receipts: boardReceipts(receipts.results, attachments.results), settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, auto_offset: settings.auto_offset, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS }, telegram: await telegramStatus(env, workspace.id) };
+  return { workspace, people: people.results, currencies: currencies.results, receipts: boardReceipts(receipts.results, attachments.results), settings: settings && { categories: JSON.parse(settings.categories_json), small_amount_guard: JSON.parse(settings.small_amount_guard_json), timezone: settings.timezone, backup_every: backupEveryValue(settings.backup_every) ?? DEFAULT_BACKUP_EVERY, created_at: settings.created_at, updated_at: settings.updated_at }, backups: { status: backups, entries: await listBackups(db, workspace.id), configured: Boolean(env.BACKUPS), keep: KEEP_BACKUPS }, telegram: await telegramStatus(env, workspace.id) };
 }
 function workspaceTimeZone(value: unknown): string | null {
   const raw = typeof value === 'string' ? value.trim() : '';
@@ -444,10 +443,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
         if (!timezone) return secretResponse({ error: 'Invalid time zone' }, 400);
         sets.push('timezone = ?'); values.push(timezone);
       }
-      if ('auto_offset' in settings) {
-        if (typeof settings.auto_offset !== 'boolean') return secretResponse({ error: 'Invalid settings' }, 400);
-        sets.push('auto_offset = ?'); values.push(settings.auto_offset ? 1 : 0);
-      }
       if ('backup_every' in settings) {
         const every = backupEveryValue(settings.backup_every);
         if (!every) return secretResponse({ error: 'Backups must run every 5 to 10000 transactions' }, 400);
@@ -511,7 +506,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `split:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO split_commits (workspace_id, idempotency_key, draft_hash) VALUES (?, ?, ?)').bind(workspace.id, idempotencyKey, draftHash)];
     for (const transaction of prepared.plan.transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    statements.push(...await autoNettingStatements(env.DB, workspace.id, prepared.plan.transactions));
     try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadCommitted();
       if (!raced) return secretResponse({ error: 'Unable to commit split' }, 500);
@@ -580,68 +574,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       pair.net_minor = pair.paid_for_minor - pair.covered_minor - pair.settled_in_minor + pair.settled_out_minor; if (!bookkeepingRow) pair.records += 1; pairs.set(pairKey, pair);
     }
     const activePartners = roster.results.filter((entry) => entry.id !== person.id && entry.is_archived === 0);
-    const currencies = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0 ORDER BY code').bind(workspace.id).all<{ code: string }>();
-    const suggestions: { counterparty_id: number; counterparty: string; currency_code: string; offset_amount_minor: number; they_owe_minor: number; owed_to_them_minor: number }[] = [];
-    for (const currency of currencies.results) for (const partner of activePartners) {
-      const balance = await reciprocalBalance(env.DB, workspace.id, person.id, partner.id, currency.code);
-      const owedToThem = Math.max(balance.second_owes_first_minor, 0); const theyOwe = Math.max(balance.first_owes_second_minor, 0);
-      const offset = Math.min(owedToThem, theyOwe);
-      if (offset > 0) suggestions.push({ counterparty_id: partner.id, counterparty: partner.display_name, currency_code: currency.code, offset_amount_minor: offset, they_owe_minor: theyOwe, owed_to_them_minor: owedToThem });
-    }
-    return secretResponse({ person, totals: [...totals.values()].sort((a, b) => a.currency_code.localeCompare(b.currency_code)), counterparties: [...pairs.values()].sort((a, b) => b.net_minor - a.net_minor || a.counterparty.localeCompare(b.counterparty)), suggestions, recent, breakdown, history, recent_limit: 25, records: { active: activeRecords, archived: archivedRecords, total: activeRecords + archivedRecords } });
-  }
-  if (tail === 'offset-suggestions' && request.method === 'GET') {
-    const people = await env.DB.prepare('SELECT id FROM workspace_people WHERE workspace_id = ? AND is_archived = 0 ORDER BY id').bind(workspace.id).all<{ id: number }>();
-    const currencies = await env.DB.prepare('SELECT code FROM workspace_currencies WHERE workspace_id = ? AND is_archived = 0 ORDER BY code').bind(workspace.id).all<{ code: string }>();
-    const suggestions: { first_person_id: number; second_person_id: number; first_owes_second_minor: number; second_owes_first_minor: number; offset_amount_minor: number; currency_code: string }[] = [];
-    for (const currency of currencies.results) {
-      for (let first = 0; first < people.results.length; first += 1) {
-        for (let second = first + 1; second < people.results.length; second += 1) {
-          const firstId = people.results[first].id; const secondId = people.results[second].id;
-          const balance = await reciprocalBalance(env.DB, workspace.id, firstId, secondId, currency.code);
-          const offset = Math.min(Math.max(balance.first_owes_second_minor, 0), Math.max(balance.second_owes_first_minor, 0));
-          if (offset > 0) suggestions.push({ first_person_id: firstId, second_person_id: secondId, first_owes_second_minor: balance.first_owes_second_minor, second_owes_first_minor: balance.second_owes_first_minor, offset_amount_minor: offset, currency_code: currency.code });
-        }
-      }
-    }
-    return secretResponse({ suggestions });
-  }
-  if ((tail === 'offsets/preview' || tail === 'offsets') && request.method === 'POST') {
-    const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400);
-    const firstId = input.first_person_id; const secondId = input.second_person_id; const currencyCode = input.currency_code;
-    if (!Number.isSafeInteger(firstId) || !Number.isSafeInteger(secondId) || firstId === secondId || typeof currencyCode !== 'string' || !currencyPattern.test(currencyCode)) return secretResponse({ error: 'Invalid offset draft' }, 400);
-    const currency = await ownedCurrency(env.DB, workspace.id, currencyCode, true); if (!currency) return secretResponse({ error: 'Offset currency must belong to this workspace and be active' }, 400);
-    for (const personId of [firstId, secondId] as number[]) if (!(await ownedPerson(env.DB, workspace.id, personId, true))) return secretResponse({ error: 'Offset people must belong to this workspace and be active' }, 400);
-    const balance = await reciprocalBalance(env.DB, workspace.id, firstId as number, secondId as number, currencyCode as string);
-    const amount = Math.min(Math.max(balance.first_owes_second_minor, 0), Math.max(balance.second_owes_first_minor, 0));
-    if (tail === 'offsets/preview') {
-      if (amount <= 0) return secretResponse({ error: 'No reciprocal balance to offset between these people in this currency' }, 409);
-      return secretResponse({ offset_amount_minor: amount, transactions: offsetTransactions(workspace.id, { occurred_on: validDateValue(input.occurred_on) ? input.occurred_on : new Date().toISOString().slice(0, 10), topic: 'Offset', category: 'Offset', notes: typeof input.notes === 'string' ? input.notes.slice(0, 4000) : null }, firstId as number, secondId as number, amount, currencyCode as string) });
-    }
-    const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
-    const loadOffset = async (): Promise<{ draft_hash: string; transactions: WorkflowTransaction[] } | null> => {
-      const commit = await env.DB.prepare("SELECT draft_hash FROM workflow_commits WHERE workspace_id = ? AND kind = 'offset' AND idempotency_key = ?").bind(workspace.id, idempotencyKey).first<{ draft_hash: string }>();
-      if (!commit) return null;
-      const transactions = await env.DB.prepare('SELECT id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at FROM transactions WHERE workspace_id = ? AND import_group_id = ? ORDER BY id').bind(workspace.id, `offset:${idempotencyKey}`).all<WorkflowTransaction>();
-      return { draft_hash: commit.draft_hash, transactions: transactions.results };
-    };
-    const existing = await loadOffset();
-    if (existing) return existing.draft_hash === (await hashJson({ first_person_id: firstId, second_person_id: secondId, currency_code: currencyCode })) ? secretResponse({ offset_amount_minor: amount, transactions: existing.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different offset draft' }, 409);
-    if (amount <= 0) return secretResponse({ error: 'The recalculated reciprocal balance is no longer positive' }, 409);
-    const occurredOn = typeof input.occurred_on === 'string' && validDateValue(input.occurred_on) ? input.occurred_on : new Date().toISOString().slice(0, 10);
-    const transactions = offsetTransactions(workspace.id, { occurred_on: occurredOn, topic: 'Offset', category: 'Offset', notes: typeof input.notes === 'string' ? input.notes.slice(0, 4000) : null }, firstId as number, secondId as number, amount, currencyCode as string);
-    const groupId = `offset:${idempotencyKey}`;
-    const draftHash = await hashJson({ first_person_id: firstId, second_person_id: secondId, currency_code: currencyCode });
-    const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'offset', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
-    for (const transaction of transactions) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(transaction.workspace_id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    try { await commitLedger(env, workspace.id, statements); } catch {
-      const raced = await loadOffset();
-      if (!raced) return secretResponse({ error: 'Unable to commit offset' }, 500);
-      return raced.draft_hash === draftHash ? secretResponse({ offset_amount_minor: amount, transactions: raced.transactions }) : secretResponse({ error: 'Idempotency key was already used for a different offset draft' }, 409);
-    }
-    const committed = await loadOffset();
-    if (!committed) return secretResponse({ error: 'Unable to load committed offset' }, 500);
-    return secretResponse({ offset_amount_minor: amount, transactions: committed.transactions }, 201);
+    return secretResponse({ person, totals: [...totals.values()].sort((a, b) => a.currency_code.localeCompare(b.currency_code)), counterparties: [...pairs.values()].sort((a, b) => b.net_minor - a.net_minor || a.counterparty.localeCompare(b.counterparty)), recent, breakdown, history, recent_limit: 25, records: { active: activeRecords, archived: archivedRecords, total: activeRecords + archivedRecords } });
   }
   if ((tail === 'batches/preview' || tail === 'batches') && request.method === 'POST') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input || !Array.isArray(input.rows) || input.rows.length < 1 || input.rows.length > maxWorkflowRows) return secretResponse({ error: 'Batch must include 1-200 rows' }, 400);
@@ -665,7 +598,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `batch:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'batch', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
     for (const transaction of cleaned) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, transaction.occurred_on, transaction.entry_kind, transaction.topic, transaction.category, transaction.creditor_person_id, transaction.debtor_person_id, transaction.amount_minor, transaction.currency_code, transaction.notes, groupId));
-    statements.push(...await autoNettingStatements(env.DB, workspace.id, cleaned));
     try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadBatch();
       if (!raced) return secretResponse({ error: 'Unable to commit batch' }, 500);
@@ -706,7 +638,6 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const groupId = `import:${idempotencyKey}`;
     const statements: D1PreparedStatement[] = [env.DB.prepare("INSERT INTO workflow_commits (workspace_id, kind, idempotency_key, draft_hash) VALUES (?, 'import', ?, ?)").bind(workspace.id, idempotencyKey, draftHash)];
     for (const row of parsed.rows as ImportPlanRow[]) statements.push(env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(workspace.id, row.occurred_on, row.entry_kind, row.topic, row.category, row.creditor_person_id, row.debtor_person_id, row.amount_minor, row.currency_code, row.notes, groupId));
-    statements.push(...await autoNettingStatements(env.DB, workspace.id, parsed.rows as ImportPlanRow[]));
     try { await commitLedger(env, workspace.id, statements); } catch {
       const raced = await loadImport();
       if (!raced) return secretResponse({ error: 'Unable to commit import' }, 500);
@@ -749,13 +680,10 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (tail === 'transactions' && request.method === 'POST') {
     const input = await body(request); if (input === bodyTooLarge) return secretResponse({ error: 'Request body too large' }, 413); if (!input) return secretResponse({ error: 'Invalid JSON' }, 400); const problem = await validateTransaction(env.DB, workspace.id, input); if (problem) return secretResponse({ error: problem }, 400);
     const statements: D1PreparedStatement[] = [env.DB.prepare('INSERT INTO transactions (workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id, workspace_id, occurred_on, entry_kind, topic, category, creditor_person_id, debtor_person_id, amount_minor, currency_code, notes, import_group_id, is_deleted, created_at, updated_at').bind(workspace.id, input.occurred_on, input.entry_kind, cleanText(input.topic, 200), cleanText(input.category, 80), input.creditor_person_id, input.debtor_person_id, input.amount_minor, input.currency_code, input.notes ?? null, input.import_group_id ?? null)];
-    // Automatic bilateral netting rides in the same atomic batch as the entry that triggered it.
-    const netting = await autoNettingStatements(env.DB, workspace.id, [{ creditor_person_id: input.creditor_person_id as number, debtor_person_id: input.debtor_person_id as number, amount_minor: input.amount_minor as number, entry_kind: input.entry_kind as string, currency_code: input.currency_code as string, occurred_on: input.occurred_on as string }]);
-    statements.push(...netting);
     const results = await env.DB.batch(statements);
     await tickBackups(env, workspace.id);
     const created = ((results[0]?.results ?? [])[0] ?? null) as Transaction | null;
-    return secretResponse({ transaction: created, netted_pairs: netting.length / 2 }, 201);
+    return secretResponse({ transaction: created }, 201);
   }
   route = tail.match(/^transactions\/(\d+)(?:\/(delete|restore))?$/);
   if (route) {

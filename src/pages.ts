@@ -694,8 +694,8 @@ function txRow(t){
   var el=document.createElement('div'); el.className='row';
   /* a repayment moves money the other way, so it counts as a negative movement of what is outstanding */
   /* One arithmetic for every surface, so no two views can disagree about the same row: a debt adds
-     to what is owed, a repayment reduces it, and an offset row already carries its own signed value
-     because netting writes both directions negative. */
+     to what is owed, a repayment reduces it, and a legacy offset row (written back when the app netted
+     reciprocal debts itself) already carries its own signed value. */
   var signed=signedMinor(t);
   var cls=signed>0?'pos':(signed<0?'neg':'zero');
   el.innerHTML='<div class="row-main"><div class="who">'+esc(t.topic)+' <span class="chip '+esc(t.entry_kind)+'">'+esc(t.entry_kind)+'</span></div><div class="meta">'+esc(t.occurred_on)+' · '+esc(name(t.creditor_person_id))+' → '+esc(name(t.debtor_person_id))+'<span class="cat"> · '+esc(t.category)+'</span></div></div>'+
@@ -718,8 +718,8 @@ async function loadLedger(){
   renderSpend(txs);
 }
 /* One arithmetic for every surface, so no two views can disagree about the same row: a debt adds to
-   what is owed, a repayment reduces it, and an offset row already carries its own signed value because
-   netting writes both directions negative. The rule itself lives in src/money.ts — the page keeps its
+   what is owed, a repayment reduces it, and a legacy offset row already carries its own signed value.
+   The rule itself lives in src/money.ts — the page keeps its
    own copy because it ships as a template literal, and test/money.test.ts lifts this function and holds
    it to the shared rule. A repayment is identified by its KIND or by a negative amount, because the page
    posts repayments positive while the CSV import stores them negative. */
@@ -1031,27 +1031,6 @@ async function loadBalances(){
     box.appendChild(el);
   }
   renderSettle(txs);
-  var ob=$('offset-list'); ob.innerHTML='<div class="empty">Loading…</div>';
-  var o=await call('/offset-suggestions');
-  if(!o.ok){ ob.innerHTML='<div class="err">'+esc(o.error)+'</div>'; return }
-  var sug=(o.data&&o.data.suggestions)||[];
-  ob.innerHTML='';
-  /* nothing to offset means the whole offsets card is noise: it is only shown when it has a row */
-  var oc=$('offset-card'); if(oc){ oc.hidden=!sug.length }
-  if(!sug.length){ ob.innerHTML=''; return }
-  for(var k=0;k<sug.length;k++){var s=sug[k];
-    var row=document.createElement('div'); row.className='row';
-    row.innerHTML='<div><div class="who">'+esc(name(s.first_person_id))+' ↔ '+esc(name(s.second_person_id))+'</div><div class="meta">offsettable '+esc(money(s.offset_amount_minor,s.currency_code))+'</div></div>'+
-      '<button class="mini" type="button" data-off="'+s.first_person_id+':'+s.second_person_id+':'+esc(s.currency_code)+'">Offset</button>';
-    ob.appendChild(row);
-  }
-}
-async function doOffset(a,b,c,btn){
-  busy(btn,true);
-  var r=await call('/offsets',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:{first_person_id:a,second_person_id:b,currency_code:c}});
-  busy(btn,false);
-  if(!r.ok){ toast(r.error,true); return }
-  toast('Offset recorded'); loadBalances(); if(pmOpenId){ openPerson(pmOpenId) }
 }
 /* ---------------- person popup ---------------- */
 var pmOpenId=null, pmData=null;
@@ -1296,13 +1275,6 @@ function renderPerson(){
       '<div class="pm-history-scroll"><table class="pm-history-table"><thead><tr><th scope="col">Date</th><th scope="col">Detail</th><th scope="col" class="num">Amount</th><th scope="col" class="num">Balance</th></tr></thead><tbody>'+historyRows+'</tbody></table></div></section>';
   }
   html+='</section>';
-  var sug=d.suggestions||[];
-  if(sug.length){ html+='<h3 class="mt-16">Offset these</h3>';
-    for(var s=0;s<sug.length;s++){ var g=sug[s];
-      html+='<div class="row"><div><div class="who">'+esc(g.counterparty)+' ↔ '+esc((p.emoji?p.emoji+' ':'')+(p.display_name||''))+'</div><div class="meta">offsettable '+esc(money(g.offset_amount_minor,g.currency_code))+'</div></div>'+
-        '<button class="mini" type="button" data-off="'+p.id+':'+g.counterparty_id+':'+esc(g.currency_code)+'">Offset</button></div>';
-    }
-  }
   body.innerHTML=html;
 }
 
@@ -1452,7 +1424,6 @@ function renderSettings(){
   }
   $('s-name').value=(me&&me.name)||'';
   if($('s-theme')){ $('s-theme').value=themeChoice(); $('s-theme').onchange=function(){ setTheme(this.value) } }
-  if($('s-auto-offset')){ $('s-auto-offset').checked=!((settings&&settings.auto_offset)===0) }
   renderBackups();
   renderTelegram();
 }
@@ -1958,7 +1929,7 @@ function startSettlePayment(from,to,code,minor){
   addTx('payment',PAY_FORM);
 }
 /* ---------------- spend by day ---------------- */
-/* Spending is money fronted for the group. A repayment gives money back, and a netting offset is a
+/* Spending is money fronted for the group. A repayment gives money back, and a legacy offset is a
    contra pair that already cancels the rows it offsets, so neither one is spending. */
 function spendByDay(rows){
   var out={}, i, t, by;
@@ -2117,7 +2088,7 @@ function openPersonFromElement(el){
 document.addEventListener('click',async function(ev){
   /* Every row action carries its id in a data attribute and several of them wrap the icon in a span, so a tap on
      the glyph itself must resolve to the button that owns it - read the attribute from the nearest ancestor. */
-  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-off],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore],[data-ranking-currency]')||src):src;
+  var src=ev.target; var t=(src&&src.closest)?(src.closest('[data-del],[data-emoji-save],[data-ren],[data-arch],[data-def],[data-rec-action],[data-att-open],[data-settle],[data-dg],[data-txrestore],[data-ranking-currency]')||src):src;
   if(!t||!t.getAttribute){return}
   var rankingCurrencyButton=t.getAttribute('data-ranking-currency'); if(rankingCurrencyButton){ selectRankingCurrency(rankingCurrencyButton); return }
   var recAct=t.getAttribute('data-rec-action'); if(recAct){ receiptAction(recAct,Number(t.getAttribute('data-rec-id')),t); return }
@@ -2140,7 +2111,6 @@ document.addEventListener('click',async function(ev){
     var al=$('audit-list'); if(al&&al.offsetParent){ loadAudit() }
     return;
   }
-  var off=t.getAttribute('data-off'); if(off){ var parts=off.split(':'); doOffset(Number(parts[0]),Number(parts[1]),parts[2],t); return }
   var settle=t.getAttribute('data-settle'); if(settle){ var sp=settle.split(':'); startSettlePayment(Number(sp[0]),Number(sp[1]),sp[2],Number(sp[3])); return }
   var dg=t.getAttribute('data-dg'); if(dg){
     if(dg==='open'){ closeDigest(); showTab('audit'); return }
@@ -2196,7 +2166,6 @@ function init(){
   if($('au-entity')){ $('au-entity').onchange=function(){ loadAudit() } }
   if($('au-action')){ $('au-action').onchange=function(){ loadAudit() } }
   if($('au-q')){ $('au-q').onkeydown=function(ev){ if(ev.key==='Enter'){ ev.preventDefault(); loadAudit() } } }
-  if($('s-save-auto-offset')){ $('s-save-auto-offset').onclick=async function(){ var on=$('s-auto-offset')?!!$('s-auto-offset').checked:true; var r=await call('',{method:'PATCH',body:{settings:{auto_offset:on}}}); if(!r.ok){ toast(r.error||'Could not save netting',true); return } toast('Automatic netting '+(on?'on':'off')); location.reload() } }
   if($('s-save-tz')){ $('s-save-tz').onclick=async function(){ var e=$('s-tz-err'); if(e){e.textContent=''}; var v=$('s-tz')?$('s-tz').value:''; if(!v){ if(e){e.textContent='Pick a zone.'} return } var r=await call('',{method:'PATCH',body:{settings:{timezone:v}}}); if(!r.ok){ var m=r.error||'Could not save the time zone.'; if(e){e.textContent=m} toast(m,true); return } toast('Time zone saved'); location.reload() } }
   if($('sp-people')){ $('sp-people').addEventListener('change',function(){ renderSplit() }) }
   if($('sp-all')){ $('sp-all').onclick=function(){ var bs=splitBoxes(); for(var i=0;i<bs.length;i++){bs[i].checked=true} renderSplit() } }
@@ -2525,8 +2494,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 <section id="balances" hidden>
   <div class="card"><h2 class="bal-label">Settle Up</h2><p class="bal-legend">Fewest transfers that clear the group. Tap Record to log one.</p><div id="settle-list"><div class="empty">Loading…</div></div></div>
   <div class="card"><h2 class="bal-label">People</h2><p class="bal-legend">Amounts are what the group owes each person. Negative means they owe the group.</p><div id="balance-people"><div class="empty">Loading…</div></div></div>
-  <div class="card" id="offset-card" hidden><h2><span aria-hidden="true">🤝</span> Offset balances</h2><p class="hint">Reciprocal balances are netted automatically as soon as an entry creates them. Anything listed here is what is still left to offset by hand.</p><div id="offset-list"><div class="empty">Loading…</div></div>
-    <p class="hint">Offsetting records a repayment pair that clears equal amounts in both directions.</p></div>
+  
 </section>
 
 <section id="tools" hidden>
@@ -2621,11 +2589,6 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <p class="hint">Transactions are dated in this zone. The date fields are read-only and always show today's date here.</p>
     <div class="inline"><div class="field flush"><label for="s-tz">Zone</label><select id="s-tz">${tzOptions}</select></div><button id="s-save-tz" type="button"><span aria-hidden="true">💾</span> Save</button></div>
     <div id="s-tz-err" class="err"></div>
-  </div>
-  <div class="card"><h2><span aria-hidden="true">♻️</span> Automatic netting</h2>
-    <p class="hint">When two people owe each other in the same currency, the overlapping amount is offset automatically with the entry that creates the overlap. Each netting is written as an audited offset, so the trail still shows both original debts.</p>
-    <label class="check" for="s-auto-offset"><input type="checkbox" id="s-auto-offset"> Offset reciprocal balances automatically</label>
-    <div class="btns mt-8"><button id="s-save-auto-offset" type="button"><span aria-hidden="true">✅</span> Save</button></div>
   </div>
   <div class="card"><h2><span aria-hidden="true">💾</span> Backups</h2>
     <p class="hint">Once this workspace has added the set number of transactions since the last snapshot, the whole workspace &mdash; people, currencies, settings and every transaction &mdash; is exported automatically and kept privately. Restoring writes it into a <b>new</b> workspace, so nothing here is ever overwritten. The newest ${KEEP_BACKUPS} snapshots are kept; older ones roll off.</p>

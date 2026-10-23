@@ -254,3 +254,7 @@ git commit -m "fix: preserve cumulative history semantics"
 ```
 
 Otherwise, do not create an empty commit.
+
+## Update: offsets retired
+
+The auto-offset feature was removed after this design. Balances are net balances, so reciprocal-debt netting added nothing a reader could not already see, and it wrote bookkeeping rows that the ledger then had to explain. Reciprocal debts now stay exactly as recorded; the offset card, the "Offset these" suggestion in the person drawer, the `auto_offset` setting, `src/netting.ts`, and the `/offset-suggestions`, `/offsets/preview` and `/offsets` endpoints are all gone. Rows already stored with `entry_kind = 'offset'` remain readable so historic ledgers still add up.

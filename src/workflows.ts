@@ -5,7 +5,7 @@ export type Json = Record<string, unknown>;
 type Person = { id: number; workspace_id: number; display_name: string; is_archived: number };
 type Currency = { workspace_id: number; code: string; is_archived: number };
 
-export const workflowKinds = ['offset', 'batch', 'import'] as const;
+export const workflowKinds = ['batch', 'import'] as const;
 export type WorkflowKind = (typeof workflowKinds)[number];
 
 export const maxWorkflowRows = 200;
@@ -99,36 +99,6 @@ export async function validateWorkflowRow(
       currency_code, notes: notes as string | null,
     },
   };
-}
-
-/**
- * Reciprocal balances between two people in one currency, computed from non-deleted rows.
- *
- * The contribution of a row is `creditMinorSql()`, never the raw amount: a repayment written negative by
- * the CSV import and a repayment written positive by a historical row must both reduce what is owed, and a
- * raw SUM adds the positive one instead. That sum is what auto-netting and the offset suggestions
- * run on, so reading it raw invented debts that then got netted away.
- */
-export async function reciprocalBalance(db: D1Database, workspaceId: number, firstId: number, secondId: number, currencyCode: string): Promise<{ first_owes_second_minor: number; second_owes_first_minor: number }> {
-  const credit = creditMinorSql();
-  const row = await db.prepare(
-    `SELECT
-       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN ${credit} ELSE 0 END), 0) AS first_owes_second_minor,
-       COALESCE(SUM(CASE WHEN debtor_person_id = ? AND creditor_person_id = ? THEN ${credit} ELSE 0 END), 0) AS second_owes_first_minor
-     FROM transactions
-     WHERE workspace_id = ? AND is_deleted = 0 AND currency_code = ?
-       AND ((debtor_person_id = ? AND creditor_person_id = ?) OR (debtor_person_id = ? AND creditor_person_id = ?))`,
-  ).bind(firstId, secondId, secondId, firstId, workspaceId, currencyCode, firstId, secondId, secondId, firstId)
-    .first<{ first_owes_second_minor: number; second_owes_first_minor: number }>();
-  return { first_owes_second_minor: Number(row?.first_owes_second_minor ?? 0), second_owes_first_minor: Number(row?.second_owes_first_minor ?? 0) };
-}
-
-export function offsetTransactions(workspaceId: number, draft: { occurred_on: string; topic: string; category: string; notes: string | null }, firstId: number, secondId: number, amountMinor: number, currencyCode: string): WorkflowTransaction[] {
-  // Both entries are negative on the existing debt directions: the owed side is reduced on both directions.
-  return [
-    { workspace_id: workspaceId, occurred_on: draft.occurred_on, entry_kind: 'offset', topic: draft.topic, category: draft.category, creditor_person_id: firstId, debtor_person_id: secondId, amount_minor: -amountMinor, currency_code: currencyCode, notes: draft.notes, import_group_id: null },
-    { workspace_id: workspaceId, occurred_on: draft.occurred_on, entry_kind: 'offset', topic: draft.topic, category: draft.category, creditor_person_id: secondId, debtor_person_id: firstId, amount_minor: -amountMinor, currency_code: currencyCode, notes: draft.notes, import_group_id: null },
-  ];
 }
 
 /** Minimal RFC-4180-style CSV parser (quotes, embedded commas/newlines, CRLF). */
