@@ -564,6 +564,9 @@ function money(minor,code){
 }
 function iso(d){return d.toISOString().slice(0,10)}
 function today(){return iso(new Date())}
+/* Drops a trailing ".00" with plain string surgery: this page script is a template literal, so an
+   escaped dot inside a regex collapses to a wildcard and eats real digits ("VND 15,300" → "VND 15,"). */
+function trimMoney(text){ var s=String(text); return s.slice(-3)==='.00'?s.slice(0,-3):s }
 
 async function call(path,opts){
   opts=opts||{};
@@ -1166,7 +1169,7 @@ function renderPerson(){
       for(var q=0;q<legs.length;q++){ var leg=legs[q];
         html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
           (t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+
-          esc(money(leg.amount_minor,t.currency_code).replace(/\.00$/,''))+'</span>'+
+          esc(trimMoney(money(leg.amount_minor,t.currency_code)))+'</span>'+
           (t.net_minor>0?' from ':' to ')+esc(name(leg.id))+
           '</span></div></div>';
       }
@@ -1175,7 +1178,7 @@ function renderPerson(){
          card above is where the payment comes from rather than inventing a counterparty */
       var partners=settlePartners(t.currency_code,p.id);
       for(var w=0;w<partners.length;w++){ partnerNames.push(name(partners[w])) }
-      var amountText=esc(money(Math.abs(t.net_minor),t.currency_code).replace(/\.00$/,''));
+      var amountText=esc(trimMoney(money(Math.abs(t.net_minor),t.currency_code)));
       var act=(t.net_minor>0?'Receive ':'Pay ')+'<span class="amt '+(t.net_minor>0?'pos':'neg')+'">'+amountText+'</span>';
       var dir=t.net_minor?((t.net_minor>0?' from ':' to ')+esc(partnerNames.length?partnerNames.join(' and '):'Settle Up')):'';
       html+='<div class="pm-why"><div class="pm-why-top"><span class="who">'+
@@ -1204,6 +1207,7 @@ function renderPerson(){
     out.sort(function(a,b){ if(a.occurred_on===b.occurred_on){ return b.id-a.id } return a.occurred_on<b.occurred_on?1:-1 });
     return out;
   }
+  var legacyFoldStart=html.length;
   html+='<details class="pm-more"><summary>Original balances</summary><p class="pm-ledger-trail-hint">Direct records between people. Not always a payment you owe.</p><section class="pm-relations">';
   if(!pairs.length){ html+='<div class="empty pm-relations-empty">Nothing outstanding with anyone yet.</div>' }
   for(var q=0;q<pairs.length;q++){ var pr=pairs[q]; var key=pr.currency_code+'-'+pr.counterparty_id;
@@ -1235,6 +1239,11 @@ function renderPerson(){
     analyticsCard('paid-for','What they paid for','paid_for_minor','in',paidFor,'They have not paid for anyone yet.')+
     analyticsCard('paid-back','They were paid for','settled_in_minor','in',paidBack,'Nobody has paid them back yet.')+
     '</div></section></details>';
+  /* «Original balances» and «Activity» are hidden for now: the dated Full history below answers
+     the same question in one place, and two extra folds above it only push it off the screen.
+     The markup is still built, so flipping this one flag restores both folds untouched. */
+  var SHOW_PM_LEGACY_FOLDS=false;
+  if(!SHOW_PM_LEGACY_FOLDS){ html=html.slice(0,legacyFoldStart) }
   var fullHistory=personHistory(d.history||[]);
   html+='<section class="pm-full-history"><h3 class="mt-16">Full history</h3>';
   if(!fullHistory.length){ html+='<div class="empty">No active records for this person.</div>' }

@@ -1254,7 +1254,8 @@ test('person full history groups active records chronologically with a per-curre
       ],
       suggestions: [{ counterparty: 'Lin', counterparty_id: 2, offset_amount_minor: 1, currency_code: 'USD' }],
     });
-    assert.ok(markup.indexOf('<summary>Activity</summary>') < markup.indexOf('Full history') && markup.indexOf('Full history') < markup.indexOf('Offset these'), 'the rendered history sits below Activity and before suggestions');
+    assert.ok(markup.indexOf('<summary>Original balances</summary>') === -1 && markup.indexOf('<summary>Activity</summary>') === -1, 'the legacy Original balances and Activity folds stay hidden while the flag is off');
+    assert.ok(markup.indexOf('Full history') < markup.indexOf('Offset these'), 'the rendered history sits before the offset suggestions');
     assert.match(markup, /<h3 class="mt-16">Full history<\/h3><section class="pm-history-group"><h4 class="pm-history-heading"><span class="pm-history-currency">USD · 2 records<\/span><span class="pm-history-order">Oldest → newest<\/span><b class="pm-history-net pos">\+USD 700<\/b><\/h4>/, 'the rendered currency heading counts its rows, states its order, and states its final net');
     assert.match(markup, /<th scope="col">Date<\/th><th scope="col">Detail<\/th><th scope="col" class="num">Amount<\/th><th scope="col" class="num">Balance<\/th>/, 'the rendered table names every column');
     assert.match(markup, /class="pm-history-scroll"/, 'the rendered table has a responsive horizontal wrapper');
