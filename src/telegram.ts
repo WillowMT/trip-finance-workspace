@@ -1014,12 +1014,15 @@ async function handleNetSummary(env: TelegramEnv, connection: { id: number; work
     .all<{ id: number; name: string; is_archived: number }>();
   const lines: string[] = [`💵 ${workspace} — net balances & settlements`, '+ is owed · − owes'];
   for (const currency_code of [...nets.keys()].sort()) {
-    const holders = new Map<number, PersonNet>();
-    for (const person of people.results) {
-      if (!person.is_archived) holders.set(person.id, { id: person.id, name: person.name, net: 0 });
-    }
-    for (const person of nets.get(currency_code) ?? []) holders.set(person.id, person);
-    const ordered = [...holders.values()].sort((a, b) => b.net - a.net || a.name.localeCompare(b.name));
+    /* Only people who still stand somewhere in this currency are listed. A settled person used to be
+       printed as "0.00", which reads as a task to go and check; the currency header already carries
+       the count and the money that moves, so nothing is lost. Archived people stay out too, exactly
+       as they do in /chart, and a zero-net person can never own a settlement leg anyway (the legs of
+       a plan sum to that person's net), so no payment line goes missing with them. */
+    const active = new Set(people.results.filter((person) => !person.is_archived).map((person) => person.id));
+    const ordered = (nets.get(currency_code) ?? [])
+      .filter((person) => active.has(person.id) && person.net)
+      .sort((a, b) => b.net - a.net || a.name.localeCompare(b.name));
     const group = payments.filter((payment) => payment.currency_code === currency_code);
     const moved = group.reduce((total, payment) => total + payment.amount_minor, 0);
     lines.push('', `${currency_code} · ${group.length} payment${group.length === 1 ? '' : 's'} move${group.length === 1 ? 's' : ''} ${money(moved, currency_code)}`);

@@ -1022,6 +1022,8 @@ test('/netsummary files each payment under the person who makes it or takes it',
     });
     assert.equal((await write(ada.id, bo.id, 5_000, 'USD')).status, 201);
     assert.equal((await write(bo.id, ada.id, 3_300, 'MYR')).status, 201);
+    // A person the trip has nothing against is settled at 0.00 and must not clutter the list.
+    assert.equal((await request(`/w/${secret}/api/people`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ display_name: 'Calm Cy' }) })).status, 201);
 
     bot.messages.length = 0;
     assert.equal((await sendUpdate({ request, query, bot }, { chat, text: '/netsummary' })).status, 200);
@@ -1044,6 +1046,7 @@ test('/netsummary files each payment under the person who makes it or takes it',
       `• ${bo.display_name} −USD 50.00`,
       `   ↳ pays ${ada.display_name} USD 50.00`,
     ]);
+    assert.equal(reply.text.includes('Calm Cy'), false, 'a settled person is left out of the list instead of printing 0.00');
     assert.equal(reply.text.includes('/w/'), false, 'the reply carries no workspace link');
 
     // Standalone commands stay separate answers: /net has no payment lines, /summary has no balances.
