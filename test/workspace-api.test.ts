@@ -474,15 +474,19 @@ const zoneDate = (timeZone: string): string => {
   return `${get('year')}-${get('month')}-${get('day')}`;
 };
 
-test('ledger and split dates are read-only and locked to today in the workspace time zone', async () => {
+test('every writing form carries a hidden date stamped with today in the workspace time zone', async () => {
   await withWorkspaceApi(async (request) => {
     const secret = await createWorkspace(request);
     const first = await (await request(`/w/${secret}`)).text();
-    assert.match(first, /id="t-date" type="text" value="[0-9]{4}-[0-9]{2}-[0-9]{2}" readonly aria-readonly="true"/);
-    assert.match(first, /id="sp-date" type="text" value="[0-9]{4}-[0-9]{2}-[0-9]{2}" readonly aria-readonly="true"/);
+    // The date is not offered to the reader: new debt, repayment and split are all stamped on write,
+    // so each field is hidden but still submits today's date in the workspace zone.
+    for (const id of ['t-date', 'p-date', 'sp-date']) {
+      assert.ok(first.includes(`<div class="field" hidden><label for="${id}">Date</label>`), `${id} is hidden`);
+      assert.match(first, new RegExp(`id="${id}" type="text" value="[0-9]{4}-[0-9]{2}-[0-9]{2}" readonly aria-readonly="true"`));
+    }
     assert.doesNotMatch(first, /type="date"/, 'no date pickers left in the app');
-    assert.ok(first.includes(`value="${zoneDate('Asia/Bangkok')}"`), 'both fields show today in the workspace default zone');
-    assert.ok(first.includes('Today in Asia/Bangkok'), 'the zone is shown beside the field');
+    assert.ok(first.includes(`value="${zoneDate('Asia/Bangkok')}"`), 'every field holds today in the workspace default zone');
+    assert.doesNotMatch(first, /Today in/, 'the clock hint went with the visible date');
     assert.match(first, /<select id="s-tz">/);
     assert.match(first, /<option value="Asia\/Bangkok" selected>/);
 
@@ -490,8 +494,7 @@ test('ledger and split dates are read-only and locked to today in the workspace 
     assert.equal(patched.status, 200);
     assert.equal(((await patched.json()) as { settings: { timezone: string } }).settings.timezone, 'Asia/Yangon');
     const second = await (await request(`/w/${secret}`)).text();
-    assert.ok(second.includes(`value="${zoneDate('Asia/Yangon')}"`), 'the read-only date follows the workspace zone');
-    assert.ok(second.includes('Today in Asia/Yangon'));
+    assert.ok(second.includes(`value="${zoneDate('Asia/Yangon')}"`), 'the hidden date follows the workspace zone');
     assert.match(second, /<option value="Asia\/Yangon" selected>/);
 
     const rejected = await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { timezone: 'Mars/Olympus' } }) });

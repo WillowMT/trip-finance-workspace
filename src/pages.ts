@@ -889,7 +889,7 @@ function txReview(rows){
     '<p class="rf-why">'+(pay
       ? ('Money going back, so '+esc(debtor)+' owes less to '+esc(creditor)+'.')
       : (esc(debtor)+' owes this to '+esc(creditor)+' from now on.'))+'</p>'+
-    reviewRows([['What',esc(one.topic)],['Category',esc(one.category)],['Date',esc(one.occurred_on)],['Note',one.notes?esc(one.notes):'']]);
+    reviewRows([['What',esc(one.topic)],['Category',esc(one.category)],['Note',one.notes?esc(one.notes):'']]);
   return { title: pay?'Review repayment':'Review new debt', icon: pay?'📥':'💳',
     confirm: pay?'Confirm repayment':'Confirm debt', body: body };
 }
@@ -905,7 +905,7 @@ function splitReview(d){
     '<div class="rf-amt pos">'+esc(signedMoney(owed,d.currency_code))+'</div>'+
     '<p class="rf-why">'+debts+(debts===1?' debt':' debts')+' will be created - each share is listed below.</p>'+
     '<div class="rf-chips">'+chips+'</div>'+
-    reviewRows([['What',esc(d.topic)],['Category',esc(d.category)],['Date',esc(d.occurred_on)]]);
+    reviewRows([['What',esc(d.topic)],['Category',esc(d.category)]]);
   return { title:'Review split', icon:'✂️', confirm:'Confirm split', body: body };
 }
 function openReview(build,action,btn){
@@ -2410,7 +2410,9 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="grid three">
       <div class="field"><label for="t-amount">Amount</label><input id="t-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
       <div class="field"><label for="t-currency">Currency</label><select id="t-currency">${currencyOptions}</select></div>
-      <div class="field"><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
+      <!-- The date stays in the form because the write still needs one, but it is hidden: every entry
+           is stamped the moment it is written, in the workspace zone, so there is nothing to choose. -->
+      <div class="field" hidden><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
     </div>
     <div class="grid">
       <div class="field"><label for="t-creditor" id="t-creditor-label"><span aria-hidden="true">💳</span> Paid by (is owed)</label><select id="t-creditor">${creditorOptions}</select></div>
@@ -2434,7 +2436,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="grid three">
       <div class="field"><label for="p-amount">Amount</label><input id="p-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
       <div class="field"><label for="p-currency">Currency</label><select id="p-currency">${currencyOptions}</select></div>
-      <div class="field"><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
+      <div class="field" hidden><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
     </div>
     <div class="grid">
       <div class="field"><label for="p-debtor" id="p-debtor-label"><span aria-hidden="true">📤</span> Repaid by (who owed it)</label><select id="p-debtor">${debtorOptions}</select></div>
@@ -2470,7 +2472,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="grid three">
       <div class="field"><label for="sp-amount">Total amount</label><input id="sp-amount" type="text" inputmode="decimal" placeholder="120.00" autocomplete="off"></div>
       <div class="field"><label for="sp-currency">Currency</label><select id="sp-currency">${currencyOptions}</select></div>
-      <div class="field"><label for="sp-date">Date</label><input id="sp-date" type="text" value="${dateToday}" readonly aria-readonly="true"><div class="hint">Today in ${esc(tz)} &middot; ${esc(clockNow)}</div></div>
+      <div class="field" hidden><label for="sp-date">Date</label><input id="sp-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
     </div>
     <div class="field"><label for="sp-payer">Paid by</label><select id="sp-payer">${personOptions}</select></div>
     <div class="field">
