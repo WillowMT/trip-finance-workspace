@@ -584,12 +584,24 @@ async function call(path,opts){
 }
 function busy(btn,on){ if(btn){ btn.disabled=!!on; if(on){btn.setAttribute('aria-busy','true')}else{btn.removeAttribute('aria-busy')} } }
 
+/* The Ranking view is parked for now. While this is false the tab button and its section are taken
+   out of the page at boot and the keyboard/hash route is redirected, so nothing can land on a blank
+   screen. Nothing is deleted — set it back to true and the whole view returns as it was. */
+var SHOW_RANKING=false;
+
 var TABS=(function(){
   var out=[], nodes=null;
   try{ nodes=document.querySelectorAll('#nav-drawer nav button') }catch(e){ nodes=null }
   if(nodes&&nodes.length){ for(var i=0;i<nodes.length;i++){ var id=nodes[i].id||''; if(id.indexOf('tab-')===0){ out.push(id.slice(4)) } } }
-  return out.length?out:['add','pay','split','ledger','balances','ranking','receipts','tools','audit','settings'];
+  if(!out.length){ out=['add','pay','split','ledger','balances','ranking','receipts','tools','audit','settings'] }
+  if(!SHOW_RANKING){ var parked=out.indexOf('ranking'); if(parked>=0){ out.splice(parked,1) } }
+  return out;
 })();
+/* Removes a parked section and its nav button together, so the tablist never offers a dead target. */
+function hideSection(tab){
+  var btn=$('tab-'+tab); if(btn&&btn.parentNode){ btn.parentNode.removeChild(btn) }
+  var section=$(tab); if(section&&section.parentNode){ section.parentNode.removeChild(section) }
+}
 /* the drawer holds navigation, so the page it switches to is named once, plainly, next to the ☰ */
 /* classList is not guaranteed — a stripped embedder or a DOM stub can hand us a bare body — so the
    drawer state is applied through one guarded pair instead of reaching for classList inline. */
@@ -624,6 +636,7 @@ function paintTab(tab){
   }
 }
 function showTab(tab){
+  if(!SHOW_RANKING&&tab==='ranking'){ tab='ledger' }
   selectedTab=tab;
   navMark(tab);
   paintTab(tab);
@@ -708,11 +721,13 @@ function signedMinor(t){
   return (t.entry_kind==='payment'||Number(t.amount_minor)<0)?-a:a;
 }
 /* ---------------- maximum payment (only the Record a payment page) ----------------
-   The most that can be repaid is what the debtor still owes the creditor, so the cap is the ledger's
-   own number rather than a form-side guess: the signedMinor() sum of the rows between those two
-   people, per currency, floored at zero. A settled pair reads 0 and its Max button stays disabled,
-   and because the sum is the same arithmetic the ledger and the Balances view use, no two surfaces
-   can disagree about what is still owed. Archived rows never move a balance, so they are skipped. */
+   These are settlement payments, so the cap is the settlement plan's own leg: what the minimal
+   transfer plan routes from the payer to the payee, per currency. The pair's direct records are
+   deliberately not the cap — the plan nets the whole group, so two people can have 186.85 of direct
+   records and still only have 86.85 routed between them because someone else is owed in between.
+   Defining it through settlePlanFor() means the number on this panel, the Settle Up row and the
+   amount that row records can never disagree. Archived rows never move a balance, so they are
+   skipped inside netsByCurrency()/signedMinor() rather than here. */
 var payLimitMax={}, payLimitSeq=0;
 function payLimitNote(){ return '<span class="hint" id="p-limits-note">' }
 async function payLimits(){
@@ -728,16 +743,8 @@ async function payLimits(){
   var r=await call('/transactions');
   if(seq!==payLimitSeq){ return }
   if(!r.ok){ payLimitMax={}; box.innerHTML='<span class="hint">'+esc(r.error)+'</span>'; return }
-  var txs=(r.data&&r.data.transactions)||[], owe={}, i, t;
-  for(i=0;i<txs.length;i++){
-    t=txs[i];
-    /* A row names the creditor (who is owed) and the debtor (who owes); payments are stored the same
-       way and signedMinor() already flips them negative. payer_person_id/payee_person_id exist only
-       on split *inputs* and never on a stored row, so matching on them silently matched nothing. */
-    if(t.is_deleted||Number(t.creditor_person_id)!==c||Number(t.debtor_person_id)!==d){ continue }
-    owe[t.currency_code]=(owe[t.currency_code]||0)+signedMinor(t);
-  }
-  var out='', top=0, codes=[];
+  var txs=(r.data&&r.data.transactions)||[];
+  var out='', top=0, codes=[], i, elsewhere=[], seen={};
   for(i=0;i<currencies.length;i++){
     var cu=currencies[i];
     var code=String((typeof cu==='string'?cu:(cu&&(cu.code||cu.currency_code)))||'');
@@ -746,20 +753,36 @@ async function payLimits(){
   }
   payLimitMax={};
   for(i=0;i<codes.length;i++){
-    var m=Math.max(0,owe[codes[i]]||0); if(m>top){ top=m }
-    payLimitMax[codes[i]]=m;
-    out+='<span class="pill'+(m>0?'':' zero')+'"><b>'+esc(money(m,codes[i]))+'</b><button class="mini ghost" type="button" data-pl-max="'+esc(codes[i])+'"'+(m>0?'':' disabled aria-disabled="true"')+'>Max</button></span>';
+    var cur=codes[i], plan=settlePlanFor(txs,cur), m=0, j;
+    /* Only the legs that start at the payer matter: one leg is one payment of one amount, so the
+       cap for this pair is the leg that ends at the payee. Other legs name where the payer's money
+       is really routed, which is what the hint below reports when this pair has nothing to move. */
+    for(j=0;j<plan.length;j++){
+      var leg=plan[j];
+      if(leg.from_person_id!==d){ continue }
+      if(leg.to_person_id===c){ m+=leg.amount_minor }
+      else if(!seen[cur+':'+leg.to_person_id]){ seen[cur+':'+leg.to_person_id]=1; elsewhere.push({code:cur,id:leg.to_person_id}) }
+    }
+    if(m>top){ top=m }
+    payLimitMax[cur]=m;
+    out+='<span class="pill'+(m>0?'':' zero')+'"><b>'+esc(money(m,cur))+'</b><button class="mini ghost" type="button" data-pl-max="'+esc(cur)+'"'+(m>0?'':' disabled aria-disabled="true"')+'>Max</button></span>';
+  }
+  var routed='';
+  for(i=0;i<elsewhere.length;i++){
+    routed+=(routed?', ':'')+esc(name(elsewhere[i].id))+' in '+esc(elsewhere[i].code);
   }
   box.innerHTML=(out||'<span class="hint">No currencies yet.</span>')
     +payLimitNote()+(top>0
-      ? '“Max” fills the amount with everything still owed in that currency.'
-      : 'Nothing is outstanding this way round — if money really moved, use Swap people.')+'</span>';
+      ? '“Max” fills the amount the settlement routes between these two in that currency.'
+      : (routed
+        ? 'The settlement routes '+esc(name(d))+' to '+routed+' instead — swap the people, or record it from Settle Up.'
+        : 'Nothing is outstanding this way round — if money really moved, use Swap people.'))+'</span>';
 }
 function applyMaxPayment(code){
   var m=Number(payLimitMax[code]||0); if(!(m>0)){ return }
   if($('p-currency')){ $('p-currency').value=code }
   if($('p-amount')){ $('p-amount').value=(m/100).toFixed(2); $('p-amount').focus() }
-  toast(money(m,code)+' filled in — everything still owed in '+code);
+  toast(money(m,code)+' filled in — what the settlement routes between these two');
 }
 /* ---------------- ranking ---------------- */
 var rankingCurrency='', rankingRows=null, rankingRequestId=0;
@@ -2138,6 +2161,7 @@ document.addEventListener('click',async function(ev){
   var carch=t.getAttribute('data-carch'); if(carch){ var cp=carch.split(':'); var cr=await call('/currencies/'+cp[0]+'/'+cp[1],{method:'POST'}); if(!cr.ok){toast(cr.error,true)}else{await loadState();renderSettings();toast('Updated')} return }
 });
 function init(){
+  if(!SHOW_RANKING){ hideSection('ranking') }
   window.onerror=function(msg){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+msg; b.hidden=false} return false };
   window.addEventListener('unhandledrejection',function(ev){ var b=$('banner'); if(b){b.textContent='Something went wrong: '+(ev.reason&&ev.reason.message?ev.reason.message:ev.reason); b.hidden=false} });
   TABS.forEach(function(tab){ var b=$('tab-'+tab); if(b){ b.onclick=function(e){ if(e&&e.preventDefault){e.preventDefault()} showTab(tab); if(tab==='pay'){ payLimits() } } } });
