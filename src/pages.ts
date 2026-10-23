@@ -962,10 +962,45 @@ async function addTx(kind, F){
   var problem=validateRows(rows);
   if(problem){ markTxInvalid(F,rows[0]); err.textContent=problem; return }
   /* nothing is written until the review sheet is confirmed */
-  openReview(txReview(rows), function(){ return postRows(rows,btn,err) }, btn);
+  openReview(txReview(rows), function(){ return postRows(rows,btn,err,F) }, btn);
 }
 function clearTxInvalid(F){
   $(F.amount).removeAttribute('aria-invalid'); $(F.topic).removeAttribute('aria-invalid');
+}
+/* A form that keeps what was just submitted is how the wrong debt gets recorded: the next entry
+   starts with the last amount still in the box, or with the pair left over from a settlement. So after
+   every successful write the three writing forms go back to the state they had on first paint —
+   nothing typed, the first two people, the trip's default currency, everybody sharing a split. */
+function defaultCurrencyCode(){
+  for(var i=0;i<currencies.length;i++){ if(currencies[i].is_default&&!currencies[i].is_archived){ return currencies[i].code } }
+  for(var j=0;j<currencies.length;j++){ if(!currencies[j].is_archived){ return currencies[j].code } }
+  return '';
+}
+function resetTxForm(F){
+  var form=F||TX_FORM, typed=[form.amount,form.topic,form.notes];
+  for(var i=0;i<typed.length;i++){ var el=$(typed[i]); if(el){ el.value=''; el.removeAttribute('aria-invalid') } }
+  if($(form.category)){ $(form.category).value='Other' }
+  var code=defaultCurrencyCode();
+  if(code&&$(form.currency)){ $(form.currency).value=code }
+  /* Back to the first two people in the list, read off the selects themselves so the reset cannot
+     depend on the roster being loaded at this instant. */
+  if($(form.creditor)&&$(form.creditor).options.length){ $(form.creditor).selectedIndex=0 }
+  if($(form.debtor)&&$(form.debtor).options.length){ $(form.debtor).selectedIndex=$(form.debtor).options.length>1?1:0 }
+  if($(form.err)){ $(form.err).textContent='' }
+  if(form===PAY_FORM){ payLimits() }
+}
+function resetSplitForm(){
+  var typed=['sp-amount','sp-topic'];
+  for(var i=0;i<typed.length;i++){ var el=$(typed[i]); if(el){ el.value='' } }
+  if($('sp-category')){ $('sp-category').value='Other' }
+  var code=defaultCurrencyCode();
+  if(code&&$('sp-currency')){ $('sp-currency').value=code }
+  if($('sp-payer')&&$('sp-payer').options.length){ $('sp-payer').selectedIndex=0 }
+  var boxes=splitBoxes();
+  for(var j=0;j<boxes.length;j++){ boxes[j].checked=true }
+  if($('sp-err')){ $('sp-err').textContent='' }
+  var out=$('sp-out'); if(out){ out.innerHTML='' }
+  renderSplit();
 }
 function markTxInvalid(F,row){
   if(!row.amount_minor){ $(F.amount).setAttribute('aria-invalid','true') }
@@ -980,17 +1015,15 @@ function validateRows(rows){
   }
   return '';
 }
-async function postRows(rows,btn,err){
+async function postRows(rows,btn,err,F){
   busy(btn,true);
   var r=(rows.length===1)
     ? await call('/transactions',{method:'POST',body:rows[0]})
     : await call('/batches',{method:'POST',headers:{'idempotency-key':'ui-'+Date.now()+'-'+Math.random().toString(36).slice(2)},body:{rows:rows}});
   busy(btn,false);
   if(!r.ok){ err.textContent=r.error; toast(r.error,true); return false }
-  var doneMsg=rows.length===1?'Transaction added':(rows.length+' transactions added');
-  if(r.data&&r.data.netted_pairs){ doneMsg+=' · '+r.data.netted_pairs+' reciprocal balance'+(r.data.netted_pairs===1?'':'s')+' netted' }
-  toast(doneMsg);
-  $('t-amount').value=''; $('t-topic').value=''; $('t-category').value='Other'; $('t-notes').value='';
+  toast(rows.length===1?'Transaction added':(rows.length+' transactions added'));
+  resetTxForm(F);
   var loggedReceipt=logReceiptId; logReceiptId=null;
   if(loggedReceipt&&r.data&&r.data.transaction){ linkReceiptTransaction(loggedReceipt,r.data.transaction.id) }
   loadLedger(); return true;
@@ -1593,8 +1626,7 @@ async function postSplit(d,btn,err){
   if(!r.ok){ err.textContent=r.error; toast(r.error,true); return }
   var txs=(r.data&&r.data.transactions)||[], owed=(r.data&&r.data.debt_amount_minor)||0;
   toast(txs.length+(txs.length===1?' debt':' debts')+' added');
-  $('sp-amount').value=''; $('sp-topic').value=''; $('sp-category').value='Other';
-  renderSplit();
+  resetSplitForm();
   var out=$('sp-out');
   if(out){ out.innerHTML='<div class="hint">Split added: '+txs.length+' debt(s) totalling '+esc(money(owed,d.currency_code))+', now in Transactions.</div>'+
     txs.map(function(t){return '<div class="split-sum"><div><div class="who">'+esc(name(t.debtor_person_id))+' owes '+esc(name(t.creditor_person_id))+'</div><div class="paid">'+esc(t.topic)+' · '+esc(t.occurred_on)+'</div></div><div class="share">'+esc(money(t.amount_minor,t.currency_code))+'</div></div>'}).join('') }

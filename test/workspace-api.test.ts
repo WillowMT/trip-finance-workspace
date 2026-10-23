@@ -162,13 +162,15 @@ test('the ledger colours signed amounts, deletes with an icon, and pages at 50 r
     const addBody = sectionBody('add'), payBody = sectionBody('pay'), ledgerBody = sectionBody('ledger');
     assert.match(addBody, /id="t-add"/, 'the add page owns the expense form');
     assert.match(payBody, /id="p-add"/, 'the payment page owns the repayment form');
-    assert.match(ledgerBody, /id="spend-chart"/, 'the read page carries the analytics');
-    assert.match(ledgerBody, /id="recent-splits"/, 'the read page carries the split list');
+    assert.match(html, /var SHOW_SPEND_CHART=false, SHOW_RECENT_SPLITS=false/, 'the analytics stay parked behind flags');
+    assert.match(html, /if\(!SHOW_SPEND_CHART\)\{ hideNode\('fold-spend'\) \}/, 'so the chart card is hidden on load');
+    assert.match(html, /if\(!SHOW_RECENT_SPLITS\)\{ hideNode\('fold-splits'\) \}/, 'and the recent splits card with it');
     assert.ok(!ledgerBody.includes('<input') && !ledgerBody.includes('<select'), 'the read page has no form controls at all');
     assert.ok(!addBody.includes('id="spend-chart"') && !addBody.includes('id="tx-list"'), 'the add page carries no analytics');
     assert.ok(!payBody.includes('id="spend-chart"') && !payBody.includes('id="tx-list"'), 'the payment page carries no analytics');
-    assert.match(html, /<details class="card fold">\s*<summary>/, 'data cards collapse by default');
-    assert.ok(!/<details class="card fold"[^>]*\sopen/.test(html), 'no data card starts expanded');
+    assert.match(html, /<details class="card fold"\s+id="fold-[a-z]+">\s*<summary>/, 'data cards collapse by default');
+    assert.equal((html.match(/<details class="card fold"[^>]*\sopen/g) || []).length, 1, 'only the transactions list starts expanded');
+    assert.match(html, /<details class="card fold" id="fold-tx" open>/, 'and that is the list itself');
     assert.ok(!html.includes('class="tabs"'), 'the always-visible tab bar is gone');
     assert.match(html, /id="nav-open"[^>]*aria-expanded="false"/, 'the drawer control starts closed');
     assert.match(html, /id="nav-drawer"/, 'the sidebar drawer exists');
@@ -226,7 +228,7 @@ test('the category field is a select that defaults to Other', async () => {
     const options = [...select![1].matchAll(/<option value="([^"]+)"( selected)?>/g)].map((m) => m[1]);
     assert.deepEqual(options, ['Other', 'Food', 'Transport', 'Shopping']);
     assert.match(select![1], /<option value="Other" selected>/, 'Other is the default');
-    assert.match(html, /\$\('t-category'\)\.value='Other'/, 'the entry form resets to Other');
+    assert.match(html, /\$\(form\.category\)\.value='Other'/, 'the entry form resets to Other');
     assert.match(html, /\$\('sp-category'\)\.value='Other'/, 'so does the split form');
   });
 });
@@ -245,7 +247,7 @@ test('creating a transaction or a split asks for review before it writes', async
     assert.match(html, /openReview\(txReview\(rows\)/, 'the ledger entry is reviewed before it is sent');
     assert.match(html, /openReview\(splitReview\(d\)/, 'so is a split');
     assert.ok(!html.includes('commitRows('), 'the ledger no longer posts straight from the form handler');
-    assert.match(html, /async function postRows\(rows,btn,err\)\{/, 'the only write path is postRows, reached from the sheet');
+    assert.match(html, /async function postRows\(rows,btn,err,F\)\{/, 'the only write path is postRows, reached from the sheet');
     assert.match(html, /async function postSplit\(d,btn,err\)\{/, 'and postSplit for a split');
 
     assert.match(html, /Confirm debt/);
@@ -500,6 +502,28 @@ test('every writing form carries a hidden date stamped with today in the workspa
     const rejected = await request(`/w/${secret}/api`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ settings: { timezone: 'Mars/Olympus' } }) });
     assert.equal(rejected.status, 400);
     assert.deepEqual(await rejected.json(), { error: 'Invalid time zone' });
+  });
+});
+
+
+test('each writing form goes back to its opening state after a submission', async () => {
+  await withWorkspaceApi(async (request) => {
+    const secret = await createWorkspace(request);
+    const page = await (await request(`/w/${secret}`)).text();
+    // A form that keeps what it just submitted is how the wrong debt gets recorded, so both write
+    // paths hand the form to a reset helper instead of clearing a couple of fields in place.
+    assert.ok(page.includes('function resetTxForm(F){'), 'new debt and repayment share one reset');
+    assert.ok(page.includes('function resetSplitForm(){'), 'split has its own reset');
+    assert.ok(page.includes('function defaultCurrencyCode(){'), 'the reset restores the trip default currency');
+    assert.match(page, /return postRows\(rows,btn,err,F\)/, 'postRows knows which form was submitted');
+    assert.match(page, /async function postRows\(rows,btn,err,F\)\{/);
+    assert.match(page, /toast\(rows\.length===1\?'Transaction added':\(rows\.length\+' transactions added'\)\);\s*resetTxForm\(F\);/, 'the write ends by resetting the form');
+    assert.match(page, /resetSplitForm\(\);/, 'the split write resets its form too');
+    // The old half-reset left the people, currency and the whole payment form untouched.
+    assert.equal(page.includes("$('t-amount').value=''; $('t-topic').value=''; $('t-category').value='Other'; $('t-notes').value='';"), false, 'no partial clearing left behind');
+    // The defaults come off the selects themselves, so a reset cannot depend on the roster being loaded.
+    assert.match(page, /\$\('t-creditor'\)\.selectedIndex=0|selectedIndex=0/, 'people reset by position in the list');
+    assert.match(page, /renderSplit\(\);\s*\n\}/, 'the split reset repaints the shares');
   });
 });
 
