@@ -564,6 +564,14 @@ function money(minor,code){
 }
 function iso(d){return d.toISOString().slice(0,10)}
 function today(){return iso(new Date())}
+/* The hidden date is stamped when the page opens, so a form left open past midnight would record
+   the wrong day. Stamping again on reset uses the same zone the server stamp used. */
+function zoneToday(stamp){
+  var tz=stamp?stamp.getAttribute('data-tz'):'';
+  try{
+    return new Intl.DateTimeFormat('en-CA',{timeZone:tz||undefined,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date())
+  }catch(e){ return today() }
+}
 /* Drops a trailing ".00" with plain string surgery: this page script is a template literal, so an
    escaped dot inside a regex collapses to a wildcard and eats real digits ("VND 15,300" → "VND 15,"). */
 function trimMoney(text){ var s=String(text); return s.slice(-3)==='.00'?s.slice(0,-3):s }
@@ -986,12 +994,14 @@ function resetTxForm(F){
      depend on the roster being loaded at this instant. */
   if($(form.creditor)&&$(form.creditor).options.length){ $(form.creditor).selectedIndex=0 }
   if($(form.debtor)&&$(form.debtor).options.length){ $(form.debtor).selectedIndex=$(form.debtor).options.length>1?1:0 }
+  if($(form.date)){ var stamp=$(form.date); stamp.value=zoneToday(stamp) }
   if($(form.err)){ $(form.err).textContent='' }
   if(form===PAY_FORM){ payLimits() }
 }
 function resetSplitForm(){
   var typed=['sp-amount','sp-topic'];
   for(var i=0;i<typed.length;i++){ var el=$(typed[i]); if(el){ el.value='' } }
+  if($('sp-date')){ $('sp-date').value=zoneToday($('sp-date')) }
   if($('sp-category')){ $('sp-category').value='Other' }
   var code=defaultCurrencyCode();
   if(code&&$('sp-currency')){ $('sp-currency').value=code }
@@ -2444,7 +2454,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
       <div class="field"><label for="t-currency">Currency</label><select id="t-currency">${currencyOptions}</select></div>
       <!-- The date stays in the form because the write still needs one, but it is hidden: every entry
            is stamped the moment it is written, in the workspace zone, so there is nothing to choose. -->
-      <div class="field" hidden><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
+      <div class="field" hidden><label for="t-date">Date</label><input id="t-date" type="text" value="${dateToday}" data-tz="${tz}" readonly aria-readonly="true"></div>
     </div>
     <div class="grid">
       <div class="field"><label for="t-creditor" id="t-creditor-label"><span aria-hidden="true">💳</span> Paid by (is owed)</label><select id="t-creditor">${creditorOptions}</select></div>
@@ -2468,7 +2478,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="grid three">
       <div class="field"><label for="p-amount">Amount</label><input id="p-amount" type="text" inputmode="decimal" placeholder="12.50" autocomplete="off"></div>
       <div class="field"><label for="p-currency">Currency</label><select id="p-currency">${currencyOptions}</select></div>
-      <div class="field" hidden><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
+      <div class="field" hidden><label for="p-date">Date</label><input id="p-date" type="text" value="${dateToday}" data-tz="${tz}" readonly aria-readonly="true"></div>
     </div>
     <div class="grid">
       <div class="field"><label for="p-debtor" id="p-debtor-label"><span aria-hidden="true">📤</span> Repaid by (who owed it)</label><select id="p-debtor">${debtorOptions}</select></div>
@@ -2504,7 +2514,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
     <div class="grid three">
       <div class="field"><label for="sp-amount">Total amount</label><input id="sp-amount" type="text" inputmode="decimal" placeholder="120.00" autocomplete="off"></div>
       <div class="field"><label for="sp-currency">Currency</label><select id="sp-currency">${currencyOptions}</select></div>
-      <div class="field" hidden><label for="sp-date">Date</label><input id="sp-date" type="text" value="${dateToday}" readonly aria-readonly="true"></div>
+      <div class="field" hidden><label for="sp-date">Date</label><input id="sp-date" type="text" value="${dateToday}" data-tz="${tz}" readonly aria-readonly="true"></div>
     </div>
     <div class="field"><label for="sp-payer">Paid by</label><select id="sp-payer">${personOptions}</select></div>
     <div class="field">

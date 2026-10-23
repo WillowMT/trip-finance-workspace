@@ -484,7 +484,7 @@ test('every writing form carries a hidden date stamped with today in the workspa
     // so each field is hidden but still submits today's date in the workspace zone.
     for (const id of ['t-date', 'p-date', 'sp-date']) {
       assert.ok(first.includes(`<div class="field" hidden><label for="${id}">Date</label>`), `${id} is hidden`);
-      assert.match(first, new RegExp(`id="${id}" type="text" value="[0-9]{4}-[0-9]{2}-[0-9]{2}" readonly aria-readonly="true"`));
+      assert.match(first, new RegExp(`id="${id}" type="text" value="[0-9]{4}-[0-9]{2}-[0-9]{2}" data-tz="[A-Za-z_]+/[A-Za-z_]+" readonly aria-readonly="true"`));
     }
     assert.doesNotMatch(first, /type="date"/, 'no date pickers left in the app');
     assert.ok(first.includes(`value="${zoneDate('Asia/Bangkok')}"`), 'every field holds today in the workspace default zone');
@@ -712,7 +712,7 @@ test('VND-scale amounts format and parse without losing precision', async () => 
     // a long amount wraps to its own line instead of colliding with the row's text
     assert.match(html, /\.row\{display:flex;flex-wrap:wrap/);
     assert.match(html, /\.row-main\{flex:1 1 auto;min-width:0\}/);
-    assert.match(html, /\.rec\{display:flex;flex-wrap:wrap/);
+    assert.match(html, /\.rec\{display:grid;grid-template-columns:minmax\(0,1fr\) max-content/);
     assert.match(html, /\.split-sum\{display:flex;flex-wrap:wrap/);
     assert.match(html, /\.rf-amt\{font-size:clamp\(/);
   });
@@ -1005,7 +1005,7 @@ test('a tap anywhere on the delete icon resolves to its button', async () => {
     // the delete glyph is a child span, so reading the action off the tapped node leaves the whole icon dead
     assert.match(
       html,
-      /src\.closest\('\[data-del\],\[data-off\][^')]*\[data-def\][^')]*'\)/,
+      /src\.closest\('\[data-del\][^')]*\[data-def\][^')]*'\)/,
       'the click handler resolves row actions from the nearest ancestor'
     );
     // a 34px icon still has to answer a 44px finger
@@ -1269,7 +1269,7 @@ test('a receipt can be logged against the ledger row it became', async () => {
     const html = await (await request(`/w/${secret}`)).text();
     assert.match(html, /id="rec-log"/, 'the edit sheet carries the logging control');
     assert.match(html, /not logged/, 'a card that is not in the ledger says so');
-    assert.match(html, /ledger #/, 'and a logged one names the row');
+    assert.match(html, /entry #'\+r\.transaction_id/, 'and a logged one names the row');
     assert.match(html, /navigator\.serviceWorker/, 'the page registers the worker that makes it installable');
   });
 });
