@@ -335,6 +335,9 @@ details.card.fold > .fold-body{padding:0 var(--sp-6) var(--sp-6)}
 .person-card .p-net.neg{color:var(--bad)}
 .person-card .p-net.sub{font-size:var(--fs-sm);font-weight:600}
 .person-card .p-settled{color:var(--muted);font-size:var(--fs-sm);font-weight:600}
+.settle-group+.settle-group{margin-top:var(--sp-7);padding-top:var(--sp-6);border-top:1px solid var(--line)}
+.settle-group .chart-head{margin-bottom:var(--sp-2)}
+.settle-group .settle-row:last-child{border-bottom:0}
 .settle-row{display:flex;align-items:center;gap:var(--sp-4);padding:var(--sp-4) 0;border-bottom:1px solid var(--line)}
 .settle-names{flex:1 1 auto;min-width:0;display:flex;align-items:center;gap:var(--sp-2);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700;letter-spacing:.045em;text-transform:uppercase;overflow-wrap:anywhere}
 .settle-arrow{color:var(--muted);font-weight:500}
@@ -1331,9 +1334,12 @@ async function previewImport(){
   if(!res.ok){ $('csv-commit').disabled=true; out.innerHTML='<div class="err">'+esc((data&&(data.errors||[data.error]))?[].concat(data.errors||data.error).join('\\n'):'Import preview failed ('+res.status+')')+'</div>'; return }
   var rows=(data&&data.rows)||[];
   var t=document.createElement('table');
+  /* A thousand rows is a legitimate import but a thousand table rows is a slow sheet: the count is
+     what matters before committing, so the table shows the first hundred and says what it left out. */
+  var shown=rows.slice(0,100);
   t.innerHTML='<tr><th>Date</th><th>Kind</th><th>Topic</th><th>Amount</th></tr>'+
-    rows.map(function(r){return '<tr><td>'+esc(r.occurred_on)+'</td><td>'+esc(r.entry_kind)+'</td><td>'+esc(r.topic)+'</td><td class="num">'+esc(money(r.amount_minor,r.currency_code))+'</td></tr>'}).join('');
-  out.innerHTML='<p class="hint">'+rows.length+' row(s) ready to import.</p>'; out.appendChild(t);
+    shown.map(function(r){return '<tr><td>'+esc(r.occurred_on)+'</td><td>'+esc(r.entry_kind)+'</td><td>'+esc(r.topic)+'</td><td class="num">'+esc(money(r.amount_minor,r.currency_code))+'</td></tr>'}).join('');
+  out.innerHTML='<p class="hint">'+rows.length+' row(s) ready to import.'+(rows.length>shown.length?(' Showing the first '+shown.length+'.'):'')+'</p>'; out.appendChild(t);
   $('csv-commit').disabled=!rows.length;
 }
 async function commitImport(){
@@ -1945,7 +1951,7 @@ function renderSettle(rows){
     var code=codes[c], plan=settlePlanFor(rows,code), owed=0;
     for(k=0;k<plan.length;k++){ owed+=plan[k].amount_minor }
     if(!plan.length){ continue }
-    html+='<div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed</span></div>';
+    html+='<div class="settle-group"><div class="chart-head"><b>'+esc(code)+'</b><span class="hint">'+esc(money(owed,code))+' owed</span></div>';
     for(i=0;i<plan.length;i++){
       var p=plan[i];
       settleAdd(code,p.from_person_id,p.to_person_id,p.amount_minor);
@@ -1954,6 +1960,7 @@ function renderSettle(rows){
         '<span class="settle-amt">'+esc(money(p.amount_minor,code))+'</span>'+
         '<button class="settle-btn" type="button" data-settle="'+p.from_person_id+':'+p.to_person_id+':'+esc(code)+':'+p.amount_minor+'">Record</button></div>';
     }
+    html+='</div>';
   }
   box.innerHTML=html||'<div class="empty">Everyone is square — nothing to settle.</div>';
 }
@@ -2544,7 +2551,7 @@ const app = async (db: D1Database, workspaceId: number, name: string): Promise<s
 <section id="tools" hidden>
   <div class="card">
     <h2><span aria-hidden="true">📥</span> Import CSV</h2>
-    <p class="hint">Header must be: occurred_on, entry_kind, topic, category, creditor, debtor, amount, currency, notes</p>
+    <p class="hint">Header must be: occurred_on, entry_kind, topic, category, creditor, debtor, amount, currency, notes. Up to 1,000 rows in one file.</p>
     <div class="field"><textarea id="csv" class="mono" placeholder="occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes"></textarea></div>
     <div class="btns">
       <button id="csv-template" class="ghost" type="button"><span aria-hidden="true">📄</span> Template</button>

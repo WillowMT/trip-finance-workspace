@@ -141,6 +141,39 @@ test('CSV import preview and commit re-parse raw text server-side, reject parsed
   });
 });
 
+test('a thousand rows import in one go, and a thousand and one are turned away', async () => {
+  await withWorkspaceApi(async (request, query) => {
+    const secret = await createWorkspace(request);
+    const api = `/w/${secret}/api`;
+    const state = await (await request(api)).json() as { people: { id: number; display_name: string }[] };
+    const [ada, lin] = state.people;
+    const header = 'occurred_on,entry_kind,topic,category,creditor,debtor,amount,currency,notes';
+    const row = (i: number) => `2026-10-09,debt,Row ${i},Food,${ada.display_name},${lin.display_name},${1 + (i % 9)}.25,USD,bulk ${i}`;
+    const csvOf = (count: number) => [header, ...Array.from({ length: count }, (_, i) => row(i + 1))].join('\n');
+
+    // The ceiling is the import's own: one pasted spreadsheet, not a hand-built batch.
+    const thousand = csvOf(1000);
+    const preview = await request(`${api}/imports/preview`, { method: 'POST', headers: { 'content-type': 'text/csv' }, body: thousand });
+    assert.equal(preview.status, 200);
+    const planned = await preview.json() as { rows: { amount_minor: number }[] };
+    assert.equal(planned.rows.length, 1000);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 0, 'a preview writes nothing');
+
+    const committed = await request(`${api}/imports`, { method: 'POST', headers: { 'content-type': 'text/csv', 'idempotency-key': 'import-1000' }, body: thousand });
+    assert.equal(committed.status, 201);
+    const saved = await committed.json() as { transactions: { amount_minor: number }[] };
+    assert.equal(saved.transactions.length, 1000);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 1000);
+    assert.equal((query("SELECT COUNT(*) AS count FROM transactions WHERE import_group_id = 'import:import-1000'") as { count: number }[])[0].count, 1000);
+
+    const tooMany = await request(`${api}/imports/preview`, { method: 'POST', headers: { 'content-type': 'text/csv' }, body: csvOf(1001) });
+    assert.equal(tooMany.status, 400);
+    const refused = await tooMany.json() as { error?: string };
+    assert.match(String(refused.error), /1-1000 rows/);
+    assert.equal((query('SELECT COUNT(*) AS count FROM transactions') as { count: number }[])[0].count, 1000, 'the refused file wrote nothing');
+  });
+});
+
 // Take a function's own source out of the served page and run it, so an assertion covers the arithmetic
 // the browser runs and not a copy of it.
 const lift = (html: string, name: string): string => {

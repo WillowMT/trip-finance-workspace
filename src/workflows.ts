@@ -9,6 +9,9 @@ export const workflowKinds = ['batch', 'import'] as const;
 export type WorkflowKind = (typeof workflowKinds)[number];
 
 export const maxWorkflowRows = 200;
+// An import is one pasted spreadsheet, so it needs its own, much larger ceiling: a batch is built by
+// the UI from a single action and stays small, an import is however many rows the file holds.
+export const maxImportRows = 1000;
 
 export function cleanText(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;

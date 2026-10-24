@@ -2,7 +2,7 @@ import { aiInstructions, appHtml, homeHtml, linkRetiredHtml, isValidTimeZone, DE
 import { planSplit, splitDraftHash, splitResponse, type SplitTransaction, validIdempotencyKey as validSplitKey } from './splits';
 import { backupEveryValue, backupStatus, createBackup, listBackups, readBackup, restoreName, restoreSnapshot, snapshotProblem, tickBackups, DEFAULT_BACKUP_EVERY, KEEP_BACKUPS } from './backups';
 import { creditMinorSql, isSettlementRow, storedMinor } from './money';
-import { canonicalName, hashJson, maxWorkflowRows, parseImportCsv, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
+import { canonicalName, hashJson, maxImportRows, maxWorkflowRows, parseImportCsv, validDate as validDateValue, validIdempotencyKey, validateWorkflowRow, type ImportPlanRow, type WorkflowTransaction } from './workflows';
 import { createPairing, dispatchWorkspaceNotifications, handleNavRedirect, handleTelegramWebhook, isNavPath, isTelegramWebhookPath, removeConnection, resolveNavWorkspace, setConnectionEnabled, telegramConfigured, telegramStatus } from './telegram';
 
 export interface Env {
@@ -33,6 +33,8 @@ const secretPattern = /^[A-Za-z0-9_-]{43}$/;
 const currencyPattern = /^[A-Z]{3}$/;
 const entryKinds = new Set(['debt', 'payment']);
 const maxJsonBytes = 256 * 1024;
+// A pasted CSV is not a JSON payload: a thousand rows with notes can run to megabytes.
+const maxImportBytes = 2 * 1024 * 1024;
 const bodyTooLarge = Symbol('body too large');
 
 function json(value: unknown, status = 200, headers: HeadersInit = {}): Response {
@@ -610,8 +612,8 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if (tail === 'imports/preview' || tail === 'imports') {
     if (request.method !== 'POST') return new Response('Not found', { status: 404, headers: secretHeaders() });
     const contentLength = request.headers.get('content-length');
-    if (contentLength && Number(contentLength) > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
-    const raw = await request.text(); if (raw.length > maxJsonBytes) return secretResponse({ error: 'Request body too large' }, 413);
+    if (contentLength && Number(contentLength) > maxImportBytes) return secretResponse({ error: 'Request body too large' }, 413);
+    const raw = await request.text(); if (raw.length > maxImportBytes) return secretResponse({ error: 'Request body too large' }, 413);
     const peopleRows = await env.DB.prepare('SELECT id, display_name, is_archived FROM workspace_people WHERE workspace_id = ?').bind(workspace.id).all<{ id: number; display_name: string; is_archived: number }>();
     const peopleByName = new Map<string, { id: number; display_name: string; is_archived: number }>();
     for (const person of peopleRows.results) {
@@ -623,7 +625,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
     const currencyCodes = new Set(currencyRows.results.map((currency) => currency.code));
     const parsed = parseImportCsv(raw, peopleByName, currencyCodes);
     if (parsed.errors.length || parsed.rows.length < 1) return secretResponse({ errors: parsed.errors.length ? parsed.errors : ['CSV contained no valid rows'] }, 400);
-    if (parsed.rows.length > maxWorkflowRows) return secretResponse({ error: 'Import must include 1-200 rows' }, 400);
+    if (parsed.rows.length > maxImportRows) return secretResponse({ error: `Import must include 1-${maxImportRows} rows` }, 400);
     if (tail === 'imports/preview') return secretResponse({ rows: parsed.rows, errors: [] });
     const idempotencyKey = request.headers.get('idempotency-key'); if (!validIdempotencyKey(idempotencyKey)) return secretResponse({ error: 'A valid Idempotency-Key header is required' }, 400);
     const draftHash = await hashJson(parsed.rows);
